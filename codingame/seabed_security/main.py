@@ -6,8 +6,8 @@ import numpy as np
 import numpy.typing as npt
 
 
-type IntArray = npt.NDArray[np.int64]
-type FloatArray = npt.NDArray[np.float64]
+IntArray = npt.NDArray[np.int64]
+FloatArray = npt.NDArray[np.float64]
 
 FIELD_SIZE = 10000
 MAX_COORD = FIELD_SIZE - 1
@@ -223,7 +223,7 @@ def choose_safe_target(drone: Drone, target: IntArray, monsters: list[VisibleCre
             drone_end = get_end_point(drone.coords, rotated_target, DRONE_SPEED)
             if not any(minimum_distance_between_paths(drone.coords, drone_end - drone.coords, monster.coords, monster.velocity) < MONSTER_COLLISION_RADIUS
                        for monster in monsters):
-                return rotated_target
+                return np.rint(rotated_target).astype(np.int64)
     raise AssertionError("No collision-free direction found")
 
 

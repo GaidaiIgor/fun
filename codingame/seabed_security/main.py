@@ -11,7 +11,6 @@ IntArray = npt.NDArray[np.int64]
 FloatArray = npt.NDArray[np.float64]
 
 FIELD_SIZE = 10000
-SURFACE_Y = 0
 DRONE_SPEED = 600
 SCAN_RADIUS = 800
 MONSTER_COLLISION_RADIUS = 500
@@ -190,7 +189,7 @@ def choose_base_target(drone: Drone, monster_ids: set[int], visible_creatures: d
         if creature_id not in monster_ids:
             fish_targets.setdefault(creature_id, guess_creature_coords(drone.coords, radar))
     if not fish_targets:
-        return np.array((drone.coords[0], SURFACE_Y))
+        return np.array((drone.coords[0], 0))
     return min(fish_targets.values(), key=lambda coords: np.linalg.norm(drone.coords - coords))
 
 
@@ -236,9 +235,9 @@ def choose_safe_target(drone: Drone, target: IntArray, monsters: list[VisibleCre
                 corrected_direction = drone_end - drone.coords
                 final_angle = np.rad2deg(np.arctan2(-corrected_direction[1], corrected_direction[0]))
                 print(f"drone {drone.drone_id}: angle1={base_angle} angle2={final_angle}", file=sys.stderr)
-                
+
                 return np.rint(rotated_target).astype(np.int64)
-    raise AssertionError("No collision-free direction found")
+    return np.array((drone.coords[0], 0))
 
 
 def minimum_distance_between_paths(start_a: IntArray, velocity_a: IntArray, start_b: IntArray, velocity_b: IntArray) -> float:

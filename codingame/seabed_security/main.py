@@ -156,8 +156,11 @@ def read_game_state(turn_number: int) -> GameState:
     my_known_scans = set(my_saved_scans)
     for _ in range(drone_scan_count):
         drone_id, creature_id = map(int, input().split())
-        drones[drone_id].scans.add(creature_id)
-        my_known_scans.add(creature_id)
+        if drone_id in drones:
+            drones[drone_id].scans.add(creature_id)
+            my_known_scans.add(creature_id)
+        else:
+            foe_drones[drone_id].scans.add(creature_id)
 
     visible_creatures = {}
     visible_creature_count = int(input())

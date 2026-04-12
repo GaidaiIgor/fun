@@ -65,6 +65,8 @@ class GameState:
     :var my_saved_scans: Fish ids already saved by us.
     :var my_known_scans: Fish ids already scanned by us, whether saved or currently carried.
     :var foe_saved_scans: Fish ids already saved by the enemy.
+    :var foe_known_scans: Fish ids already scanned by the enemy, whether saved or currently carried.
+    :var existing_creature_ids: Creature ids still present in the game zone this turn.
     :var drones: Our drones keyed by id in the exact server order.
     :var foe_drones: Enemy drones keyed by id in the exact server order.
     :var visible_creatures: Current visible creature snapshots keyed by creature id.
@@ -75,6 +77,8 @@ class GameState:
     my_saved_scans: set[int]
     my_known_scans: set[int]
     foe_saved_scans: set[int]
+    foe_known_scans: set[int]
+    existing_creature_ids: set[int]
     drones: dict[int, Drone]
     foe_drones: dict[int, Drone]
     visible_creatures: dict[int, VisibleCreature]
@@ -90,7 +94,8 @@ def main_loop():
         game_state = read_game_state(turn_number)
         my_score_after_cashout = \
             game_state.my_score + calculate_score_gain(creature_infos, game_state.my_known_scans, game_state.my_saved_scans, game_state.foe_saved_scans)
-        foe_max_score = game_state.foe_score + calculate_score_gain(creature_infos, set(creature_infos), game_state.foe_saved_scans, game_state.my_known_scans)
+        best_case_known = game_state.existing_creature_ids | game_state.foe_known_scans
+        foe_max_score = game_state.foe_score + calculate_score_gain(creature_infos, best_case_known, game_state.foe_saved_scans, game_state.my_known_scans)
         withdraw_now = my_score_after_cashout > foe_max_score
 
         for drone in game_state.drones.values():
@@ -141,10 +146,10 @@ def read_game_state(turn_number: int) -> GameState:
         foe_saved_scans.add(int(input()))
 
     my_drone_count = int(input())
-    drones = {}
+    my_drones = {}
     for _ in range(my_drone_count):
         drone_id, drone_x, drone_y, emergency, battery = map(int, input().split())
-        drones[drone_id] = Drone(drone_id, np.array((drone_x, drone_y)), bool(emergency), battery)
+        my_drones[drone_id] = Drone(drone_id, np.array((drone_x, drone_y)), bool(emergency), battery)
 
     foe_drone_count = int(input())
     foe_drones = {}
@@ -154,13 +159,15 @@ def read_game_state(turn_number: int) -> GameState:
 
     drone_scan_count = int(input())
     my_known_scans = set(my_saved_scans)
+    foe_known_scans = set(foe_saved_scans)
     for _ in range(drone_scan_count):
         drone_id, creature_id = map(int, input().split())
-        if drone_id in drones:
-            drones[drone_id].scans.add(creature_id)
+        if drone_id in my_drones:
+            my_drones[drone_id].scans.add(creature_id)
             my_known_scans.add(creature_id)
         else:
             foe_drones[drone_id].scans.add(creature_id)
+            foe_known_scans.add(creature_id)
 
     visible_creatures = {}
     visible_creature_count = int(input())
@@ -168,13 +175,16 @@ def read_game_state(turn_number: int) -> GameState:
         creature_id, creature_x, creature_y, creature_vx, creature_vy = map(int, input().split())
         visible_creatures[creature_id] = VisibleCreature(np.array((creature_x, creature_y)), np.array((creature_vx, creature_vy)))
 
+    existing_creature_ids = set()
     radar_blip_count = int(input())
     for _ in range(radar_blip_count):
         drone_id_str, creature_id_str, radar_location = input().split()
         drone_id, creature_id = int(drone_id_str), int(creature_id_str)
-        drones[drone_id].radar[creature_id] = radar_location
+        existing_creature_ids.add(creature_id)
+        my_drones[drone_id].radar[creature_id] = radar_location
 
-    return GameState(turn_number, my_score, foe_score, my_saved_scans, my_known_scans, foe_saved_scans, drones, foe_drones, visible_creatures)
+    return GameState(turn_number, my_score, foe_score, my_saved_scans, my_known_scans, foe_saved_scans, foe_known_scans, existing_creature_ids, my_drones,
+                     foe_drones, visible_creatures)
 
 
 def calculate_score_gain(creature_infos: dict[int, CreatureInfo], known_scans: set[int], saved_scans: set[int], foe_saved_scans: set[int]) -> int:

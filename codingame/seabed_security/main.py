@@ -170,33 +170,11 @@ def read_game_state(turn_number: int) -> GameState:
 
     radar_blip_count = int(input())
     for _ in range(radar_blip_count):
-        drone_id_str, creature_id_str, radar = input().split()
+        drone_id_str, creature_id_str, radar_location = input().split()
         drone_id, creature_id = int(drone_id_str), int(creature_id_str)
-        drone = drones.get(drone_id)
-        if creature_id not in my_known_scans and drone is not None:
-            drone.radar[creature_id] = radar
+        drones[drone_id].radar[creature_id] = radar_location
 
     return GameState(turn_number, my_score, foe_score, my_saved_scans, my_known_scans, foe_saved_scans, drones, foe_drones, visible_creatures)
-
-
-def choose_action(drone: Drone, monster_ids: set[int], game_state: GameState, withdraw_now: bool) -> tuple[int, int, int]:
-    """Chooses one move target and light setting for a drone.
-    :param drone: Drone state to plan for.
-    :param monster_ids: Creature ids belonging to monsters.
-    :param game_state: Parsed state for the current turn.
-    :param withdraw_now: Indicates whether cashing out already guarantees victory.
-    :return: Move x, move y, and light state.
-    """
-    if withdraw_now:
-        base_target = np.array((drone.coords[0], 0))
-    else:
-        base_target = choose_base_target(drone, monster_ids, game_state.visible_creatures, game_state.my_known_scans)
-    monsters = [creature for creature_id, creature in game_state.visible_creatures.items() if creature_id in monster_ids]
-    safe_target = choose_safe_target(drone, base_target, monsters)
-    light = choose_light(drone, game_state)
-    if light == 1:
-        drone.last_enabled = game_state.turn_number
-    return safe_target[0], safe_target[1], light
 
 
 def calculate_score_gain(creature_infos: dict[int, CreatureInfo], known_scans: set[int], saved_scans: set[int], foe_saved_scans: set[int]) -> int:
@@ -220,6 +198,27 @@ def calculate_score_gain(creature_infos: dict[int, CreatureInfo], known_scans: s
         if fish_of_color <= known_scans and not fish_of_color <= saved_scans:
             score_gain += 3 if fish_of_color <= foe_saved_scans else 6
     return score_gain
+
+
+def choose_action(drone: Drone, monster_ids: set[int], game_state: GameState, withdraw_now: bool) -> tuple[int, int, int]:
+    """Chooses one move target and light setting for a drone.
+    :param drone: Drone state to plan for.
+    :param monster_ids: Creature ids belonging to monsters.
+    :param game_state: Parsed state for the current turn.
+    :param withdraw_now: Indicates whether cashing out already guarantees victory.
+    :return: Move x, move y, and light state.
+    """
+    if withdraw_now:
+        base_target = np.array((drone.coords[0], 0))
+    else:
+        base_target = choose_base_target(drone, monster_ids, game_state.visible_creatures, game_state.my_known_scans)
+    monsters = [creature for creature_id, creature in game_state.visible_creatures.items() if creature_id in monster_ids]
+    safe_target = choose_safe_target(drone, base_target, monsters)
+    light = choose_light(drone, game_state)
+    if light == 1:
+        drone.last_enabled = game_state.turn_number
+    return safe_target[0], safe_target[1], light
+
 
 def choose_base_target(drone: Drone, monster_ids: set[int], visible_creatures: dict[int, VisibleCreature], my_known_scans: set[int]) -> IntArray:
     """Chooses the fish pursuit target before monster safety is considered.

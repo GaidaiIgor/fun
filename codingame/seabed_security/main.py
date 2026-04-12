@@ -88,7 +88,6 @@ def main_loop():
     """Runs the game loop and prints one command per drone each turn."""
     creature_infos = read_initial_data()
     previous_drones = {}
-    monster_ids = {creature_id for creature_id, info in creature_infos.items() if info.kind == -1}
     turn_number = 0
     while True:
         game_state = read_game_state(turn_number)
@@ -103,7 +102,7 @@ def main_loop():
         for foe_drone in game_state.foe_drones.values():
             print(f"foe drone {foe_drone.drone_id}: pos=({foe_drone.coords[0]}, {foe_drone.coords[1]})", file=sys.stderr)
         for creature_id, creature in game_state.visible_creatures.items():
-            label = "monster" if creature_id in monster_ids else "fish"
+            label = "monster" if creature_infos[creature_id].kind == -1 else "fish"
             print(f"{label} {creature_id}: pos=({creature.coords[0]}, {creature.coords[1]}), "
                 f"angle={np.rad2deg(np.arctan2(-creature.velocity[1], creature.velocity[0])):.0f}", file=sys.stderr)
         print(f"Cashout: my={my_score_after_cashout}, foe_max={foe_max_score}", file=sys.stderr)
@@ -111,7 +110,7 @@ def main_loop():
         for drone in game_state.drones.values():
             if game_state.turn_number > 0:
                 drone.last_enabled = previous_drones[drone.drone_id].last_enabled
-            x, y, light = choose_action(drone, monster_ids, game_state, withdraw_now)
+            x, y, light = choose_action(drone, creature_infos, game_state, withdraw_now)
             print(f"MOVE {x} {y} {light}")
         previous_drones = game_state.drones
         turn_number += 1
@@ -210,10 +209,10 @@ def calculate_score_gain(creature_infos: dict[int, CreatureInfo], known_scans: s
     return score_gain
 
 
-def choose_action(drone: Drone, monster_ids: set[int], game_state: GameState, withdraw_now: bool) -> tuple[int, int, int]:
+def choose_action(drone: Drone, creature_infos: dict[int, CreatureInfo], game_state: GameState, withdraw_now: bool) -> tuple[int, int, int]:
     """Chooses one move target and light setting for a drone.
     :param drone: Drone state to plan for.
-    :param monster_ids: Creature ids belonging to monsters.
+    :param creature_infos: Creature metadata keyed by creature id.
     :param game_state: Parsed state for the current turn.
     :param withdraw_now: Indicates whether cashing out already guarantees victory.
     :return: Move x, move y, and light state.
@@ -221,52 +220,50 @@ def choose_action(drone: Drone, monster_ids: set[int], game_state: GameState, wi
     if withdraw_now:
         base_target = np.array((drone.coords[0], 0))
     else:
-        base_target = choose_base_target(drone, monster_ids, game_state.visible_creatures, game_state.my_known_scans)
-    monsters = [creature for creature_id, creature in game_state.visible_creatures.items() if creature_id in monster_ids]
-    safe_target = choose_safe_target(drone, base_target, monsters)
+        base_target = choose_base_target(drone, creature_infos, game_state)
+    visible_monsters = [creature for creature_id, creature in game_state.visible_creatures.items() if creature_infos[creature_id].kind == -1]
+    safe_target = choose_safe_target(drone, base_target, visible_monsters)
     light = choose_light(drone, game_state)
     if light == 1:
         drone.last_enabled = game_state.turn_number
     return safe_target[0], safe_target[1], light
 
 
-def choose_base_target(drone: Drone, monster_ids: set[int], visible_creatures: dict[int, VisibleCreature], my_known_scans: set[int]) -> IntArray:
+def choose_base_target(drone: Drone, creature_infos: dict[int, CreatureInfo], game_state: GameState) -> IntArray:
     """Chooses the fish pursuit target before monster safety is considered.
     :param drone: Drone state to plan for.
-    :param monster_ids: Creature ids belonging to monsters.
-    :param visible_creatures: Visible creature snapshots for the turn.
-    :param my_known_scans: Fish ids already scanned by us, whether saved or currently carried.
+    :param creature_infos: Creature metadata keyed by creature id.
+    :param game_state: Parsed state for the current turn.
     :return: Desired target point when only fish collection is considered.
     """
-    fish_targets = {}
-    for creature_id, creature in visible_creatures.items():
-        if creature_id not in monster_ids and creature_id not in my_known_scans:
-            fish_targets[creature_id] = creature.coords
-    for creature_id, radar in drone.radar.items():
-        if creature_id not in monster_ids and creature_id not in my_known_scans:
-            fish_targets.setdefault(creature_id, guess_creature_coords(drone.coords, radar))
+    fish_targets = {creature_id: guess_creature_coords(creature_id, creature_infos, game_state.drones) for creature_id in drone.radar
+                    if creature_infos[creature_id].kind != -1 and creature_id not in game_state.my_known_scans}
     if not fish_targets:
         return np.array((drone.coords[0], 0))
     return min(fish_targets.values(), key=lambda coords: np.linalg.norm(drone.coords - coords))
 
 
-def guess_creature_coords(drone_coords: IntArray, radar: str) -> IntArray:
-    """Guesses one creature position from a single radar quadrant.
-    :param drone_coords: Current drone coordinates.
-    :param radar: Radar quadrant reported by the server.
-    :return: Midpoint guess inside the indicated map quadrant.
+def guess_creature_coords(creature_id: int, creature_infos: dict[int, CreatureInfo], drones: dict[int, Drone]) -> IntArray:
+    """Guesses one creature position from the combined radar quadrants and habitat band.
+    :param creature_id: Creature id whose radar region should be estimated.
+    :param creature_infos: Creature metadata keyed by creature id.
+    :param drones: Our drones keyed by id in the exact server order.
+    :return: Midpoint guess inside the intersection of all indicated radar half-planes and the fish habitat band.
     """
-    match radar:
-        case "TL":
-            return np.array((drone_coords[0] // 2, drone_coords[1] // 2))
-        case "TR":
-            return np.array(((drone_coords[0] + FIELD_SIZE) // 2, drone_coords[1] // 2))
-        case "BL":
-            return np.array((drone_coords[0] // 2, (drone_coords[1] + FIELD_SIZE) // 2))
-        case "BR":
-            return np.array(((drone_coords[0] + FIELD_SIZE) // 2, (drone_coords[1] + FIELD_SIZE) // 2))
-        case _:
-            raise AssertionError(f"Unexpected radar value: {radar}")
+    min_x, max_x, min_y, max_y = 0, FIELD_SIZE, 0, FIELD_SIZE
+    for drone in drones.values():
+        radar = drone.radar[creature_id]
+        if radar[1] == "L":
+            max_x = min(max_x, drone.coords[0])
+        else:
+            min_x = max(min_x, drone.coords[0])
+        if radar[0] == "T":
+            max_y = min(max_y, drone.coords[1])
+        else:
+            min_y = max(min_y, drone.coords[1])
+    min_y = max(min_y, 2500 * (creature_infos[creature_id].kind + 1))
+    max_y = min(max_y, 2500 * (creature_infos[creature_id].kind + 2))
+    return np.array(((min_x + max_x) // 2, (min_y + max_y) // 2))
 
 
 def choose_safe_target(drone: Drone, target: IntArray, monsters: list[VisibleCreature]) -> IntArray:

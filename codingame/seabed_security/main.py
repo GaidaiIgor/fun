@@ -314,12 +314,12 @@ def minimum_distance_between_paths(start_a: IntArray, velocity_a: IntArray, star
 
 
 def choose_light(drone: Drone, game_state: GameState) -> int:
-    """Chooses the light setting from the turn timer.
+    """Chooses the light setting from the turn timer and drone depth.
     :param drone: Drone state to plan for.
     :param game_state: Parsed state for the current turn.
     :return: Light setting for the move.
     """
-    return int(game_state.turn_number - drone.last_enabled >= 4)
+    return int(drone.coords[1] >= 2500 and game_state.turn_number - drone.last_enabled >= 3)
 
 
 def get_end_point(start_point: IntArray, target_point: FloatArray | IntArray, speed: int) -> IntArray:

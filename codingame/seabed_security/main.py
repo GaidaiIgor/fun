@@ -59,13 +59,25 @@ class Drone:
 @dataclass(slots=True)
 class GameState:
     """Stores one full turn snapshot.
+    :var turn_number: Zero-based turn index.
+    :var my_score: Our current score.
+    :var foe_score: Enemy current score.
+    :var my_saved_scans: Fish ids already saved by us.
+    :var my_known_scans: Fish ids already scanned by us, whether saved or currently carried.
+    :var foe_saved_scans: Fish ids already saved by the enemy.
     :var drones: Our drones keyed by id in the exact server order.
+    :var foe_drones: Enemy drones keyed by id in the exact server order.
     :var visible_creatures: Current visible creature snapshots keyed by creature id.
-    :var known_scans: Fish ids already scanned by us, whether saved or currently carried.
     """
+    turn_number: int
+    my_score: int
+    foe_score: int
+    my_saved_scans: set[int]
+    my_known_scans: set[int]
+    foe_saved_scans: set[int]
     drones: dict[int, Drone]
+    foe_drones: dict[int, Drone]
     visible_creatures: dict[int, VisibleCreature]
-    known_scans: set[int]
 
 
 def main_loop():
@@ -75,21 +87,26 @@ def main_loop():
     monster_ids = {creature_id for creature_id, info in creature_infos.items() if info.kind == -1}
     turn_number = 0
     while True:
-        game_state = read_game_state()
-
-        for drone_id, drone in game_state.drones.items():
-            print(f"drone {drone.drone_id}: pos=({drone.coords[0]}, {drone.coords[1]})", file=sys.stderr)
-        for creature_id, creature in game_state.visible_creatures.items():
-            label = "monster" if creature_id in monster_ids else "fish"
-            print(f"{label} {creature_id}: pos=({creature.coords[0]}, {creature.coords[1]}) angle={np.rad2deg(np.arctan2(-creature.velocity[1], creature.velocity[0]))}",
-                  file=sys.stderr)
+        game_state = read_game_state(turn_number)
+        my_score_after_cashout = \
+            game_state.my_score + calculate_score_gain(creature_infos, game_state.my_known_scans, game_state.my_saved_scans, game_state.foe_saved_scans)
+        foe_max_score = game_state.foe_score + calculate_score_gain(creature_infos, set(creature_infos), game_state.foe_saved_scans, game_state.my_known_scans)
+        withdraw_now = my_score_after_cashout > foe_max_score
 
         for drone in game_state.drones.values():
-            if turn_number > 0:
+            print(f"drone {drone.drone_id}: pos=({drone.coords[0]}, {drone.coords[1]})", file=sys.stderr)
+        for foe_drone in game_state.foe_drones.values():
+            print(f"foe drone {foe_drone.drone_id}: pos=({foe_drone.coords[0]}, {foe_drone.coords[1]})", file=sys.stderr)
+        for creature_id, creature in game_state.visible_creatures.items():
+            label = "monster" if creature_id in monster_ids else "fish"
+            print(f"{label} {creature_id}: pos=({creature.coords[0]}, {creature.coords[1]}), "
+                  f"angle={np.rad2deg(np.arctan2(-creature.velocity[1], creature.velocity[0]))}", file=sys.stderr)
+        print(f"Cashout: my_score_after_cashout={my_score_after_cashout}, foe_max_score={foe_max_score}", file=sys.stderr)
+
+        for drone in game_state.drones.values():
+            if game_state.turn_number > 0:
                 drone.last_enabled = previous_drones[drone.drone_id].last_enabled
-            x, y, light = choose_action(drone, monster_ids, game_state.visible_creatures, game_state.known_scans, turn_number)
-            if light == 1:
-                drone.last_enabled = turn_number
+            x, y, light = choose_action(drone, monster_ids, game_state, withdraw_now)
             print(f"MOVE {x} {y} {light}")
         previous_drones = game_state.drones
         turn_number += 1
@@ -107,19 +124,21 @@ def read_initial_data() -> dict[int, CreatureInfo]:
     return creatures
 
 
-def read_game_state() -> GameState:
+def read_game_state(turn_number: int) -> GameState:
     """Reads one full game turn.
+    :param turn_number: Zero-based turn index.
     :return: Parsed state for the current turn.
     """
-    _ = int(input())
-    _ = int(input())
+    my_score = int(input())
+    foe_score = int(input())
     my_scan_count = int(input())
-    known_scans = set()
+    my_saved_scans = set()
     for _ in range(my_scan_count):
-        known_scans.add(int(input()))
+        my_saved_scans.add(int(input()))
     foe_scan_count = int(input())
+    foe_saved_scans = set()
     for _ in range(foe_scan_count):
-        _ = int(input())
+        foe_saved_scans.add(int(input()))
 
     my_drone_count = int(input())
     drones = {}
@@ -128,16 +147,17 @@ def read_game_state() -> GameState:
         drones[drone_id] = Drone(drone_id, np.array((drone_x, drone_y)), bool(emergency), battery)
 
     foe_drone_count = int(input())
+    foe_drones = {}
     for _ in range(foe_drone_count):
-        input()
+        drone_id, drone_x, drone_y, emergency, battery = map(int, input().split())
+        foe_drones[drone_id] = Drone(drone_id, np.array((drone_x, drone_y)), bool(emergency), battery)
 
     drone_scan_count = int(input())
+    my_known_scans = set(my_saved_scans)
     for _ in range(drone_scan_count):
         drone_id, creature_id = map(int, input().split())
-        drone = drones.get(drone_id)
-        if drone is not None:
-            drone.scans.add(creature_id)
-            known_scans.add(creature_id)
+        drones[drone_id].scans.add(creature_id)
+        my_known_scans.add(creature_id)
 
     visible_creatures = {}
     visible_creature_count = int(input())
@@ -150,40 +170,65 @@ def read_game_state() -> GameState:
         drone_id_str, creature_id_str, radar = input().split()
         drone_id, creature_id = int(drone_id_str), int(creature_id_str)
         drone = drones.get(drone_id)
-        if creature_id not in known_scans and drone is not None:
+        if creature_id not in my_known_scans and drone is not None:
             drone.radar[creature_id] = radar
 
-    return GameState(drones, visible_creatures, known_scans)
+    return GameState(turn_number, my_score, foe_score, my_saved_scans, my_known_scans, foe_saved_scans, drones, foe_drones, visible_creatures)
 
 
-def choose_action(drone: Drone, monster_ids: set[int], visible_creatures: dict[int, VisibleCreature], known_scans: set[int],
-                  turn_number: int) -> tuple[int, int, int]:
+def choose_action(drone: Drone, monster_ids: set[int], game_state: GameState, withdraw_now: bool) -> tuple[int, int, int]:
     """Chooses one move target and light setting for a drone.
     :param drone: Drone state to plan for.
     :param monster_ids: Creature ids belonging to monsters.
-    :param visible_creatures: Visible creature snapshots for the turn.
-    :param known_scans: Fish ids already scanned by us, whether saved or currently carried.
-    :param turn_number: Zero-based turn index.
+    :param game_state: Parsed state for the current turn.
+    :param withdraw_now: Indicates whether cashing out already guarantees victory.
     :return: Move x, move y, and light state.
     """
-    monsters = [creature for creature_id, creature in visible_creatures.items() if creature_id in monster_ids]
-    target = choose_base_target(drone, monster_ids, visible_creatures, known_scans)
-    safe_target = choose_safe_target(drone, target, monsters)
-    light = choose_light(drone, turn_number)
+    if withdraw_now:
+        base_target = np.array((drone.coords[0], 0))
+    else:
+        base_target = choose_base_target(drone, monster_ids, game_state.visible_creatures, game_state.my_known_scans)
+    monsters = [creature for creature_id, creature in game_state.visible_creatures.items() if creature_id in monster_ids]
+    safe_target = choose_safe_target(drone, base_target, monsters)
+    light = choose_light(drone, game_state)
+    if light == 1:
+        drone.last_enabled = game_state.turn_number
     return safe_target[0], safe_target[1], light
 
 
-def choose_base_target(drone: Drone, monster_ids: set[int], visible_creatures: dict[int, VisibleCreature], known_scans: set[int]) -> IntArray:
+def calculate_score_gain(creature_infos: dict[int, CreatureInfo], known_scans: set[int], saved_scans: set[int], foe_saved_scans: set[int]) -> int:
+    """Calculates the score gained by turning all known scans into saved scans against the foe's saved scans.
+    :param creature_infos: Creature metadata keyed by creature id.
+    :param known_scans: Fish ids considered owned after cashout.
+    :param saved_scans: Fish ids already saved before cashout.
+    :param foe_saved_scans: Fish ids already saved by the opponent.
+    :return: Additional score gained beyond the current saved scans.
+    """
+    score_gain = 0
+    for creature_id in known_scans - saved_scans:
+        points = creature_infos[creature_id].kind + 1
+        score_gain += points * (1 if creature_id in foe_saved_scans else 2)
+    for kind in range(3):
+        fish_of_kind = {creature_id for creature_id, info in creature_infos.items() if info.kind == kind}
+        if fish_of_kind <= known_scans and not fish_of_kind <= saved_scans:
+            score_gain += 4 if fish_of_kind <= foe_saved_scans else 8
+    for color in range(4):
+        fish_of_color = {creature_id for creature_id, info in creature_infos.items() if info.color == color}
+        if fish_of_color <= known_scans and not fish_of_color <= saved_scans:
+            score_gain += 3 if fish_of_color <= foe_saved_scans else 6
+    return score_gain
+
+def choose_base_target(drone: Drone, monster_ids: set[int], visible_creatures: dict[int, VisibleCreature], my_known_scans: set[int]) -> IntArray:
     """Chooses the fish pursuit target before monster safety is considered.
     :param drone: Drone state to plan for.
     :param monster_ids: Creature ids belonging to monsters.
     :param visible_creatures: Visible creature snapshots for the turn.
-    :param known_scans: Fish ids already scanned by us, whether saved or currently carried.
+    :param my_known_scans: Fish ids already scanned by us, whether saved or currently carried.
     :return: Desired target point when only fish collection is considered.
     """
     fish_targets = {}
     for creature_id, creature in visible_creatures.items():
-        if creature_id not in monster_ids and creature_id not in known_scans:
+        if creature_id not in monster_ids and creature_id not in my_known_scans:
             fish_targets[creature_id] = creature.coords
     for creature_id, radar in drone.radar.items():
         if creature_id not in monster_ids:
@@ -234,7 +279,7 @@ def choose_safe_target(drone: Drone, target: IntArray, monsters: list[VisibleCre
                 base_angle = np.rad2deg(np.arctan2(-direction[1], direction[0]))
                 corrected_direction = drone_end - drone.coords
                 final_angle = np.rad2deg(np.arctan2(-corrected_direction[1], corrected_direction[0]))
-                print(f"drone {drone.drone_id}: angle1={base_angle} angle2={final_angle}", file=sys.stderr)
+                print(f"Safety: drone {drone.drone_id}: angle1={base_angle} angle2={final_angle}", file=sys.stderr)
 
                 return np.rint(rotated_target).astype(np.int64)
     return np.array((drone.coords[0], 0))
@@ -257,13 +302,13 @@ def minimum_distance_between_paths(start_a: IntArray, velocity_a: IntArray, star
     return np.linalg.norm(relative + relative_velocity * time)
 
 
-def choose_light(drone: Drone, turn_number: int) -> int:
+def choose_light(drone: Drone, game_state: GameState) -> int:
     """Chooses the light setting from the turn timer.
     :param drone: Drone state to plan for.
-    :param turn_number: Zero-based turn index.
+    :param game_state: Parsed state for the current turn.
     :return: Light setting for the move.
     """
-    return int(turn_number - drone.last_enabled >= 4)
+    return int(game_state.turn_number - drone.last_enabled >= 4)
 
 
 def get_end_point(start_point: IntArray, target_point: FloatArray | IntArray, speed: int) -> IntArray:

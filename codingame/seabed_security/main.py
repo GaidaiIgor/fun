@@ -1,6 +1,7 @@
 """Controls a Seabed Security bot with radar fish hunting and visible-monster avoidance."""
 
 from dataclasses import dataclass, field
+import sys
 
 import numpy as np
 import numpy.typing as npt
@@ -10,11 +11,9 @@ IntArray = npt.NDArray[np.int64]
 FloatArray = npt.NDArray[np.float64]
 
 FIELD_SIZE = 10000
-MAX_COORD = FIELD_SIZE - 1
 SURFACE_Y = 0
 DRONE_SPEED = 600
 SCAN_RADIUS = 800
-BIG_SCAN_RADIUS = 2000
 MONSTER_COLLISION_RADIUS = 500
 
 
@@ -78,6 +77,14 @@ def main_loop():
     turn_number = 0
     while True:
         game_state = read_game_state()
+
+        for drone_id, drone in game_state.drones.items():
+            print(f"drone {drone.drone_id}: pos=({drone.coords[0]}, {drone.coords[1]})", file=sys.stderr)
+        for creature_id, creature in game_state.visible_creatures.items():
+            label = "monster" if creature_id in monster_ids else "fish"
+            print(f"{label} {creature_id}: pos=({creature.coords[0]}, {creature.coords[1]}) angle={np.rad2deg(np.arctan2(-creature.velocity[1], creature.velocity[0]))}",
+                  file=sys.stderr)
+
         for drone in game_state.drones.values():
             if turn_number > 0:
                 drone.last_enabled = previous_drones[drone.drone_id].last_enabled
@@ -163,7 +170,7 @@ def choose_action(drone: Drone, monster_ids: set[int], visible_creatures: dict[i
     monsters = [creature for creature_id, creature in visible_creatures.items() if creature_id in monster_ids]
     target = choose_base_target(drone, monster_ids, visible_creatures, known_scans)
     safe_target = choose_safe_target(drone, target, monsters)
-    light = choose_light(drone, safe_target, monsters, turn_number)
+    light = choose_light(drone, turn_number)
     return safe_target[0], safe_target[1], light
 
 
@@ -205,6 +212,7 @@ def guess_creature_coords(drone_coords: IntArray, radar: str) -> IntArray:
         case _:
             raise AssertionError(f"Unexpected radar value: {radar}")
 
+
 def choose_safe_target(drone: Drone, target: IntArray, monsters: list[VisibleCreature]) -> IntArray:
     """Chooses the nearest-angle collision-free target for the turn.
     :param drone: Drone state to plan for.
@@ -223,6 +231,12 @@ def choose_safe_target(drone: Drone, target: IntArray, monsters: list[VisibleCre
             drone_end = get_end_point(drone.coords, rotated_target, DRONE_SPEED)
             if not any(minimum_distance_between_paths(drone.coords, drone_end - drone.coords, monster.coords, monster.velocity) < MONSTER_COLLISION_RADIUS
                        for monster in monsters):
+
+                base_angle = np.rad2deg(np.arctan2(-direction[1], direction[0]))
+                corrected_direction = drone_end - drone.coords
+                final_angle = np.rad2deg(np.arctan2(-corrected_direction[1], corrected_direction[0]))
+                print(f"drone {drone.drone_id}: angle1={base_angle} angle2={final_angle}", file=sys.stderr)
+                
                 return np.rint(rotated_target).astype(np.int64)
     raise AssertionError("No collision-free direction found")
 
@@ -244,18 +258,13 @@ def minimum_distance_between_paths(start_a: IntArray, velocity_a: IntArray, star
     return np.linalg.norm(relative + relative_velocity * time)
 
 
-def choose_light(drone: Drone, target: IntArray, monsters: list[VisibleCreature], turn_number: int) -> int:
-    """Chooses the light setting from battery, recent usage, and visible-monster aggro risk.
+def choose_light(drone: Drone, turn_number: int) -> int:
+    """Chooses the light setting from the turn timer.
     :param drone: Drone state to plan for.
-    :param target: Move target for the turn.
-    :param monsters: Visible monster snapshots for the turn.
     :param turn_number: Zero-based turn index.
     :return: Light setting for the move.
     """
-    if drone.battery < 5 or turn_number - drone.last_enabled < 4:
-        return 0
-    drone_end = get_end_point(drone.coords, target, DRONE_SPEED)
-    return int(not any(np.linalg.norm(drone_end - np.clip(monster.coords + monster.velocity, 0, MAX_COORD)) <= BIG_SCAN_RADIUS for monster in monsters))
+    return int(turn_number - drone.last_enabled >= 4)
 
 
 def get_end_point(start_point: IntArray, target_point: FloatArray | IntArray, speed: int) -> IntArray:

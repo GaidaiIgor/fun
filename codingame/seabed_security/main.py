@@ -105,8 +105,8 @@ def main_loop():
         for creature_id, creature in game_state.visible_creatures.items():
             label = "monster" if creature_id in monster_ids else "fish"
             print(f"{label} {creature_id}: pos=({creature.coords[0]}, {creature.coords[1]}), "
-                  f"angle={np.rad2deg(np.arctan2(-creature.velocity[1], creature.velocity[0]))}", file=sys.stderr)
-        print(f"Cashout: my_score_after_cashout={my_score_after_cashout}, foe_max_score={foe_max_score}", file=sys.stderr)
+                f"angle={np.rad2deg(np.arctan2(-creature.velocity[1], creature.velocity[0])):.0f}", file=sys.stderr)
+        print(f"Cashout: my={my_score_after_cashout}, foe_max={foe_max_score}", file=sys.stderr)
 
         for drone in game_state.drones.values():
             if game_state.turn_number > 0:
@@ -243,7 +243,7 @@ def choose_base_target(drone: Drone, monster_ids: set[int], visible_creatures: d
         if creature_id not in monster_ids and creature_id not in my_known_scans:
             fish_targets[creature_id] = creature.coords
     for creature_id, radar in drone.radar.items():
-        if creature_id not in monster_ids:
+        if creature_id not in monster_ids and creature_id not in my_known_scans:
             fish_targets.setdefault(creature_id, guess_creature_coords(drone.coords, radar))
     if not fish_targets:
         return np.array((drone.coords[0], 0))
@@ -291,8 +291,7 @@ def choose_safe_target(drone: Drone, target: IntArray, monsters: list[VisibleCre
                 base_angle = np.rad2deg(np.arctan2(-direction[1], direction[0]))
                 corrected_direction = drone_end - drone.coords
                 final_angle = np.rad2deg(np.arctan2(-corrected_direction[1], corrected_direction[0]))
-                print(f"Safety: drone {drone.drone_id}: angle1={base_angle} angle2={final_angle}", file=sys.stderr)
-
+                print(f"Safety: drone {drone.drone_id}: angle1={base_angle:.0f} angle2={final_angle:.0f}", file=sys.stderr)
                 return np.rint(rotated_target).astype(np.int64)
     return np.array((drone.coords[0], 0))
 

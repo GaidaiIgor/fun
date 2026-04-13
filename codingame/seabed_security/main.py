@@ -44,6 +44,7 @@ class Drone:
     :var emergency: Indicates whether the drone is already forced to surface.
     :var battery: Current battery charge.
     :var last_enabled: Most recent turn index when this drone used the strong light.
+    :var preferred_side: Preferred horizontal direction, either "left" or "right".
     :var scans: Fish scans currently carried by the drone.
     :var radar: Last radar blip direction for each relevant creature.
     """
@@ -52,6 +53,7 @@ class Drone:
     emergency: bool
     battery: int
     last_enabled: int = -4
+    preferred_side: str = "right"
     scans: set[int] = field(default_factory=set)
     radar: dict[int, str] = field(default_factory=dict)
 
@@ -91,6 +93,15 @@ def main_loop():
     turn_number = 0
     while True:
         game_state = read_game_state(turn_number)
+        if game_state.turn_number == 0:
+            left_drone, right_drone = sorted(game_state.drones.values(), key=lambda drone: drone.coords[0])
+            left_drone.preferred_side = "left"
+            right_drone.preferred_side = "right"
+        else:
+            for drone in game_state.drones.values():
+                drone.last_enabled = previous_drones[drone.drone_id].last_enabled
+                drone.preferred_side = previous_drones[drone.drone_id].preferred_side
+
         my_score_after_cashout = \
             game_state.my_score + calculate_score_gain(creature_infos, game_state.my_known_scans, game_state.my_saved_scans, game_state.foe_saved_scans)
         best_case_known = game_state.existing_creature_ids | game_state.foe_known_scans
@@ -108,8 +119,6 @@ def main_loop():
         print(f"Cashout: my={my_score_after_cashout}, foe_max={foe_max_score}", file=sys.stderr)
 
         for drone in game_state.drones.values():
-            if game_state.turn_number > 0:
-                drone.last_enabled = previous_drones[drone.drone_id].last_enabled
             x, y, light = choose_action(drone, creature_infos, game_state, withdraw_now)
             print(f"MOVE {x} {y} {light}")
         previous_drones = game_state.drones
@@ -236,11 +245,15 @@ def choose_base_target(drone: Drone, creature_infos: dict[int, CreatureInfo], ga
     :param game_state: Parsed state for the current turn.
     :return: Desired target point when only fish collection is considered.
     """
-    fish_targets = {creature_id: guess_creature_coords(creature_id, creature_infos, game_state.drones) for creature_id in drone.radar
-                    if creature_infos[creature_id].kind != -1 and creature_id not in game_state.my_known_scans}
+    fish_targets = [guess_creature_coords(creature_id, creature_infos, game_state.drones) for creature_id in drone.radar
+                    if creature_infos[creature_id].kind != -1 and creature_id not in game_state.my_known_scans]
     if not fish_targets:
         return np.array((drone.coords[0], 0))
-    return min(fish_targets.values(), key=lambda coords: np.linalg.norm(drone.coords - coords))
+    if drone.preferred_side == "left":
+        preferred_targets = [coords for coords in fish_targets if coords[0] < drone.coords[0]]
+    else:
+        preferred_targets = [coords for coords in fish_targets if coords[0] > drone.coords[0]]
+    return min(preferred_targets or fish_targets, key=lambda coords: np.linalg.norm(drone.coords - coords))
 
 
 def guess_creature_coords(creature_id: int, creature_infos: dict[int, CreatureInfo], drones: dict[int, Drone]) -> IntArray:

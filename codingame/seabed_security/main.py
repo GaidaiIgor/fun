@@ -13,6 +13,7 @@ FloatArray = npt.NDArray[np.float64]
 FIELD_SIZE = 10000
 DRONE_SPEED = 600
 SCAN_RADIUS = 800
+MAX_FISH_SPEED = 400
 MONSTER_COLLISION_RADIUS = 500
 
 
@@ -68,10 +69,11 @@ class GameState:
     :var my_known_scans: Fish ids already scanned by us, whether saved or currently carried.
     :var foe_saved_scans: Fish ids already saved by the enemy.
     :var foe_known_scans: Fish ids already scanned by the enemy, whether saved or currently carried.
-    :var existing_creature_ids: Creature ids still present in the game zone this turn.
+    :var creature_ids: Creature ids still present in the game zone this turn.
     :var drones: Our drones keyed by id in the exact server order.
     :var foe_drones: Enemy drones keyed by id in the exact server order.
     :var visible_creatures: Current visible creature snapshots keyed by creature id.
+    :var fish_regions: Estimated fish rectangles as min_x, max_x, min_y, max_y arrays keyed by creature id.
     """
     turn_number: int
     my_score: int
@@ -80,32 +82,23 @@ class GameState:
     my_known_scans: set[int]
     foe_saved_scans: set[int]
     foe_known_scans: set[int]
-    existing_creature_ids: set[int]
+    creature_ids: set[int]
     drones: dict[int, Drone]
     foe_drones: dict[int, Drone]
     visible_creatures: dict[int, VisibleCreature]
+    fish_regions: dict[int, IntArray] = field(default_factory=dict)
 
 
 def main_loop():
     """Runs the game loop and prints one command per drone each turn."""
     creature_infos = read_initial_data()
-    previous_drones = {}
-    turn_number = 0
+    previous_game_state = None
     while True:
-        game_state = read_game_state(turn_number)
-        if game_state.turn_number == 0:
-            left_drone, right_drone = sorted(game_state.drones.values(), key=lambda drone: drone.coords[0])
-            left_drone.preferred_side = "left"
-            right_drone.preferred_side = "right"
-        else:
-            for drone in game_state.drones.values():
-                drone.last_enabled = previous_drones[drone.drone_id].last_enabled
-                drone.preferred_side = previous_drones[drone.drone_id].preferred_side
-
+        game_state = update_game_state(read_game_state(), creature_infos, previous_game_state)
         my_score_after_cashout = \
             game_state.my_score + calculate_score_gain(creature_infos, game_state.my_known_scans, game_state.my_saved_scans, game_state.foe_saved_scans)
-        best_case_known = game_state.existing_creature_ids | game_state.foe_known_scans
-        foe_max_score = game_state.foe_score + calculate_score_gain(creature_infos, best_case_known, game_state.foe_saved_scans, game_state.my_known_scans)
+        foe_best_case_known = game_state.creature_ids | game_state.foe_known_scans
+        foe_max_score = game_state.foe_score + calculate_score_gain(creature_infos, foe_best_case_known, game_state.foe_saved_scans, game_state.my_known_scans)
         withdraw_now = my_score_after_cashout > foe_max_score
 
         for drone in game_state.drones.values():
@@ -121,8 +114,7 @@ def main_loop():
         for drone in game_state.drones.values():
             x, y, light = choose_action(drone, creature_infos, game_state, withdraw_now)
             print(f"MOVE {x} {y} {light}")
-        previous_drones = game_state.drones
-        turn_number += 1
+        previous_game_state = game_state
 
 
 def read_initial_data() -> dict[int, CreatureInfo]:
@@ -137,9 +129,8 @@ def read_initial_data() -> dict[int, CreatureInfo]:
     return creatures
 
 
-def read_game_state(turn_number: int) -> GameState:
+def read_game_state() -> GameState:
     """Reads one full game turn.
-    :param turn_number: Zero-based turn index.
     :return: Parsed state for the current turn.
     """
     my_score = int(input())
@@ -191,8 +182,78 @@ def read_game_state(turn_number: int) -> GameState:
         existing_creature_ids.add(creature_id)
         my_drones[drone_id].radar[creature_id] = radar_location
 
-    return GameState(turn_number, my_score, foe_score, my_saved_scans, my_known_scans, foe_saved_scans, foe_known_scans, existing_creature_ids, my_drones,
+    return GameState(0, my_score, foe_score, my_saved_scans, my_known_scans, foe_saved_scans, foe_known_scans, existing_creature_ids, my_drones,
                      foe_drones, visible_creatures)
+
+
+def update_game_state(game_state: GameState, creature_infos: dict[int, CreatureInfo], previous_game_state: GameState | None) -> GameState:
+    """Updates one parsed game state with data carried over from the previous turn.
+    :param game_state: Parsed state for the current turn.
+    :param creature_infos: Creature metadata keyed by creature id.
+    :param previous_game_state: Previous turn state, if any.
+    :return: Updated game state.
+    """
+    if previous_game_state is None:
+        game_state.turn_number = 0
+        left_drone, right_drone = sorted(game_state.drones.values(), key=lambda drone: drone.coords[0])
+        left_drone.preferred_side = "left"
+        right_drone.preferred_side = "right"
+    else:
+        game_state.turn_number = previous_game_state.turn_number + 1
+        for drone in game_state.drones.values():
+            drone.last_enabled = previous_game_state.drones[drone.drone_id].last_enabled
+            drone.preferred_side = previous_game_state.drones[drone.drone_id].preferred_side
+    game_state.fish_regions = update_fish_regions(creature_infos, game_state, previous_game_state)
+    return game_state
+
+
+def update_fish_regions(creature_infos: dict[int, CreatureInfo], game_state: GameState, previous_game_state: GameState | None) -> dict[int, IntArray]:
+    """Updates persistent fish rectangles from current radar, visibility, and the previous turn estimate.
+    :param creature_infos: Creature metadata keyed by creature id.
+    :param game_state: Parsed state for the current turn.
+    :param previous_game_state: Previous turn state, if any.
+    :return: Updated estimated fish rectangles keyed by creature id.
+    """
+    fish_regions = {}
+    for creature_id in game_state.creature_ids:
+        if creature_infos[creature_id].kind == -1 or creature_id in game_state.my_known_scans:
+            continue
+        if creature_id in game_state.visible_creatures:
+            coords = game_state.visible_creatures[creature_id].coords
+            fish_regions[creature_id] = np.array((coords[0], coords[0], coords[1], coords[1]))
+            continue
+        current_region = get_radar_region(creature_id, creature_infos, game_state.drones)
+        if previous_game_state is not None:
+            previous_region = previous_game_state.fish_regions[creature_id]
+            current_region[0] = max(current_region[0], previous_region[0] - MAX_FISH_SPEED)
+            current_region[1] = min(current_region[1], previous_region[1] + MAX_FISH_SPEED)
+            current_region[2] = max(current_region[2], previous_region[2] - MAX_FISH_SPEED)
+            current_region[3] = min(current_region[3], previous_region[3] + MAX_FISH_SPEED)
+        fish_regions[creature_id] = current_region
+    return fish_regions
+
+
+def get_radar_region(creature_id: int, creature_infos: dict[int, CreatureInfo], drones: dict[int, Drone]) -> IntArray:
+    """Builds the current-turn feasible radar rectangle for one fish.
+    :param creature_id: Creature id whose feasible rectangle should be built.
+    :param creature_infos: Creature metadata keyed by creature id.
+    :param drones: Our drones keyed by id in the exact server order.
+    :return: Current-turn feasible fish rectangle as min_x, max_x, min_y, max_y.
+    """
+    fish_kind = creature_infos[creature_id].kind
+    min_x, max_x = 0, FIELD_SIZE - 1
+    min_y, max_y = 2500 * (fish_kind + 1), 2500 * (fish_kind + 2)
+    for drone in drones.values():
+        radar = drone.radar[creature_id]
+        if radar[1] == "L":
+            max_x = min(max_x, drone.coords[0])
+        else:
+            min_x = max(min_x, drone.coords[0] + 1)
+        if radar[0] == "T":
+            max_y = min(max_y, drone.coords[1])
+        else:
+            min_y = max(min_y, drone.coords[1] + 1)
+    return np.array((min_x, max_x, min_y, max_y))
 
 
 def calculate_score_gain(creature_infos: dict[int, CreatureInfo], known_scans: set[int], saved_scans: set[int], foe_saved_scans: set[int]) -> int:
@@ -229,7 +290,7 @@ def choose_action(drone: Drone, creature_infos: dict[int, CreatureInfo], game_st
     if withdraw_now:
         base_target = np.array((drone.coords[0], 0))
     else:
-        base_target = choose_base_target(drone, creature_infos, game_state)
+        base_target = choose_base_target(drone, game_state)
     visible_monsters = [creature for creature_id, creature in game_state.visible_creatures.items() if creature_infos[creature_id].kind == -1]
     safe_target = choose_safe_target(drone, base_target, visible_monsters)
     light = choose_light(drone, game_state)
@@ -238,15 +299,13 @@ def choose_action(drone: Drone, creature_infos: dict[int, CreatureInfo], game_st
     return safe_target[0], safe_target[1], light
 
 
-def choose_base_target(drone: Drone, creature_infos: dict[int, CreatureInfo], game_state: GameState) -> IntArray:
+def choose_base_target(drone: Drone, game_state: GameState) -> IntArray:
     """Chooses the fish pursuit target before monster safety is considered.
     :param drone: Drone state to plan for.
-    :param creature_infos: Creature metadata keyed by creature id.
     :param game_state: Parsed state for the current turn.
     :return: Desired target point when only fish collection is considered.
     """
-    fish_targets = [guess_creature_coords(creature_id, creature_infos, game_state.drones) for creature_id in drone.radar
-                    if creature_infos[creature_id].kind != -1 and creature_id not in game_state.my_known_scans]
+    fish_targets = [np.array(((region[0] + region[1]) // 2, (region[2] + region[3]) // 2)) for region in game_state.fish_regions.values()]
     if not fish_targets:
         return np.array((drone.coords[0], 0))
     if drone.preferred_side == "left":
@@ -254,29 +313,6 @@ def choose_base_target(drone: Drone, creature_infos: dict[int, CreatureInfo], ga
     else:
         preferred_targets = [coords for coords in fish_targets if coords[0] > drone.coords[0]]
     return min(preferred_targets or fish_targets, key=lambda coords: np.linalg.norm(drone.coords - coords))
-
-
-def guess_creature_coords(creature_id: int, creature_infos: dict[int, CreatureInfo], drones: dict[int, Drone]) -> IntArray:
-    """Guesses one creature position from the combined radar quadrants and habitat band.
-    :param creature_id: Creature id whose radar region should be estimated.
-    :param creature_infos: Creature metadata keyed by creature id.
-    :param drones: Our drones keyed by id in the exact server order.
-    :return: Midpoint guess inside the intersection of all indicated radar half-planes and the fish habitat band.
-    """
-    min_x, max_x, min_y, max_y = 0, FIELD_SIZE, 0, FIELD_SIZE
-    for drone in drones.values():
-        radar = drone.radar[creature_id]
-        if radar[1] == "L":
-            max_x = min(max_x, drone.coords[0])
-        else:
-            min_x = max(min_x, drone.coords[0])
-        if radar[0] == "T":
-            max_y = min(max_y, drone.coords[1])
-        else:
-            min_y = max(min_y, drone.coords[1])
-    min_y = max(min_y, 2500 * (creature_infos[creature_id].kind + 1))
-    max_y = min(max_y, 2500 * (creature_infos[creature_id].kind + 2))
-    return np.array(((min_x + max_x) // 2, (min_y + max_y) // 2))
 
 
 def choose_safe_target(drone: Drone, target: IntArray, monsters: list[VisibleCreature]) -> IntArray:

@@ -110,6 +110,9 @@ def main_loop():
             label = "monster" if creature_infos[creature_id].kind == -1 else "fish"
             print(f"{label} {creature_id}: pos=({creature.coords[0]}, {creature.coords[1]}), "
                 f"angle={np.rad2deg(np.arctan2(-creature.velocity[1], creature.velocity[0])):.0f}", file=sys.stderr)
+        for creature_id, region in sorted(game_state.fish_regions.items()):
+            coords = get_midpoint(region)
+            print(f"estimate fish {creature_id}: pos=({coords[0]}, {coords[1]})", file=sys.stderr)
         print(f"Cashout: my={my_score_after_cashout}, foe_max={foe_max_score}", file=sys.stderr)
 
         for drone in game_state.drones.values():
@@ -306,14 +309,16 @@ def choose_base_target(drone: Drone, game_state: GameState) -> IntArray:
     :param game_state: Parsed state for the current turn.
     :return: Desired target point when only fish collection is considered.
     """
-    fish_targets = [get_midpoint(region) for region in game_state.fish_regions.values()]
+    fish_targets = [(creature_id, get_midpoint(region)) for creature_id, region in game_state.fish_regions.items()]
     if not fish_targets:
         return np.array((drone.coords[0], 0))
     if drone.preferred_side == "left":
-        preferred_targets = [coords for coords in fish_targets if coords[0] < drone.coords[0]]
+        preferred_targets = [(creature_id, coords) for creature_id, coords in fish_targets if coords[0] < drone.coords[0]]
     else:
-        preferred_targets = [coords for coords in fish_targets if coords[0] > drone.coords[0]]
-    return min(preferred_targets or fish_targets, key=lambda coords: np.linalg.norm(drone.coords - coords))
+        preferred_targets = [(creature_id, coords) for creature_id, coords in fish_targets if coords[0] > drone.coords[0]]
+    fish_id, coords = min(preferred_targets or fish_targets, key=lambda fish_target: np.linalg.norm(drone.coords - fish_target[1]))
+    print(f"Target: drone {drone.drone_id}: fish {fish_id}", file=sys.stderr)
+    return coords
 
 
 def choose_safe_target(drone: Drone, target: IntArray, monsters: list[VisibleCreature]) -> IntArray:

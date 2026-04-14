@@ -13,6 +13,7 @@ FloatArray = npt.NDArray[np.float64]
 FIELD_SIZE = 10000
 DRONE_SPEED = 600
 SCAN_RADIUS = 800
+BIG_SCAN_RADIUS = 2000
 MAX_FISH_SPEED = 400
 MONSTER_COLLISION_RADIUS = 500
 
@@ -293,7 +294,7 @@ def choose_action(drone: Drone, creature_infos: dict[int, CreatureInfo], game_st
         base_target = choose_base_target(drone, game_state)
     visible_monsters = [creature for creature_id, creature in game_state.visible_creatures.items() if creature_infos[creature_id].kind == -1]
     safe_target = choose_safe_target(drone, base_target, visible_monsters)
-    light = choose_light(drone, game_state)
+    light = choose_light(drone, safe_target, game_state)
     if light == 1:
         drone.last_enabled = game_state.turn_number
     return safe_target[0], safe_target[1], light
@@ -305,7 +306,7 @@ def choose_base_target(drone: Drone, game_state: GameState) -> IntArray:
     :param game_state: Parsed state for the current turn.
     :return: Desired target point when only fish collection is considered.
     """
-    fish_targets = [np.array(((region[0] + region[1]) // 2, (region[2] + region[3]) // 2)) for region in game_state.fish_regions.values()]
+    fish_targets = [get_midpoint(region) for region in game_state.fish_regions.values()]
     if not fish_targets:
         return np.array((drone.coords[0], 0))
     if drone.preferred_side == "left":
@@ -359,13 +360,24 @@ def minimum_distance_between_paths(start_a: IntArray, velocity_a: IntArray, star
     return np.linalg.norm(relative + relative_velocity * time)
 
 
-def choose_light(drone: Drone, game_state: GameState) -> int:
-    """Chooses the light setting from the turn timer and drone depth.
+def choose_light(drone: Drone, target: IntArray, game_state: GameState) -> int:
+    """Chooses the light setting from scan opportunities at the planned end position.
     :param drone: Drone state to plan for.
+    :param target: Planned move target for the turn.
     :param game_state: Parsed state for the current turn.
     :return: Light setting for the move.
     """
-    return int(drone.coords[1] >= 2500 and game_state.turn_number - drone.last_enabled >= 3)
+    drone_end = get_end_point(drone.coords, target, DRONE_SPEED)
+    return int(drone.battery >= 5 and
+               any(SCAN_RADIUS < np.linalg.norm(drone_end - get_midpoint(region)) <= BIG_SCAN_RADIUS for region in game_state.fish_regions.values()))
+
+
+def get_midpoint(region: IntArray) -> IntArray:
+    """Gets the midpoint of one rectangular fish region.
+    :param region: Fish rectangle as min_x, max_x, min_y, max_y.
+    :return: Midpoint coordinates of the region.
+    """
+    return np.array(((region[0] + region[1]) // 2, (region[2] + region[3]) // 2))
 
 
 def get_end_point(start_point: IntArray, target_point: FloatArray | IntArray, speed: int) -> IntArray:

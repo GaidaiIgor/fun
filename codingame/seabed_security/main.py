@@ -15,6 +15,7 @@ SCAN_RADIUS = 800
 BIG_SCAN_RADIUS = 2000
 MAX_FISH_SPEED = 400
 MONSTER_COLLISION_RADIUS = 500
+SCAN_PROBABILITY = 0.75
 
 
 @dataclass(slots=True)
@@ -376,15 +377,36 @@ def minimum_distance_between_paths(start_a: IntArray, velocity_a: IntArray, star
 
 
 def choose_light(drone: Drone, target: IntArray, game_state: GameState) -> int:
-    """Chooses the light setting from scan opportunities at the planned end position.
+    """Chooses the light setting from scan probabilities at the planned end position.
     :param drone: Drone state to plan for.
     :param target: Planned move target for the turn.
     :param game_state: Parsed state for the current turn.
     :return: Light setting for the move.
     """
     drone_end = get_end_point(drone.coords, target, DRONE_SPEED)
-    return int(drone.battery >= 5 and any(SCAN_RADIUS < np.linalg.norm(drone_end - get_midpoint(game_state.fish_regions[fish_id])) <= BIG_SCAN_RADIUS
-                                          for fish_id in game_state.fish_regions if fish_id not in game_state.my_known_scans))
+    fish_likely_nearby = any(get_scan_probability(game_state.fish_regions[fish_id], drone_end, BIG_SCAN_RADIUS) > SCAN_PROBABILITY
+                             for fish_id in game_state.fish_regions if fish_id not in game_state.my_known_scans)
+    return int(drone.battery >= 5 and fish_likely_nearby)
+
+
+def get_scan_probability(region: IntArray, scan_center: IntArray, scan_radius: int) -> float:
+    """Gets the probability of scanning a fish uniformly distributed over one estimated region.
+    :param region: Fish rectangle as min_x, max_x, min_y, max_y.
+    :param scan_center: Center of the drone scan at end of turn.
+    :param scan_radius: Radius of the considered scan.
+    :return: Fraction of region positions covered by the scan.
+    """
+    region_width = region[1] - region[0] + 1
+    region_height = region[3] - region[2] + 1
+    x_coords = np.arange(region[0], region[1] + 1)
+    max_dy_sq = scan_radius ** 2 - (x_coords - scan_center[0]) ** 2
+    covered_xs = max_dy_sq >= 0
+    if not covered_xs.any():
+        return 0
+    max_dy = np.sqrt(max_dy_sq[covered_xs]).astype(np.int64)
+    min_y = np.maximum(region[2], scan_center[1] - max_dy)
+    max_y = np.minimum(region[3], scan_center[1] + max_dy)
+    return np.maximum(0, max_y - min_y + 1).sum() / (region_width * region_height)
 
 
 def get_midpoint(region: IntArray) -> IntArray:

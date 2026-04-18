@@ -388,7 +388,7 @@ def get_drone_paths(game_state: GameState) -> dict[int, list[IntArray]]:
                 previous_coords = game_state.my_drones[drone_id].coords if not drone_paths[drone_id] else drone_paths[drone_id][-1]
                 candidate_length = path_lengths[drone_id] + np.linalg.norm(fish_coords[fish_id] - previous_coords)
                 other_drone_id = drone_ids[1] if drone_id == drone_ids[0] else drone_ids[0]
-                candidate_score = max(candidate_length, path_lengths[other_drone_id])
+                candidate_score = max(candidate_length, path_lengths[other_drone_id]), min(fish_coords[fish_id][0], FIELD_SIZE - fish_coords[fish_id][0])
                 if best_score is None or candidate_score < best_score:
                     best_score = candidate_score
                     best_drone_id = drone_id

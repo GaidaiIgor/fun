@@ -19,7 +19,7 @@ MONSTER_MONSTER_DISTANCE = 600
 MONSTER_SWIM_SPEED = 270
 MONSTER_DASH_SPEED = 540
 MONSTER_HABITAT_TOP = 2500
-SCAN_PROBABILITY = 0.75
+SCAN_PROBABILITY = 0.5
 
 
 @dataclass(slots=True)
@@ -111,7 +111,7 @@ def main_loop():
                 coords = get_midpoint(fish.region)
                 print(f"estimate fish {fish.id}: pos=({coords[0]}, {coords[1]})", file=sys.stderr)
 
-        choose_action(game_state.fishes, game_state)
+        choose_action(game_state)
         previous_game_state = game_state
 
 
@@ -315,16 +315,20 @@ def get_non_aggressive_monster_direction(monster: Creature, previous_velocity: I
     return direction
 
 
-def choose_action(all_fishes: dict[int, Creature], game_state: GameState):
+def choose_action(game_state: GameState):
     """Chooses move targets and light settings for both drones.
-    :param all_fishes: Fish metadata keyed by creature id.
     :param game_state: Parsed state for the current turn.
     """
     my_score_after_cashout = \
-        game_state.my_score + calculate_score_gain(all_fishes, game_state.my_known_scans, game_state.my_saved_scans, game_state.foe_saved_scans)
+        game_state.my_score + calculate_score_gain(game_state.fishes, game_state.my_known_scans, game_state.my_saved_scans, game_state.foe_saved_scans)
     foe_best_case_known = {fish_id for fish_id, fish in game_state.fishes.items() if fish.region is not None} | game_state.foe_known_scans
-    foe_max_score = game_state.foe_score + calculate_score_gain(all_fishes, foe_best_case_known, game_state.foe_saved_scans, game_state.my_known_scans)
-    print(f"Cashout: my={my_score_after_cashout}, foe_max={foe_max_score}", file=sys.stderr)
+    foe_max_score = game_state.foe_score + calculate_score_gain(game_state.fishes, foe_best_case_known, game_state.foe_saved_scans, game_state.my_known_scans)
+    foe_score_after_cashout = \
+        game_state.foe_score + calculate_score_gain(game_state.fishes, game_state.foe_known_scans, game_state.foe_saved_scans, game_state.my_saved_scans)
+    my_best_case_known = {fish_id for fish_id, fish in game_state.fishes.items() if fish.region is not None} | game_state.my_known_scans
+    my_max_score = game_state.my_score + calculate_score_gain(game_state.fishes, my_best_case_known, game_state.my_saved_scans, game_state.foe_known_scans)
+    print(f"Cashout: my={my_score_after_cashout}, foe_max={foe_max_score}, foe={foe_score_after_cashout}, my_max={my_max_score}",
+          file=sys.stderr)
     withdraw_now = my_score_after_cashout > foe_max_score
 
     if not withdraw_now:

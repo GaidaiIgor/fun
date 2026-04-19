@@ -319,17 +319,7 @@ def choose_action(game_state: GameState):
     """Chooses move targets and light settings for both drones.
     :param game_state: Parsed state for the current turn.
     """
-    my_score_after_cashout = \
-        game_state.my_score + calculate_score_gain(game_state.fishes, game_state.my_known_scans, game_state.my_saved_scans, game_state.foe_saved_scans)
-    foe_best_case_known = {fish_id for fish_id, fish in game_state.fishes.items() if fish.region is not None} | game_state.foe_known_scans
-    foe_max_score = game_state.foe_score + calculate_score_gain(game_state.fishes, foe_best_case_known, game_state.foe_saved_scans, game_state.my_known_scans)
-    foe_score_after_cashout = \
-        game_state.foe_score + calculate_score_gain(game_state.fishes, game_state.foe_known_scans, game_state.foe_saved_scans, game_state.my_saved_scans)
-    my_best_case_known = {fish_id for fish_id, fish in game_state.fishes.items() if fish.region is not None} | game_state.my_known_scans
-    my_max_score = game_state.my_score + calculate_score_gain(game_state.fishes, my_best_case_known, game_state.my_saved_scans, game_state.foe_known_scans)
-    print(f"Cashout: my={my_score_after_cashout}, foe_max={foe_max_score}, foe={foe_score_after_cashout}, my_max={my_max_score}",
-          file=sys.stderr)
-    withdraw_now = my_score_after_cashout > foe_max_score
+    withdraw_now = should_withdraw_early(game_state)
 
     if not withdraw_now:
         drone_paths = get_drone_paths(game_state)
@@ -347,6 +337,25 @@ def choose_action(game_state: GameState):
         safe_target = choose_safe_target(drone, base_target, monsters)
         light = choose_light(drone, safe_target, game_state)
         print(f"MOVE {safe_target[0]} {safe_target[1]} {light}")
+
+
+def should_withdraw_early(game_state: GameState) -> bool:
+    """Determines whether both drones should switch to an early withdrawal.
+    :param game_state: Parsed state for the current turn.
+    :return: Whether the bot should withdraw immediately.
+    """
+    my_score_after_cashout = \
+        game_state.my_score + calculate_score_gain(game_state.fishes, game_state.my_known_scans, game_state.my_saved_scans, game_state.foe_saved_scans)
+    foe_best_case_known = {fish_id for fish_id, fish in game_state.fishes.items() if fish.region is not None} | game_state.foe_known_scans
+    foe_max_score = game_state.foe_score + calculate_score_gain(game_state.fishes, foe_best_case_known, game_state.foe_saved_scans, game_state.my_known_scans)
+    foe_score_after_cashout = \
+        game_state.foe_score + calculate_score_gain(game_state.fishes, game_state.foe_known_scans, game_state.foe_saved_scans, game_state.my_saved_scans)
+    my_best_case_known = {fish_id for fish_id, fish in game_state.fishes.items() if fish.region is not None} | game_state.my_known_scans
+    my_max_score = game_state.my_score + calculate_score_gain(game_state.fishes, my_best_case_known, game_state.my_saved_scans, game_state.foe_known_scans)
+    print(f"Cashout: my={my_score_after_cashout}, foe_max={foe_max_score}, foe={foe_score_after_cashout}, my_max={my_max_score}",
+          file=sys.stderr)
+    return my_score_after_cashout > foe_max_score and \
+        max(drone.coords[1] for drone in game_state.my_drones.values()) < min(drone.coords[1] for drone in game_state.foe_drones.values())
 
 
 def calculate_score_gain(all_fishes: dict[int, Creature], known_scans: set[int], saved_scans: set[int], foe_saved_scans: set[int]) -> int:

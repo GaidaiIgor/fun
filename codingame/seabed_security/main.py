@@ -319,66 +319,103 @@ def choose_action(game_state: GameState):
     """Chooses move targets and light settings for both drones.
     :param game_state: Parsed state for the current turn.
     """
-    withdraw_now = should_withdraw_early(game_state)
-
-    if not withdraw_now:
-        drone_paths = get_drone_paths(game_state)
+    my_base, my_bonus, foe_base, foe_bonus = get_projected_scores(game_state)
+    my_base_2, my_bonus_2, foe_base_2, foe_bonus_2 = get_projected_scores(game_state, False)
+    my_advantage = my_base + my_bonus > foe_base + foe_bonus
+    defense_mode = foe_base_2 + foe_bonus_2 > my_base_2 + my_bonus_2
+    print(f"Projected: my_base={my_base}, my_bonus={my_bonus}, foe_base={foe_base}, foe_bonus={foe_bonus}", file=sys.stderr)
+    drone_paths = get_drone_paths(game_state)
     monsters = [monster for monster in game_state.monsters.values() if monster.coords is not None]
     for drone in game_state.my_drones.values():
-        if withdraw_now:
+        max_depth = get_max_depth(drone, game_state)
+        blocked_by_depth = defense_mode and max_depth is not None and drone.coords[1] >= max_depth
+        drone_path = drone_paths[drone.id]
+        if my_advantage and drone.scans or blocked_by_depth or not drone_path:
             base_target = np.array((drone.coords[0], 0))
         else:
-            drone_path = drone_paths[drone.id]
-            if not drone_path:
-                base_target = np.array((drone.coords[0], 0))
-            else:
-                base_target = drone_path[0]
+            base_target = drone_path[0]
+            if defense_mode and max_depth is not None:
+                base_target = get_depth_limited_target(drone_path, max_depth)
+                if base_target is None:
+                    nearest_blocked_target = min(drone_path, key=lambda target: np.linalg.norm(target - drone.coords))
+                    base_target = np.array((drone.coords[0], 0)) if drone.coords[1] - 500 < np.linalg.norm(nearest_blocked_target - drone.coords) \
+                        else np.array((nearest_blocked_target[0], max_depth))
 
         safe_target = choose_safe_target(drone, base_target, monsters)
-        light = choose_light(drone, safe_target, game_state)
+        light = choose_light(drone, safe_target, game_state, blocked_by_depth)
         print(f"MOVE {safe_target[0]} {safe_target[1]} {light}")
 
 
-def should_withdraw_early(game_state: GameState) -> bool:
-    """Determines whether both drones should switch to an early withdrawal.
+def get_projected_scores(game_state: GameState, use_claim_y: bool = True) -> tuple[int, int, int, int]:
+    """Calculates projected final base and bonus scores for both sides.
     :param game_state: Parsed state for the current turn.
-    :return: Whether the bot should withdraw immediately.
+    :param use_claim_y: Whether enemy blockers must also be above our claim depth.
+    :return: Our projected base score, our projected bonus score, foe projected base score, foe projected bonus score.
     """
-    my_score_after_cashout = \
-        game_state.my_score + calculate_score_gain(game_state.fishes, game_state.my_known_scans, game_state.my_saved_scans, game_state.foe_saved_scans)
-    foe_best_case_known = {fish_id for fish_id, fish in game_state.fishes.items() if fish.region is not None} | game_state.foe_known_scans
-    foe_max_score = game_state.foe_score + calculate_score_gain(game_state.fishes, foe_best_case_known, game_state.foe_saved_scans, game_state.my_known_scans)
-    foe_score_after_cashout = \
-        game_state.foe_score + calculate_score_gain(game_state.fishes, game_state.foe_known_scans, game_state.foe_saved_scans, game_state.my_saved_scans)
-    my_best_case_known = {fish_id for fish_id, fish in game_state.fishes.items() if fish.region is not None} | game_state.my_known_scans
-    my_max_score = game_state.my_score + calculate_score_gain(game_state.fishes, my_best_case_known, game_state.my_saved_scans, game_state.foe_known_scans)
-    print(f"Cashout: my={my_score_after_cashout}, foe_max={foe_max_score}, foe={foe_score_after_cashout}, my_max={my_max_score}",
-          file=sys.stderr)
-    return my_score_after_cashout > foe_max_score and \
-        max(drone.coords[1] for drone in game_state.my_drones.values()) < min(drone.coords[1] for drone in game_state.foe_drones.values())
+    existing_fish_ids = {fish.id for fish in game_state.fishes.values() if fish.region is not None}
+    my_possible_scans = existing_fish_ids | game_state.my_known_scans
+    foe_possible_scans = existing_fish_ids | game_state.foe_known_scans
+    my_base = get_base_score(game_state.fishes, my_possible_scans)
+    foe_base = get_base_score(game_state.fishes, foe_possible_scans)
+    my_saved_bonus = game_state.my_score - get_base_score(game_state.fishes, game_state.my_saved_scans)
+    foe_saved_bonus = game_state.foe_score - get_base_score(game_state.fishes, game_state.foe_saved_scans)
+    future_bonus_pool = 0
+    my_claimable_bonus = 0
+    bonus_items = [(fish.kind + 1, {fish.id}) for fish in game_state.fishes.values()]
+    bonus_items += [(4, {fish.id for fish in game_state.fishes.values() if fish.kind == kind}) for kind in range(3)]
+    bonus_items += [(3, {fish.id for fish in game_state.fishes.values() if fish.color == color}) for color in range(4)]
+    for points, required_scans in bonus_items:
+        if required_scans <= game_state.my_saved_scans or required_scans <= game_state.foe_saved_scans:
+            continue
+        if not required_scans <= my_possible_scans and not required_scans <= foe_possible_scans:
+            continue
+        future_bonus_pool += points
+        if not required_scans <= game_state.my_known_scans:
+            continue
+        if not required_scans <= game_state.foe_known_scans:
+            my_claimable_bonus += points
+            continue
+        claim_y = max(drone.coords[1] for drone in game_state.my_drones.values() if drone.scans & (required_scans - game_state.my_saved_scans))
+        foe_can_deny = any(drone.coords[1] < FIELD_SIZE // 2 and (not use_claim_y or drone.coords[1] < claim_y)
+                           and drone.scans & (required_scans - game_state.foe_saved_scans) for drone in game_state.foe_drones.values())
+        if not foe_can_deny:
+            my_claimable_bonus += points
+    return my_base, my_saved_bonus + my_claimable_bonus, foe_base, foe_saved_bonus + future_bonus_pool - my_claimable_bonus
 
 
-def calculate_score_gain(all_fishes: dict[int, Creature], known_scans: set[int], saved_scans: set[int], foe_saved_scans: set[int]) -> int:
-    """Calculates the score gained by turning all known scans into saved scans against the foe's saved scans.
-    :param all_fishes: Fish metadata keyed by creature id.
-    :param known_scans: Fish ids considered owned after cashout.
-    :param saved_scans: Fish ids already saved before cashout.
-    :param foe_saved_scans: Fish ids already saved by the opponent.
-    :return: Additional score gained beyond the current saved scans.
+def get_base_score(fishes: dict[int, Creature], obtainable_scans: set[int]) -> int:
+    """Calculates the non-bonus score from fish and completed sets for one scan set.
+    :param fishes: Fish states keyed by creature id.
+    :param obtainable_scans: Fish ids assumed obtainable by one side.
+    :return: Base score from those fish ids without first-completion bonuses.
     """
-    score_gain = 0
-    for creature_id in known_scans - saved_scans:
-        points = all_fishes[creature_id].kind + 1
-        score_gain += points * (1 if creature_id in foe_saved_scans else 2)
-    for kind in range(3):
-        fish_of_kind = {creature_id for creature_id, fish in all_fishes.items() if fish.kind == kind}
-        if fish_of_kind <= known_scans and not fish_of_kind <= saved_scans:
-            score_gain += 4 if fish_of_kind <= foe_saved_scans else 8
-    for color in range(4):
-        fish_of_color = {creature_id for creature_id, fish in all_fishes.items() if fish.color == color}
-        if fish_of_color <= known_scans and not fish_of_color <= saved_scans:
-            score_gain += 3 if fish_of_color <= foe_saved_scans else 6
-    return score_gain
+    fish_points = sum(fishes[fish_id].kind + 1 for fish_id in obtainable_scans)
+    color_points = sum(3 for color in range(4) if {fish.id for fish in fishes.values() if fish.color == color} <= obtainable_scans)
+    kind_points = sum(4 for kind in range(3) if {fish.id for fish in fishes.values() if fish.kind == kind} <= obtainable_scans)
+    return fish_points + color_points + kind_points
+
+
+def get_max_depth(drone: Drone, game_state: GameState) -> int | None:
+    """Gets one drone's defense-mode depth cap from foe drones carrying competing unsaved scans.
+    :param drone: Our drone whose depth cap should be calculated.
+    :param game_state: Parsed state for the current turn.
+    :return: Deepest allowed defense-mode y-coordinate for this drone, or None if no foe drone competes with it.
+    """
+    competing_foe_depths = [foe_drone.coords[1] for foe_drone in game_state.foe_drones.values()
+                            if (drone.scans & foe_drone.scans) - game_state.my_saved_scans - game_state.foe_saved_scans]
+    return None if not competing_foe_depths else max(0, min(competing_foe_depths) - 800)
+
+
+def get_depth_limited_target(drone_path: list[IntArray], max_depth: int) -> IntArray | None:
+    """Gets the first path target that can still be scanned while staying inside allowed depth.
+    :param drone_path: Planned target coordinates for one drone.
+    :param max_depth: Deepest y-coordinate the drone should still occupy in defense mode.
+    :return: First target allowed by defense mode with capped depth, or None if none are allowed.
+    """
+    for target in drone_path:
+        if target[1] <= max_depth + BIG_SCAN_RADIUS:
+            return np.array((target[0], min(target[1], max_depth)))
+    return None
 
 
 def get_drone_paths(game_state: GameState) -> dict[int, list[IntArray]]:
@@ -468,16 +505,18 @@ def minimum_distance_between_paths(start_a: IntArray, velocity_a: IntArray, star
     return np.linalg.norm(relative + relative_velocity * time)
 
 
-def choose_light(drone: Drone, target: IntArray, game_state: GameState) -> int:
+def choose_light(drone: Drone, target: IntArray, game_state: GameState, blocked_by_depth: bool) -> int:
     """Chooses the light setting from scan probabilities at the planned end position.
     :param drone: Drone state to plan for.
     :param target: Planned move target for the turn.
     :param game_state: Parsed state for the current turn.
+    :param blocked_by_depth: Whether this turn's intended hunt was blocked by defense mode.
     :return: Light setting for the move.
     """
     drone_end = get_end_point(drone.coords, target, DRONE_SPEED)
-    fish_likely_nearby = any(get_scan_probability(fish.region, drone_end, BIG_SCAN_RADIUS) > SCAN_PROBABILITY for fish_id, fish in game_state.fishes.items()
-                             if fish_id not in game_state.my_known_scans and fish.region is not None)
+    scan_probability_threshold = SCAN_PROBABILITY / 2 if blocked_by_depth else SCAN_PROBABILITY
+    fish_likely_nearby = any(get_scan_probability(fish.region, drone_end, BIG_SCAN_RADIUS) > scan_probability_threshold
+                             for fish_id, fish in game_state.fishes.items() if fish_id not in game_state.my_known_scans and fish.region is not None)
     return int(drone.battery >= 5 and fish_likely_nearby)
 
 

@@ -1,4 +1,4 @@
-"""Implements a fast Wooden 1 bot for Code4Life."""
+"""Implements an expertise-aware Bronze bot for Code4Life."""
 
 from __future__ import annotations
 
@@ -9,10 +9,18 @@ from itertools import combinations
 MAX_SAMPLES = 3
 STORAGE_LIMIT = 10
 BATCH_RETURN_TURNS = 1
-DIAGNOSIS_SLICE = 10
+DIAGNOSIS_SLICE = 8
 TOTAL_TURNS = 200
 SELF = 0
 MOLECULE_TYPES = "ABCDE"
+PROJECTS: tuple[tuple[int, int, int, int, int], ...] = ()
+DISTANCE = {
+    "START_POS": {"SAMPLES": 2, "DIAGNOSIS": 2, "MOLECULES": 2, "LABORATORY": 2},
+    "SAMPLES": {"SAMPLES": 0, "DIAGNOSIS": 3, "MOLECULES": 3, "LABORATORY": 3},
+    "DIAGNOSIS": {"SAMPLES": 3, "DIAGNOSIS": 0, "MOLECULES": 3, "LABORATORY": 4},
+    "MOLECULES": {"SAMPLES": 3, "DIAGNOSIS": 3, "MOLECULES": 0, "LABORATORY": 3},
+    "LABORATORY": {"SAMPLES": 3, "DIAGNOSIS": 4, "MOLECULES": 3, "LABORATORY": 0},
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -21,12 +29,14 @@ class Player:
     :var eta: Turns remaining before the robot can act at a module.
     :var score: Health points already scored by the robot.
     :var storage: Molecules currently carried by the robot in A-E order.
+    :var expertise: Expertise already gained by the robot in A-E order.
     """
 
     target: str
     eta: int
     score: int
     storage: tuple[int, int, int, int, int]
+    expertise: tuple[int, int, int, int, int]
 
 
 @dataclass(slots=True, frozen=True)
@@ -34,6 +44,7 @@ class Sample:
     """:var sample_id: Unique identifier of the sample.
     :var carried_by: Owner flag for the sample, or -1 while it is in the cloud.
     :var rank: Rank of the sample.
+    :var gain: Molecule expertise granted when the sample is completed.
     :var health: Health points granted when the sample is produced.
     :var cost: Molecule requirements for the sample in A-E order.
     """
@@ -41,6 +52,7 @@ class Sample:
     sample_id: int
     carried_by: int
     rank: int
+    gain: str
     health: int
     cost: tuple[int, int, int, int, int]
 
@@ -48,48 +60,44 @@ class Sample:
         """:return: Whether the sample is already diagnosed."""
         return self.health >= 0
 
-    def total_cost(self) -> int:
-        """:return: Total amount of molecules required by the sample."""
-        assert self.is_diagnosed()
-        return sum(self.cost)
-
-    def fits(self, storage: tuple[int, int, int, int, int]) -> bool:
-        """:param storage: Molecules currently available for the sample.
-        :return: Whether the sample can be produced with the given storage.
-        """
-        assert self.is_diagnosed()
-        return all(have >= need for have, need in zip(storage, self.cost))
-
 
 def main():
     """Runs the game loop and prints one action per turn."""
-    project_count = int(input())
-    for _ in range(project_count):
-        input()
+    global PROJECTS
+    PROJECTS = tuple(tuple(int(value) for value in input().split()) for _ in range(int(input())))
     turn = 0
     while True:
-        me, _, samples = read_turn()
+        me, opponent, available, samples = read_turn()
         mine = [sample for sample in samples if sample.carried_by == SELF]
         cloud = [sample for sample in samples if sample.carried_by == -1]
         remaining_turns = TOTAL_TURNS - turn
-        action = choose_action(me, mine, cloud, remaining_turns)
-        debug(f"t={turn} at={me.target} eta={me.eta} hp={me.score} hold={me.storage} ids={[sample.sample_id for sample in mine]} -> {action}")
+        action = choose_action(me, opponent, available, mine, cloud, remaining_turns)
+        debug(
+            f"t={turn} at={me.target} eta={me.eta} hp={me.score} hold={me.storage} "
+            f"exp={me.expertise} ids={[sample.sample_id for sample in mine]} -> {action}"
+        )
         print(action)
         turn += 1
 
 
-def read_turn() -> tuple[Player, Player, list[Sample]]:
-    """:return: Both players and every sample visible on the current turn."""
+def read_turn() -> tuple[Player, Player, tuple[int, int, int, int, int], list[Sample]]:
+    """:return: Both players, the available molecules, and every sample visible on the current turn."""
     me = read_player()
     opponent = read_player()
-    input()
-    return me, opponent, read_samples(int(input()))
+    available = tuple(int(value) for value in input().split())
+    return me, opponent, available, read_samples(int(input()))
 
 
 def read_player() -> Player:
     """:return: Parsed state for one player."""
     inputs = input().split()
-    return Player(inputs[0], int(inputs[1]), int(inputs[2]), tuple(int(value) for value in inputs[3:8]))
+    return Player(
+        inputs[0],
+        int(inputs[1]),
+        int(inputs[2]),
+        tuple(int(value) for value in inputs[3:8]),
+        tuple(int(value) for value in inputs[8:13]),
+    )
 
 
 def read_samples(count: int) -> list[Sample]:
@@ -102,166 +110,311 @@ def read_samples(count: int) -> list[Sample]:
 def read_sample() -> Sample:
     """:return: Parsed state for one sample."""
     inputs = input().split()
-    return Sample(int(inputs[0]), int(inputs[1]), int(inputs[2]), int(inputs[4]), tuple(int(value) for value in inputs[5:10]))
+    return Sample(
+        int(inputs[0]),
+        int(inputs[1]),
+        int(inputs[2]),
+        inputs[3],
+        int(inputs[4]),
+        tuple(int(value) for value in inputs[5:10]),
+    )
 
 
-def choose_action(me: Player, mine: list[Sample], cloud: list[Sample], remaining_turns: int) -> str:
+def choose_action(
+    me: Player,
+    opponent: Player,
+    available: tuple[int, int, int, int, int],
+    mine: list[Sample],
+    cloud: list[Sample],
+    remaining_turns: int,
+) -> str:
     """:param me: Current state of our robot.
+    :param opponent: Current state of the opposing robot.
+    :param available: Molecules still available in the pool.
     :param mine: Samples currently carried by our robot.
     :param cloud: Samples currently available in the cloud.
-    :param remaining_turns: Number of actions left including the current one.
+    :param remaining_turns: Number of turns left including the current one.
     :return: Command to print for the current turn.
     """
     if me.eta:
-        return f"GOTO {me.target}"
+        return "WAIT"
     match me.target:
         case "SAMPLES":
-            return choose_at_samples(mine, cloud, remaining_turns)
+            return choose_at_samples(me, mine, cloud, remaining_turns)
         case "DIAGNOSIS":
-            return choose_at_diagnosis(me, mine, cloud, remaining_turns)
+            return choose_at_diagnosis(me, available, mine, cloud, remaining_turns)
         case "MOLECULES":
-            return choose_at_molecules(me, mine, cloud, remaining_turns)
+            return choose_at_molecules(me, opponent, available, mine, cloud, remaining_turns)
         case "LABORATORY":
-            return choose_at_laboratory(me, mine, cloud, remaining_turns)
+            return choose_at_laboratory(me, available, mine, cloud, remaining_turns)
         case _:
             return "GOTO SAMPLES" if not mine else "GOTO DIAGNOSIS"
 
 
-def choose_at_samples(mine: list[Sample], cloud: list[Sample], remaining_turns: int) -> str:
-    """:param mine: Samples currently carried by our robot.
-    :param cloud: Samples currently available in the cloud.
-    :param remaining_turns: Number of actions left including the current one.
-    :return: Command to print while standing at SAMPLES.
-    """
-    if mine:
-        return "GOTO DIAGNOSIS"
-    if remaining_turns <= 11:
-        return "GOTO DIAGNOSIS" if diagnosed_samples(cloud) else "WAIT"
-    return f"CONNECT {sample_rank(remaining_turns)}"
-
-
-def sample_rank(remaining_turns: int) -> int:
-    """:param remaining_turns: Number of actions left including the current one.
-    :return: Rank to request from the samples machine.
-    """
-    return 1 if remaining_turns <= 16 else 2
-
-
-def choose_at_diagnosis(me: Player, mine: list[Sample], cloud: list[Sample], remaining_turns: int) -> str:
+def choose_at_samples(me: Player, mine: list[Sample], cloud: list[Sample], remaining_turns: int) -> str:
     """:param me: Current state of our robot.
     :param mine: Samples currently carried by our robot.
     :param cloud: Samples currently available in the cloud.
-    :param remaining_turns: Number of actions left including the current one.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Command to print while standing at SAMPLES.
+    """
+    if not carried_diagnosed_samples(mine) and len(mine) < desired_sample_count(me.expertise, remaining_turns):
+        return f"CONNECT {sample_rank(me.expertise, remaining_turns)}"
+    return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "WAIT"
+
+
+def desired_sample_count(expertise: tuple[int, int, int, int, int], remaining_turns: int) -> int:
+    """:param expertise: Expertise already gained by our robot.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Preferred number of carried samples.
+    """
+    total = sum(expertise)
+    return 1 if remaining_turns <= 26 else 2 if total < 4 else 3
+
+
+def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int) -> int:
+    """:param expertise: Expertise already gained by our robot.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Rank to request from the samples machine.
+    """
+    total = sum(expertise)
+    return 1 if remaining_turns <= 20 or total < 2 else 2 if total < 8 else 3
+
+
+def choose_at_diagnosis(
+    me: Player,
+    available: tuple[int, int, int, int, int],
+    mine: list[Sample],
+    cloud: list[Sample],
+    remaining_turns: int,
+) -> str:
+    """:param me: Current state of our robot.
+    :param available: Molecules still available in the pool.
+    :param mine: Samples currently carried by our robot.
+    :param cloud: Samples currently available in the cloud.
+    :param remaining_turns: Number of turns left including the current one.
     :return: Command to print while standing at DIAGNOSIS.
     """
     undiagnosed = undiagnosed_samples(mine)
     if undiagnosed:
         return f"CONNECT {undiagnosed[0].sample_id}"
-    chosen = best_batch(diagnosed_samples(mine), diagnosed_samples(cloud), me.storage, remaining_turns)
+    diagnosed = carried_diagnosed_samples(mine)
+    chosen = best_batch(diagnosed, diagnosed_samples(cloud), me.storage, me.expertise, available, remaining_turns)
     chosen_ids = {sample.sample_id for sample in chosen}
-    rejected = [sample for sample in diagnosed_samples(mine) if sample.sample_id not in chosen_ids]
+    rejected = [sample for sample in diagnosed if sample.sample_id not in chosen_ids]
     if rejected:
-        return f"CONNECT {worst_sample(rejected).sample_id}"
+        return f"CONNECT {worst_sample(rejected, me.expertise).sample_id}"
     for sample in chosen:
         if sample.carried_by == -1:
             return f"CONNECT {sample.sample_id}"
-    if chosen and batch_complete(chosen, me.storage):
+    if chosen and batch_complete(chosen, me.storage, me.expertise):
         return "GOTO LABORATORY"
     if chosen:
         return "GOTO MOLECULES"
-    return "GOTO SAMPLES" if remaining_turns > 11 else "WAIT"
-
-
-def choose_at_molecules(me: Player, mine: list[Sample], cloud: list[Sample], remaining_turns: int) -> str:
-    """:param me: Current state of our robot.
-    :param mine: Samples currently carried by our robot.
-    :param cloud: Samples currently available in the cloud.
-    :param remaining_turns: Number of actions left including the current one.
-    :return: Command to print while standing at MOLECULES.
-    """
-    chosen = best_owned_batch(diagnosed_samples(mine), me.storage, remaining_turns, "MOLECULES")
-    if not chosen:
-        return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
-    if batch_complete(chosen, me.storage):
-        return "GOTO LABORATORY"
-    molecule = next_needed_molecule(chosen, me.storage)
-    assert molecule is not None
-    return f"CONNECT {molecule}"
-
-
-def choose_at_laboratory(me: Player, mine: list[Sample], cloud: list[Sample], remaining_turns: int) -> str:
-    """:param me: Current state of our robot.
-    :param mine: Samples currently carried by our robot.
-    :param cloud: Samples currently available in the cloud.
-    :param remaining_turns: Number of actions left including the current one.
-    :return: Command to print while standing at LABORATORY.
-    """
-    chosen = best_owned_batch(diagnosed_samples(mine), me.storage, remaining_turns, "LABORATORY")
-    producible = ready_samples(chosen, me.storage)
-    if producible:
-        return f"CONNECT {ordered_samples(producible)[0].sample_id}"
-    if chosen:
-        return "GOTO MOLECULES"
-    return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
-
-
-def diagnosed_samples(samples: list[Sample]) -> list[Sample]:
-    """:param samples: Samples to filter.
-    :return: Diagnosed samples from the provided list.
-    """
-    return [sample for sample in samples if sample.is_diagnosed()]
-
-
-def undiagnosed_samples(samples: list[Sample]) -> list[Sample]:
-    """:param samples: Samples to filter.
-    :return: Undiagnosed samples from the provided list.
-    """
-    return [sample for sample in samples if not sample.is_diagnosed()]
+    return "GOTO SAMPLES" if remaining_turns > 18 else "WAIT"
 
 
 def best_batch(
     mine: list[Sample],
     cloud: list[Sample],
     storage: tuple[int, int, int, int, int],
+    expertise: tuple[int, int, int, int, int],
+    available: tuple[int, int, int, int, int],
     remaining_turns: int,
 ) -> list[Sample]:
     """:param mine: Diagnosed samples currently carried by our robot.
     :param cloud: Diagnosed samples currently available in the cloud.
     :param storage: Molecules currently carried by our robot.
-    :param remaining_turns: Number of actions left including the current one.
+    :param expertise: Expertise already gained by our robot.
+    :param available: Molecules still available in the pool.
+    :param remaining_turns: Number of turns left including the current one.
     :return: Highest-value finishable batch reachable from DIAGNOSIS.
     """
     best: list[Sample] = []
-    best_value = batch_value([], storage, 0)
+    best_value = batch_value([], 0, expertise)
     room = MAX_SAMPLES - len(mine)
-    candidates = diagnosis_candidates(cloud)
+    candidates = diagnosis_candidates(cloud, expertise)
     for owned in sample_subsets(mine):
         for size in range(min(room, len(candidates)) + 1):
             for extra in combinations(candidates, size):
-                batch = ordered_samples([*owned, *extra])
-                if not batch or not batch_fits(batch, storage):
+                batch = ordered_samples([*owned, *extra], expertise)
+                if not batch or not batch_fits(batch, storage, expertise, available):
                     continue
-                if diagnosis_finish_time(batch, size, storage) > remaining_turns:
+                finish_time = finish_time_from("DIAGNOSIS", batch, size, storage, expertise)
+                if finish_time > remaining_turns:
                     continue
-                value = batch_value(batch, storage, size)
+                value = batch_value(batch, finish_time, expertise)
                 if value > best_value:
                     best = batch
                     best_value = value
     return best
 
 
-def diagnosis_candidates(cloud: list[Sample]) -> list[Sample]:
+def diagnosis_candidates(cloud: list[Sample], expertise: tuple[int, int, int, int, int]) -> list[Sample]:
     """:param cloud: Diagnosed samples currently available in the cloud.
+    :param expertise: Expertise already gained by our robot.
     :return: Short candidate list worth combining at DIAGNOSIS.
     """
     pool: dict[int, Sample] = {}
-    for sample in sorted(cloud, key=sample_priority, reverse=True)[:DIAGNOSIS_SLICE]:
+    for sample in sorted(cloud, key=lambda item: sample_priority(item, expertise), reverse=True)[:DIAGNOSIS_SLICE]:
         pool[sample.sample_id] = sample
     for sample in sorted(cloud, key=sample_health_priority, reverse=True)[:DIAGNOSIS_SLICE]:
         pool[sample.sample_id] = sample
-    for sample in sorted(cloud, key=sample_cost_priority)[:DIAGNOSIS_SLICE]:
+    for sample in sorted(cloud, key=lambda item: sample_cost_priority(item, expertise))[:DIAGNOSIS_SLICE]:
         pool[sample.sample_id] = sample
     return list(pool.values())
+
+
+def choose_at_molecules(
+    me: Player,
+    opponent: Player,
+    available: tuple[int, int, int, int, int],
+    mine: list[Sample],
+    cloud: list[Sample],
+    remaining_turns: int,
+) -> str:
+    """:param me: Current state of our robot.
+    :param opponent: Current state of the opposing robot.
+    :param available: Molecules still available in the pool.
+    :param mine: Samples currently carried by our robot.
+    :param cloud: Samples currently available in the cloud.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Command to print while standing at MOLECULES.
+    """
+    chosen = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, available, remaining_turns, "MOLECULES")
+    if not chosen:
+        return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
+    if batch_complete(chosen, me.storage, me.expertise):
+        return "GOTO LABORATORY"
+    return f"CONNECT {next_needed_molecule(chosen, me.storage, me.expertise, available, opponent.expertise)}"
+
+
+def best_owned_batch(
+    mine: list[Sample],
+    storage: tuple[int, int, int, int, int],
+    expertise: tuple[int, int, int, int, int],
+    available: tuple[int, int, int, int, int],
+    remaining_turns: int,
+    module: str,
+) -> list[Sample]:
+    """:param mine: Diagnosed samples currently carried by our robot.
+    :param storage: Molecules currently carried by our robot.
+    :param expertise: Expertise already gained by our robot.
+    :param available: Molecules still available in the pool.
+    :param remaining_turns: Number of turns left including the current one.
+    :param module: Module from which the robot is planning the finish.
+    :return: Highest-value finishable subset of carried samples.
+    """
+    best: list[Sample] = []
+    best_value = batch_value([], 0, expertise)
+    for batch in sample_subsets(mine):
+        ordered = ordered_samples(batch, expertise)
+        if not ordered or not batch_fits(ordered, storage, expertise, available):
+            continue
+        finish_time = finish_time_from(module, ordered, 0, storage, expertise)
+        if finish_time > remaining_turns:
+            continue
+        value = batch_value(ordered, finish_time, expertise)
+        if value > best_value:
+            best = ordered
+            best_value = value
+    return best
+
+
+def finish_time_from(
+    module: str,
+    samples: list[Sample],
+    extra_downloads: int,
+    storage: tuple[int, int, int, int, int],
+    expertise: tuple[int, int, int, int, int],
+) -> int:
+    """:param module: Module from which the robot is planning the finish.
+    :param samples: Samples chosen for completion.
+    :param extra_downloads: Number of extra cloud pickups still needed.
+    :param storage: Molecules currently carried by our robot.
+    :param expertise: Expertise already gained by our robot.
+    :return: Turns needed to finish the batch from the given module.
+    """
+    missing = batch_missing_cost(samples, storage, expertise)
+    match module:
+        case "DIAGNOSIS":
+            return (
+                extra_downloads + DISTANCE["DIAGNOSIS"]["LABORATORY"] + len(samples)
+                if not missing
+                else extra_downloads + DISTANCE["DIAGNOSIS"]["MOLECULES"] + missing + DISTANCE["MOLECULES"]["LABORATORY"] + len(samples)
+            )
+        case "MOLECULES":
+            return DISTANCE["MOLECULES"]["LABORATORY"] + len(samples) if not missing else missing + DISTANCE["MOLECULES"]["LABORATORY"] + len(samples)
+        case "LABORATORY":
+            return len(samples) if not missing else DISTANCE["LABORATORY"]["MOLECULES"] + missing + DISTANCE["MOLECULES"]["LABORATORY"] + len(samples)
+        case _:
+            return DISTANCE[module]["DIAGNOSIS"] + finish_time_from("DIAGNOSIS", samples, extra_downloads, storage, expertise)
+
+
+def batch_value(samples: list[Sample], finish_time: int, expertise: tuple[int, int, int, int, int]) -> tuple[float, int, int, int, int, tuple[int, ...]]:
+    """:param samples: Candidate batch of diagnosed samples.
+    :param finish_time: Turns needed to complete the batch from the current module.
+    :param expertise: Expertise already gained by our robot.
+    :return: Comparable tuple describing how attractive the batch is.
+    """
+    reward = batch_health(samples) + batch_expertise_value(samples, expertise)
+    return (
+        reward / (finish_time + BATCH_RETURN_TURNS) if samples else 0,
+        reward,
+        batch_health(samples),
+        -finish_time,
+        -len(samples),
+        tuple(-sample.sample_id for sample in samples),
+    )
+
+
+def batch_expertise_value(samples: list[Sample], expertise: tuple[int, int, int, int, int]) -> int:
+    """:param samples: Samples whose expertise gains should be valued.
+    :param expertise: Expertise already gained by our robot.
+    :return: Bonus value granted to the batch for useful expertise gains.
+    """
+    progress = list(expertise)
+    value = 0
+    for sample in samples:
+        index = gain_index(sample.gain)
+        if index < 0:
+            continue
+        value += expertise_need_value(progress, index)
+        progress[index] += 1
+    return value
+
+
+def expertise_need_value(expertise: list[int], index: int) -> int:
+    """:param expertise: Expertise already gained by our robot as a mutable list.
+    :param index: Molecule type index whose expertise gain is being valued.
+    :return: Small heuristic bonus for improving that expertise type.
+    """
+    count = sum(project[index] > expertise[index] for project in PROJECTS)
+    close = any(project[index] == expertise[index] + 1 for project in PROJECTS)
+    return 4 * count + 4 * close
+
+
+def choose_at_laboratory(
+    me: Player,
+    available: tuple[int, int, int, int, int],
+    mine: list[Sample],
+    cloud: list[Sample],
+    remaining_turns: int,
+) -> str:
+    """:param me: Current state of our robot.
+    :param available: Molecules still available in the pool.
+    :param mine: Samples currently carried by our robot.
+    :param cloud: Samples currently available in the cloud.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Command to print while standing at LABORATORY.
+    """
+    chosen = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, available, remaining_turns, "LABORATORY")
+    producible = ready_samples(chosen, me.storage, me.expertise)
+    if producible:
+        return f"CONNECT {ordered_samples(producible, me.expertise)[0].sample_id}"
+    if chosen:
+        return "GOTO MOLECULES"
+    return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
 
 
 def sample_subsets(samples: list[Sample]) -> list[list[Sample]]:
@@ -271,172 +424,185 @@ def sample_subsets(samples: list[Sample]) -> list[list[Sample]]:
     return [[samples[index] for index in range(len(samples)) if mask & 1 << index] for mask in range(1 << len(samples))]
 
 
-def batch_fits(samples: list[Sample], storage: tuple[int, int, int, int, int]) -> bool:
-    """:param samples: Candidate batch of diagnosed samples.
-    :param storage: Molecules currently carried by our robot.
-    :return: Whether the batch can still fit under the storage cap.
+def diagnosed_samples(samples: list[Sample]) -> list[Sample]:
+    """:param samples: Samples to filter.
+    :return: Diagnosed samples from the provided list.
     """
-    return sum(storage) + batch_missing_cost(samples, storage) <= STORAGE_LIMIT
+    return [sample for sample in samples if sample.is_diagnosed()]
 
 
-def diagnosis_finish_time(samples: list[Sample], extra_downloads: int, storage: tuple[int, int, int, int, int]) -> int:
-    """:param samples: Samples chosen for the current batch.
-    :param extra_downloads: Number of cloud samples still to download.
-    :param storage: Molecules currently carried by our robot.
-    :return: Actions needed to finish the batch from DIAGNOSIS.
+def carried_diagnosed_samples(samples: list[Sample]) -> list[Sample]:
+    """:param samples: Carried samples to filter.
+    :return: Diagnosed carried samples from the provided list.
     """
-    missing = batch_missing_cost(samples, storage)
-    return extra_downloads + len(samples) + 1 if not missing else extra_downloads + missing + len(samples) + 2
+    return [sample for sample in samples if sample.carried_by == SELF and sample.is_diagnosed()]
 
 
-def batch_value(samples: list[Sample], storage: tuple[int, int, int, int, int], extra_downloads: int) -> tuple[float, int, int, int, int, tuple[int, ...]]:
-    """:param samples: Candidate batch of diagnosed samples.
-    :param storage: Molecules currently carried by our robot.
-    :param extra_downloads: Number of cloud samples still to download.
-    :return: Comparable tuple describing how attractive the batch is.
+def undiagnosed_samples(samples: list[Sample]) -> list[Sample]:
+    """:param samples: Samples to filter.
+    :return: Undiagnosed samples from the provided list.
     """
-    finish_time = diagnosis_finish_time(samples, extra_downloads, storage)
-    return (
-        batch_health(samples) / (finish_time + BATCH_RETURN_TURNS) if samples else 0,
-        batch_health(samples),
-        -finish_time,
-        -batch_missing_cost(samples, storage),
-        -len(samples),
-        tuple(-sample.sample_id for sample in samples),
-    )
+    return [sample for sample in samples if not sample.is_diagnosed()]
 
 
-def best_owned_batch(
-    mine: list[Sample],
+def batch_fits(
+    samples: list[Sample],
     storage: tuple[int, int, int, int, int],
-    remaining_turns: int,
-    module: str,
-) -> list[Sample]:
-    """:param mine: Diagnosed samples currently carried by our robot.
+    expertise: tuple[int, int, int, int, int],
+    available: tuple[int, int, int, int, int],
+) -> bool:
+    """:param samples: Candidate batch of diagnosed samples.
     :param storage: Molecules currently carried by our robot.
-    :param remaining_turns: Number of actions left including the current one.
-    :param module: Module from which the robot is planning the finish.
-    :return: Highest-value finishable subset of carried samples.
+    :param expertise: Expertise already gained by our robot.
+    :param available: Molecules still available in the pool.
+    :return: Whether the batch can still fit under storage and current supply limits.
     """
-    best: list[Sample] = []
-    best_value = owned_batch_value([], storage, 0)
-    for batch in sample_subsets(mine):
-        if not batch or not batch_fits(batch, storage):
-            continue
-        finish_time = owned_finish_time(batch, storage, module)
-        if finish_time > remaining_turns:
-            continue
-        value = owned_batch_value(batch, storage, finish_time)
-        if value > best_value:
-            best = ordered_samples(batch)
-            best_value = value
-    return best
+    missing = batch_missing_vector(samples, storage, expertise)
+    return sum(storage) + sum(missing) <= STORAGE_LIMIT and all(need <= pool for need, pool in zip(missing, available))
 
 
-def owned_finish_time(samples: list[Sample], storage: tuple[int, int, int, int, int], module: str) -> int:
+def batch_complete(samples: list[Sample], storage: tuple[int, int, int, int, int], expertise: tuple[int, int, int, int, int]) -> bool:
+    """:param samples: Samples currently carried by our robot.
+    :param storage: Molecules currently carried by our robot.
+    :param expertise: Expertise already gained by our robot.
+    :return: Whether storage already covers every molecule needed by the batch.
+    """
+    return all(have >= need for have, need in zip(storage, batch_required_vector(samples, expertise)))
+
+
+def batch_missing_vector(
+    samples: list[Sample],
+    storage: tuple[int, int, int, int, int],
+    expertise: tuple[int, int, int, int, int],
+) -> tuple[int, int, int, int, int]:
     """:param samples: Samples chosen for completion.
     :param storage: Molecules currently carried by our robot.
-    :param module: Module from which the robot is planning the finish.
-    :return: Actions needed to finish the batch from the given module.
+    :param expertise: Expertise already gained by our robot.
+    :return: Missing molecules per type for the batch.
     """
-    missing = batch_missing_cost(samples, storage)
-    match module:
-        case "MOLECULES":
-            return missing + len(samples) + 1 if missing else len(samples) + 1
-        case "LABORATORY":
-            return missing + len(samples) + 2 if missing else len(samples)
-        case _:
-            return diagnosis_finish_time(samples, 0, storage)
+    return tuple(max(need - have, 0) for need, have in zip(batch_required_vector(samples, expertise), storage))
 
 
-def owned_batch_value(samples: list[Sample], storage: tuple[int, int, int, int, int], finish_time: int) -> tuple[float, int, int, int, int, tuple[int, ...]]:
-    """:param samples: Candidate batch of carried samples.
-    :param storage: Molecules currently carried by our robot.
-    :param finish_time: Actions needed to finish the batch from the current module.
-    :return: Comparable tuple describing how attractive the batch is.
-    """
-    return (
-        batch_health(samples) / finish_time if samples else 0,
-        batch_health(samples),
-        -finish_time,
-        -batch_missing_cost(samples, storage),
-        -len(samples),
-        tuple(-sample.sample_id for sample in samples),
-    )
-
-
-def batch_missing_cost(samples: list[Sample], storage: tuple[int, int, int, int, int]) -> int:
+def batch_missing_cost(
+    samples: list[Sample],
+    storage: tuple[int, int, int, int, int],
+    expertise: tuple[int, int, int, int, int],
+) -> int:
     """:param samples: Samples chosen for completion.
     :param storage: Molecules currently carried by our robot.
+    :param expertise: Expertise already gained by our robot.
     :return: Total number of additional molecules still needed by the batch.
     """
-    return sum(max(need - have, 0) for need, have in zip(batch_cost_vector(samples), storage))
+    return sum(batch_missing_vector(samples, storage, expertise))
 
 
-def next_needed_molecule(samples: list[Sample], storage: tuple[int, int, int, int, int]) -> str | None:
-    """:param samples: Samples currently carried by our robot.
-    :param storage: Molecules currently carried by our robot.
-    :return: Next molecule type to collect, or nothing if the batch is complete.
+def batch_required_vector(samples: list[Sample], expertise: tuple[int, int, int, int, int]) -> tuple[int, int, int, int, int]:
+    """:param samples: Samples whose molecule costs should be summed.
+    :param expertise: Expertise already gained by our robot.
+    :return: Combined A-E molecule requirements after expertise reductions.
     """
-    remaining = list(storage)
-    for sample in ordered_samples(samples):
-        for index, need in enumerate(sample.cost):
-            if remaining[index] < need:
-                return MOLECULE_TYPES[index]
-        for index, need in enumerate(sample.cost):
-            remaining[index] -= need
-    return None
+    return tuple(sum(max(sample.cost[index] - expertise[index], 0) for sample in samples) for index in range(5))
 
 
-def ready_samples(samples: list[Sample], storage: tuple[int, int, int, int, int]) -> list[Sample]:
+def next_needed_molecule(
+    samples: list[Sample],
+    storage: tuple[int, int, int, int, int],
+    expertise: tuple[int, int, int, int, int],
+    available: tuple[int, int, int, int, int],
+    opponent_expertise: tuple[int, int, int, int, int],
+) -> str:
     """:param samples: Samples currently carried by our robot.
     :param storage: Molecules currently carried by our robot.
+    :param expertise: Expertise already gained by our robot.
+    :param available: Molecules still available in the pool.
+    :param opponent_expertise: Expertise already gained by the opponent.
+    :return: Next molecule type to collect.
+    """
+    missing = batch_missing_vector(samples, storage, expertise)
+    best_index = min(
+        (index for index, need in enumerate(missing) if need),
+        key=lambda index: (available[index], -missing[index], opponent_expertise[index], index),
+    )
+    return MOLECULE_TYPES[best_index]
+
+
+def ready_samples(
+    samples: list[Sample],
+    storage: tuple[int, int, int, int, int],
+    expertise: tuple[int, int, int, int, int],
+) -> list[Sample]:
+    """:param samples: Samples currently carried by our robot.
+    :param storage: Molecules currently carried by our robot.
+    :param expertise: Expertise already gained by our robot.
     :return: Samples that can be produced immediately.
     """
-    return [sample for sample in samples if sample.fits(storage)]
+    return [sample for sample in samples if sample_fits(sample, storage, expertise)]
 
 
-def ordered_samples(samples: list[Sample]) -> list[Sample]:
+def sample_fits(sample: Sample, storage: tuple[int, int, int, int, int], expertise: tuple[int, int, int, int, int]) -> bool:
+    """:param sample: Sample to test.
+    :param storage: Molecules currently carried by our robot.
+    :param expertise: Expertise already gained by our robot.
+    :return: Whether the sample can be produced with the given storage.
+    """
+    return all(have >= need for have, need in zip(storage, sample_required_vector(sample, expertise)))
+
+
+def ordered_samples(samples: list[Sample], expertise: tuple[int, int, int, int, int]) -> list[Sample]:
     """:param samples: Samples to rank.
+    :param expertise: Expertise already gained by our robot.
     :return: Samples sorted from best immediate value to worst.
     """
-    return sorted(samples, key=sample_priority, reverse=True)
+    return sorted(samples, key=lambda sample: sample_priority(sample, expertise), reverse=True)
 
 
-def sample_priority(sample: Sample) -> tuple[float, int, int, int]:
+def sample_priority(sample: Sample, expertise: tuple[int, int, int, int, int]) -> tuple[float, int, int, int]:
     """:param sample: Sample to score.
+    :param expertise: Expertise already gained by our robot.
     :return: Comparable tuple describing the sample priority.
     """
-    return sample.health / (2 + sample.total_cost()), sample.health, -sample.total_cost(), -sample.sample_id
+    required = sample_required_cost(sample, expertise)
+    reward = sample.health + expertise_need_value(list(expertise), gain_index(sample.gain)) if gain_index(sample.gain) >= 0 else sample.health
+    return reward / (2 + required), reward, -required, -sample.sample_id
 
 
 def sample_health_priority(sample: Sample) -> tuple[int, int, int]:
     """:param sample: Sample to score.
     :return: Comparable tuple prioritizing raw health.
     """
-    return sample.health, -sample.total_cost(), -sample.sample_id
+    return sample.health, -sum(sample.cost), -sample.sample_id
 
 
-def sample_cost_priority(sample: Sample) -> tuple[int, int, int]:
+def sample_cost_priority(sample: Sample, expertise: tuple[int, int, int, int, int]) -> tuple[int, int, int]:
     """:param sample: Sample to score.
+    :param expertise: Expertise already gained by our robot.
     :return: Comparable tuple prioritizing cheap samples.
     """
-    return sample.total_cost(), -sample.health, sample.sample_id
+    return sample_required_cost(sample, expertise), -sample.health, sample.sample_id
 
 
-def worst_sample(samples: list[Sample]) -> Sample:
+def worst_sample(samples: list[Sample], expertise: tuple[int, int, int, int, int]) -> Sample:
     """:param samples: Samples to rank.
+    :param expertise: Expertise already gained by our robot.
     :return: Lowest-priority sample from the provided list.
     """
-    return min(samples, key=sample_priority)
+    return min(samples, key=lambda sample: sample_priority(sample, expertise))
 
 
-def batch_complete(samples: list[Sample], storage: tuple[int, int, int, int, int]) -> bool:
-    """:param samples: Samples currently carried by our robot.
-    :param storage: Molecules currently carried by our robot.
-    :return: Whether storage covers every molecule needed by the whole batch.
+def sample_required_cost(sample: Sample, expertise: tuple[int, int, int, int, int]) -> int:
+    """:param sample: Sample whose effective cost should be measured.
+    :param expertise: Expertise already gained by our robot.
+    :return: Total amount of molecules required after expertise reductions.
     """
-    return all(have >= need for have, need in zip(storage, batch_cost_vector(samples)))
+    return sum(sample_required_vector(sample, expertise))
+
+
+def sample_required_vector(sample: Sample, expertise: tuple[int, int, int, int, int]) -> tuple[int, int, int, int, int]:
+    """:param sample: Sample whose effective costs should be measured.
+    :param expertise: Expertise already gained by our robot.
+    :return: Required molecules per type after expertise reductions.
+    """
+    return tuple(max(sample.cost[index] - expertise[index], 0) for index in range(5))
 
 
 def batch_health(samples: list[Sample]) -> int:
@@ -446,11 +612,11 @@ def batch_health(samples: list[Sample]) -> int:
     return sum(sample.health for sample in samples)
 
 
-def batch_cost_vector(samples: list[Sample]) -> tuple[int, int, int, int, int]:
-    """:param samples: Samples whose molecule costs should be summed per type.
-    :return: Combined A-E molecule requirements for the batch.
+def gain_index(gain: str) -> int:
+    """:param gain: Expertise gain token associated with a sample.
+    :return: Molecule type index for the gain, or -1 when there is none.
     """
-    return tuple(sum(sample.cost[index] for sample in samples) for index in range(5))
+    return MOLECULE_TYPES.find(gain)
 
 
 def debug(message: str):

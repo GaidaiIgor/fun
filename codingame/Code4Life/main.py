@@ -10,10 +10,12 @@ MAX_SAMPLES = 3
 STORAGE_LIMIT = 10
 BATCH_RETURN_TURNS = 1
 DIAGNOSIS_SLICE = 8
+DROP_COOLDOWN = 8
 TOTAL_TURNS = 200
 SELF = 0
 MOLECULE_TYPES = "ABCDE"
 PROJECTS: tuple[tuple[int, int, int, int, int], ...] = ()
+RECENT_DROPS: dict[int, int] = {}
 DISTANCE = {
     "START_POS": {"SAMPLES": 2, "DIAGNOSIS": 2, "MOLECULES": 2, "LABORATORY": 2},
     "SAMPLES": {"SAMPLES": 0, "DIAGNOSIS": 3, "MOLECULES": 3, "LABORATORY": 3},
@@ -204,9 +206,12 @@ def choose_at_diagnosis(
     chosen_ids = {sample.sample_id for sample in chosen}
     rejected = [sample for sample in diagnosed if sample.sample_id not in chosen_ids]
     if rejected:
-        return f"CONNECT {worst_sample(rejected, me.expertise).sample_id}"
+        sample = worst_sample(rejected, me.expertise)
+        RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
+        return f"CONNECT {sample.sample_id}"
     for sample in chosen:
         if sample.carried_by == -1:
+            RECENT_DROPS.pop(sample.sample_id, None)
             return f"CONNECT {sample.sample_id}"
     if chosen and batch_complete(chosen, me.storage, me.expertise):
         return "GOTO LABORATORY"
@@ -234,7 +239,7 @@ def best_batch(
     best: list[Sample] = []
     best_value = batch_value([], 0, expertise, available)
     room = MAX_SAMPLES - len(mine)
-    candidates = diagnosis_candidates(cloud, expertise)
+    candidates = diagnosis_candidates(cloud, expertise, remaining_turns)
     for owned in sample_subsets(mine):
         for size in range(min(room, len(candidates)) + 1):
             for extra in combinations(candidates, size):
@@ -251,11 +256,14 @@ def best_batch(
     return best
 
 
-def diagnosis_candidates(cloud: list[Sample], expertise: tuple[int, int, int, int, int]) -> list[Sample]:
+def diagnosis_candidates(cloud: list[Sample], expertise: tuple[int, int, int, int, int], remaining_turns: int) -> list[Sample]:
     """:param cloud: Diagnosed samples currently available in the cloud.
     :param expertise: Expertise already gained by our robot.
+    :param remaining_turns: Number of turns left including the current one.
     :return: Short candidate list worth combining at DIAGNOSIS.
     """
+    current_turn = TOTAL_TURNS - remaining_turns
+    cloud = [sample for sample in cloud if current_turn - RECENT_DROPS.get(sample.sample_id, -DROP_COOLDOWN - 1) > DROP_COOLDOWN]
     pool: dict[int, Sample] = {}
     for sample in sorted(cloud, key=lambda item: sample_priority(item, expertise), reverse=True)[:DIAGNOSIS_SLICE]:
         pool[sample.sample_id] = sample
@@ -640,7 +648,8 @@ def pressured_available(available: tuple[int, int, int, int, int], opponent: Pla
     :param opponent: Current state of the opposing robot.
     :return: Molecule availability adjusted for immediate opponent pressure.
     """
-    return tuple(max(pool - (opponent.target == "MOLECULES" and not opponent.eta), 0) for pool in available)
+    pressure = 2 if opponent.target == "MOLECULES" and opponent.eta <= 1 else 0
+    return tuple(max(pool - pressure, 0) for pool in available)
 
 
 def gain_index(gain: str) -> int:

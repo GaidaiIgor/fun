@@ -15,13 +15,15 @@ DRONE_SPEED = 600
 SCAN_RADIUS = 800
 DEPTH_MARGIN = 1300
 BIG_SCAN_RADIUS = 2000
+LIGHT_PER_SCAN = 5
+SCAN_PROB_RANGE = (0.5, 0.75)
+MAX_BATTERY = 30
 MAX_FISH_SPEED = 400
 MONSTER_COLLISION_RADIUS = 500
 MONSTER_MONSTER_DISTANCE = 600
 MONSTER_SWIM_SPEED = 270
 MONSTER_DASH_SPEED = 540
 MONSTER_HABITAT_TOP = 2500
-SCAN_PROBABILITY = 0.5
 
 
 @dataclass(slots=True)
@@ -513,10 +515,21 @@ def choose_light(drone: Drone, target: IntArray, game_state: GameState, blocked_
     :return: Light setting for the move.
     """
     drone_end = get_end_point(drone.coords, target, DRONE_SPEED)
-    scan_probability_threshold = SCAN_PROBABILITY / 2 if blocked_by_depth else SCAN_PROBABILITY
+    scan_probability_threshold = get_scan_probability_threshold(drone.battery)
+    if blocked_by_depth:
+        scan_probability_threshold /= 2
     fish_likely_nearby = any(get_scan_probability(fish.region, drone_end, BIG_SCAN_RADIUS) > scan_probability_threshold
                              for fish_id, fish in game_state.fishes.items() if fish_id not in game_state.my_state.known_scans and fish.region is not None)
-    return int(drone.battery >= 5 and fish_likely_nearby)
+    return int(drone.battery >= LIGHT_PER_SCAN and fish_likely_nearby)
+
+
+def get_scan_probability_threshold(battery: int) -> float:
+    """Gets the minimum scan-success probability required to spend light at one battery level.
+    :param battery: Current drone battery charge.
+    :return: Required scan-success probability for using light.
+    """
+    return SCAN_PROB_RANGE[1] - (SCAN_PROB_RANGE[1] - SCAN_PROB_RANGE[0]) * \
+        (min(MAX_BATTERY, max(LIGHT_PER_SCAN, battery)) - LIGHT_PER_SCAN) / (MAX_BATTERY - LIGHT_PER_SCAN)
 
 
 def get_scan_probability(region: IntArray, scan_center: IntArray, scan_radius: int) -> float:

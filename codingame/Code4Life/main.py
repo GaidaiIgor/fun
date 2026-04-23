@@ -9,6 +9,7 @@ from itertools import combinations
 MAX_SAMPLES = 3
 STORAGE_LIMIT = 10
 BATCH_RETURN_TURNS = 1
+DIAGNOSIS_SLICE = 10
 TOTAL_TURNS = 200
 SELF = 0
 MOLECULE_TYPES = "ABCDE"
@@ -148,9 +149,10 @@ def best_batch(
     best: list[Sample] = []
     best_value = batch_value([], storage, 0)
     room = MAX_SAMPLES - len(mine)
+    candidates = diagnosis_candidates(cloud)
     for owned in sample_subsets(mine):
-        for size in range(room + 1):
-            for extra in combinations(cloud, size):
+        for size in range(min(room, len(candidates)) + 1):
+            for extra in combinations(candidates, size):
                 batch = ordered_samples([*owned, *extra])
                 if not batch or not batch_fits(batch, storage):
                     continue
@@ -161,6 +163,20 @@ def best_batch(
                     best = batch
                     best_value = value
     return best
+
+
+def diagnosis_candidates(cloud: list[Sample]) -> list[Sample]:
+    """:param cloud: Samples currently available in the cloud.
+    :return: Short candidate list worth combining at DIAGNOSIS.
+    """
+    pool: dict[int, Sample] = {}
+    for sample in sorted(cloud, key=sample_priority, reverse=True)[:DIAGNOSIS_SLICE]:
+        pool[sample.sample_id] = sample
+    for sample in sorted(cloud, key=sample_health_priority, reverse=True)[:DIAGNOSIS_SLICE]:
+        pool[sample.sample_id] = sample
+    for sample in sorted(cloud, key=sample_cost_priority)[:DIAGNOSIS_SLICE]:
+        pool[sample.sample_id] = sample
+    return list(pool.values())
 
 
 def sample_subsets(samples: list[Sample]) -> list[list[Sample]]:
@@ -336,6 +352,20 @@ def sample_priority(sample: Sample) -> tuple[float, int, int, int]:
     :return: Comparable tuple describing the sample priority.
     """
     return sample.health / (2 + sample.total_cost()), sample.health, -sample.total_cost(), -sample.sample_id
+
+
+def sample_health_priority(sample: Sample) -> tuple[int, int, int]:
+    """:param sample: Sample to score.
+    :return: Comparable tuple prioritizing raw health.
+    """
+    return sample.health, -sample.total_cost(), -sample.sample_id
+
+
+def sample_cost_priority(sample: Sample) -> tuple[int, int, int]:
+    """:param sample: Sample to score.
+    :return: Comparable tuple prioritizing cheap samples.
+    """
+    return sample.total_cost(), -sample.health, sample.sample_id
 
 
 def batch_complete(samples: list[Sample], storage: tuple[int, int, int, int, int]) -> bool:

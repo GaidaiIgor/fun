@@ -10,8 +10,10 @@ IntArray = npt.NDArray[np.int64]
 FloatArray = npt.NDArray[np.float64]
 
 FIELD_SIZE = 10000
+CASHOUT_DEPTH = 500
 DRONE_SPEED = 600
 SCAN_RADIUS = 800
+DEPTH_MARGIN = 1300
 BIG_SCAN_RADIUS = 2000
 MAX_FISH_SPEED = 400
 MONSTER_COLLISION_RADIUS = 500
@@ -317,6 +319,7 @@ def choose_action(game_state: GameState):
     defense_totals = [defense_base_scores[player_ind] + defense_bonus_scores[player_ind] for player_ind in range(2)]
     my_advantage = totals[0] > totals[1]
     defense_mode = defense_totals[0] > defense_totals[1]
+    print(f"Modes: my_advantage={my_advantage}, defense_mode={defense_mode}", file=sys.stderr)
     print(f"Projected: my_base={base_scores[0]}, my_bonus={bonus_scores[0]}, foe_base={base_scores[1]}, foe_bonus={bonus_scores[1]}", file=sys.stderr)
     print(f"Projected: my_base={defense_base_scores[1]}, my_bonus={defense_bonus_scores[1]}, "
           f"foe_base={defense_base_scores[0]}, foe_bonus={defense_bonus_scores[0]}", file=sys.stderr)
@@ -327,15 +330,17 @@ def choose_action(game_state: GameState):
         blocked_by_depth = defense_mode and max_depth is not None and drone.coords[1] >= max_depth
         drone_path = drone_paths[drone.id]
         if my_advantage and drone.scans or blocked_by_depth or not drone_path:
-            base_target = np.array((drone.coords[0], 0))
+            base_target = np.array((drone.coords[0], CASHOUT_DEPTH))
         else:
             base_target = drone_path[0]
             if defense_mode and max_depth is not None:
                 base_target = get_depth_limited_target(drone_path, max_depth)
                 if base_target is None:
                     nearest_blocked_target = min(drone_path, key=lambda target: np.linalg.norm(target - drone.coords))
-                    base_target = np.array((drone.coords[0], 0)) if drone.coords[1] - 500 < np.linalg.norm(nearest_blocked_target - drone.coords) \
-                        else np.array((nearest_blocked_target[0], max_depth))
+                    if drone.coords[1] - CASHOUT_DEPTH < np.linalg.norm(nearest_blocked_target - drone.coords):
+                        base_target = np.array((drone.coords[0], CASHOUT_DEPTH))
+                    else:
+                        base_target = np.array((nearest_blocked_target[0], max_depth))
 
         safe_target = choose_safe_target(drone, base_target, monsters)
         light = choose_light(drone, safe_target, game_state, blocked_by_depth)
@@ -396,7 +401,7 @@ def get_max_depth(drone: Drone, game_state: GameState) -> int | None:
     """
     competing_foe_depths = [foe_drone.coords[1] for foe_drone in game_state.foe_state.drones.values()
                             if (drone.scans & foe_drone.scans) - game_state.my_state.saved_scans - game_state.foe_state.saved_scans]
-    return None if not competing_foe_depths else max(0, min(competing_foe_depths) - 800)
+    return None if not competing_foe_depths else max(0, min(competing_foe_depths) - DEPTH_MARGIN)
 
 
 def get_depth_limited_target(drone_path: list[IntArray], max_depth: int) -> IntArray | None:
@@ -479,7 +484,7 @@ def choose_safe_target(drone: Drone, target: IntArray, monsters: list[Creature])
                 final_angle = np.rad2deg(np.arctan2(-corrected_direction[1], corrected_direction[0]))
                 print(f"Safety: drone {drone.id}: angle1={base_angle:.0f} angle2={final_angle:.0f}", file=sys.stderr)
                 return np.rint(rotated_target).astype(np.int64)
-    return np.array((drone.coords[0], 0))
+    return np.array((drone.coords[0], CASHOUT_DEPTH))
 
 
 def minimum_distance_between_paths(start_a: IntArray, velocity_a: IntArray, start_b: IntArray, velocity_b: IntArray) -> float:

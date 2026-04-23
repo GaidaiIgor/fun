@@ -153,7 +153,7 @@ def choose_action(
         case "DIAGNOSIS":
             return choose_at_diagnosis(me, available, planned_available, mine, cloud, remaining_turns)
         case "MOLECULES":
-            return choose_at_molecules(me, opponent, available, mine, cloud, remaining_turns)
+            return choose_at_molecules(me, opponent, available, planned_available, mine, cloud, remaining_turns)
         case "LABORATORY":
             return choose_at_laboratory(me, available, mine, cloud, remaining_turns)
         case _:
@@ -291,6 +291,7 @@ def choose_at_molecules(
     me: Player,
     opponent: Player,
     available: tuple[int, int, int, int, int],
+    planned_available: tuple[int, int, int, int, int],
     mine: list[Sample],
     cloud: list[Sample],
     remaining_turns: int,
@@ -298,17 +299,18 @@ def choose_at_molecules(
     """:param me: Current state of our robot.
     :param opponent: Current state of the opposing robot.
     :param available: Molecules still available in the pool.
+    :param planned_available: Molecules forecast to remain after opponent pressure.
     :param mine: Samples currently carried by our robot.
     :param cloud: Samples currently available in the cloud.
     :param remaining_turns: Number of turns left including the current one.
     :return: Command to print while standing at MOLECULES.
     """
-    chosen = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, available, remaining_turns, "MOLECULES")
+    chosen = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, planned_available, remaining_turns, "MOLECULES")
     if not chosen:
         return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
     if batch_complete(chosen, me.storage, me.expertise):
         return "GOTO LABORATORY"
-    return f"CONNECT {next_needed_molecule(chosen, me.storage, me.expertise, available, opponent.expertise)}"
+    return f"CONNECT {next_needed_molecule(chosen, me.storage, me.expertise, available, planned_available, opponent.expertise)}"
 
 
 def best_owned_batch(
@@ -557,19 +559,21 @@ def next_needed_molecule(
     storage: tuple[int, int, int, int, int],
     expertise: tuple[int, int, int, int, int],
     available: tuple[int, int, int, int, int],
+    planned_available: tuple[int, int, int, int, int],
     opponent_expertise: tuple[int, int, int, int, int],
 ) -> str:
     """:param samples: Samples currently carried by our robot.
     :param storage: Molecules currently carried by our robot.
     :param expertise: Expertise already gained by our robot.
     :param available: Molecules still available in the pool.
+    :param planned_available: Molecules forecast to remain after opponent pressure.
     :param opponent_expertise: Expertise already gained by the opponent.
     :return: Next molecule type to collect.
     """
     missing = batch_missing_vector(samples, storage, expertise)
     best_index = min(
         (index for index, need in enumerate(missing) if need),
-        key=lambda index: (available[index], -missing[index], opponent_expertise[index], index),
+        key=lambda index: (planned_available[index], available[index], -missing[index], opponent_expertise[index], index),
     )
     return MOLECULE_TYPES[best_index]
 

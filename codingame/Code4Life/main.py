@@ -449,9 +449,13 @@ def expertise_need_value(expertise: list[int], index: int) -> int:
     :param index: Molecule type index whose expertise gain is being valued.
     :return: Small heuristic bonus for improving that expertise type.
     """
-    count = sum(project[index] > expertise[index] for project in ACTIVE_PROJECTS)
-    close = any(project[index] == expertise[index] + 1 for project in ACTIVE_PROJECTS)
-    return 6 * count + 8 * close
+    value = 0
+    for project in ACTIVE_PROJECTS:
+        if project[index] <= expertise[index]:
+            continue
+        remaining = sum(max(need - have - (slot == index), 0) for slot, (need, have) in enumerate(zip(project, expertise)))
+        value += max(24 - 4 * remaining, 0)
+    return value
 
 
 def choose_at_laboratory(

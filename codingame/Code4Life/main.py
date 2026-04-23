@@ -151,7 +151,7 @@ def choose_action(
         case "SAMPLES":
             return choose_at_samples(me, mine, cloud, remaining_turns)
         case "DIAGNOSIS":
-            return choose_at_diagnosis(me, available, planned_available, mine, cloud, remaining_turns)
+            return choose_at_diagnosis(me, opponent, available, planned_available, mine, cloud, remaining_turns)
         case "MOLECULES":
             return choose_at_molecules(me, opponent, available, planned_available, mine, cloud, remaining_turns)
         case "LABORATORY":
@@ -192,6 +192,7 @@ def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int)
 
 def choose_at_diagnosis(
     me: Player,
+    opponent: Player,
     available: tuple[int, int, int, int, int],
     planned_available: tuple[int, int, int, int, int],
     mine: list[Sample],
@@ -199,6 +200,7 @@ def choose_at_diagnosis(
     remaining_turns: int,
 ) -> str:
     """:param me: Current state of our robot.
+    :param opponent: Current state of the opposing robot.
     :param available: Molecules still available in the pool.
     :param planned_available: Molecules forecast to remain after opponent pressure.
     :param mine: Samples currently carried by our robot.
@@ -221,6 +223,9 @@ def choose_at_diagnosis(
         return "GOTO MOLECULES"
     rejected = carried_diagnosed_samples(mine)
     if rejected:
+        future = best_owned_batch(rejected, me.storage, me.expertise, released_available(available, opponent), remaining_turns - 1, "DIAGNOSIS")
+        if future:
+            return "WAIT"
         sample = worst_sample(rejected, me.expertise)
         RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
         return f"CONNECT {sample.sample_id}"
@@ -680,7 +685,7 @@ def pressured_available(
     :param opponent_samples: Samples currently carried by the opponent.
     :return: Molecule availability adjusted for immediate opponent pressure.
     """
-    if opponent.target != "MOLECULES" or opponent.eta > 1:
+    if opponent.target != "MOLECULES" or opponent.eta > 2:
         return available
     pressure_batch = best_owned_batch(
         diagnosed_samples(opponent_samples),
@@ -692,6 +697,15 @@ def pressured_available(
     )
     pressure = batch_missing_vector(pressure_batch, opponent.storage, opponent.expertise)
     return tuple(max(pool - need, 0) for pool, need in zip(available, pressure))
+
+
+def released_available(available: tuple[int, int, int, int, int], opponent: Player) -> tuple[int, int, int, int, int]:
+    """:param available: Molecules still available in the pool.
+    :param opponent: Current state of the opposing robot.
+    :return: Molecule availability after an imminent opposing laboratory delivery.
+    """
+    return available if opponent.target != "LABORATORY" or opponent.eta > 1 else \
+        tuple(min(pool + held, 5) for pool, held in zip(available, opponent.storage))
 
 
 def update_projects(me_expertise: tuple[int, int, int, int, int], opponent_expertise: tuple[int, int, int, int, int]):

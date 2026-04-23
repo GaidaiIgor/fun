@@ -145,7 +145,7 @@ def choose_action(
         case "SAMPLES":
             return choose_at_samples(me, mine, cloud, remaining_turns)
         case "DIAGNOSIS":
-            return choose_at_diagnosis(me, planned_available, mine, cloud, remaining_turns)
+            return choose_at_diagnosis(me, available, planned_available, mine, cloud, remaining_turns)
         case "MOLECULES":
             return choose_at_molecules(me, opponent, available, mine, cloud, remaining_turns)
         case "LABORATORY":
@@ -187,12 +187,14 @@ def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int)
 def choose_at_diagnosis(
     me: Player,
     available: tuple[int, int, int, int, int],
+    planned_available: tuple[int, int, int, int, int],
     mine: list[Sample],
     cloud: list[Sample],
     remaining_turns: int,
 ) -> str:
     """:param me: Current state of our robot.
     :param available: Molecules still available in the pool.
+    :param planned_available: Molecules forecast to remain after opponent pressure.
     :param mine: Samples currently carried by our robot.
     :param cloud: Samples currently available in the cloud.
     :param remaining_turns: Number of turns left including the current one.
@@ -202,7 +204,7 @@ def choose_at_diagnosis(
     if undiagnosed:
         return f"CONNECT {undiagnosed[0].sample_id}"
     diagnosed = carried_diagnosed_samples(mine)
-    chosen = best_batch(diagnosed, diagnosed_samples(cloud), me.storage, me.expertise, available, remaining_turns)
+    chosen = best_batch(diagnosed, diagnosed_samples(cloud), me.storage, me.expertise, available, planned_available, remaining_turns)
     chosen_ids = {sample.sample_id for sample in chosen}
     rejected = [sample for sample in diagnosed if sample.sample_id not in chosen_ids]
     if rejected:
@@ -226,6 +228,7 @@ def best_batch(
     storage: tuple[int, int, int, int, int],
     expertise: tuple[int, int, int, int, int],
     available: tuple[int, int, int, int, int],
+    planned_available: tuple[int, int, int, int, int],
     remaining_turns: int,
 ) -> list[Sample]:
     """:param mine: Diagnosed samples currently carried by our robot.
@@ -233,6 +236,7 @@ def best_batch(
     :param storage: Molecules currently carried by our robot.
     :param expertise: Expertise already gained by our robot.
     :param available: Molecules still available in the pool.
+    :param planned_available: Molecules forecast to remain after opponent pressure.
     :param remaining_turns: Number of turns left including the current one.
     :return: Highest-value finishable batch reachable from DIAGNOSIS.
     """
@@ -249,7 +253,7 @@ def best_batch(
                 finish_time = finish_time_from("DIAGNOSIS", batch, size, storage, expertise)
                 if finish_time > remaining_turns:
                     continue
-                value = batch_value(batch, finish_time, expertise, available)
+                value = batch_value(batch, finish_time, expertise, planned_available)
                 if value > best_value:
                     best = batch
                     best_value = value

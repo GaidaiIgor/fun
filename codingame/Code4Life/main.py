@@ -74,9 +74,10 @@ def main():
         me, opponent, available, samples = read_turn()
         update_projects(me.expertise, opponent.expertise)
         mine = [sample for sample in samples if sample.carried_by == SELF]
+        theirs = [sample for sample in samples if sample.carried_by == 1]
         cloud = [sample for sample in samples if sample.carried_by == -1]
         remaining_turns = TOTAL_TURNS - turn
-        action = choose_action(me, opponent, available, mine, cloud, remaining_turns)
+        action = choose_action(me, opponent, available, mine, theirs, cloud, remaining_turns)
         debug(
             f"t={turn} at={me.target} eta={me.eta} hp={me.score} hold={me.storage} "
             f"exp={me.expertise} ids={[sample.sample_id for sample in mine]} -> {action}"
@@ -130,6 +131,7 @@ def choose_action(
     opponent: Player,
     available: tuple[int, int, int, int, int],
     mine: list[Sample],
+    theirs: list[Sample],
     cloud: list[Sample],
     remaining_turns: int,
 ) -> str:
@@ -137,13 +139,14 @@ def choose_action(
     :param opponent: Current state of the opposing robot.
     :param available: Molecules still available in the pool.
     :param mine: Samples currently carried by our robot.
+    :param theirs: Samples currently carried by the opposing robot.
     :param cloud: Samples currently available in the cloud.
     :param remaining_turns: Number of turns left including the current one.
     :return: Command to print for the current turn.
     """
     if me.eta:
         return "WAIT"
-    planned_available = pressured_available(available, opponent)
+    planned_available = pressured_available(available, opponent, theirs)
     match me.target:
         case "SAMPLES":
             return choose_at_samples(me, mine, cloud, remaining_turns)
@@ -250,7 +253,8 @@ def best_batch(
         for size in range(min(room, len(candidates)) + 1):
             for extra in combinations(candidates, size):
                 batch = ordered_samples([*owned, *extra], expertise)
-                if not batch or not batch_fits(batch, storage, expertise, available):
+                if not batch or not batch_fits(batch, storage, expertise, available) or size and \
+                    not batch_fits(batch, storage, expertise, planned_available):
                     continue
                 finish_time = finish_time_from("DIAGNOSIS", batch, size, storage, expertise)
                 if finish_time > remaining_turns:
@@ -662,13 +666,28 @@ def batch_health(samples: list[Sample]) -> int:
     return sum(sample.health for sample in samples)
 
 
-def pressured_available(available: tuple[int, int, int, int, int], opponent: Player) -> tuple[int, int, int, int, int]:
+def pressured_available(
+    available: tuple[int, int, int, int, int],
+    opponent: Player,
+    opponent_samples: list[Sample],
+) -> tuple[int, int, int, int, int]:
     """:param available: Molecules still available in the pool.
     :param opponent: Current state of the opposing robot.
+    :param opponent_samples: Samples currently carried by the opponent.
     :return: Molecule availability adjusted for immediate opponent pressure.
     """
-    pressure = 2 if opponent.target == "MOLECULES" and opponent.eta <= 1 else 0
-    return tuple(max(pool - pressure, 0) for pool in available)
+    if opponent.target != "MOLECULES" or opponent.eta > 1:
+        return available
+    pressure_batch = best_owned_batch(
+        diagnosed_samples(opponent_samples),
+        opponent.storage,
+        opponent.expertise,
+        available,
+        TOTAL_TURNS,
+        "MOLECULES",
+    )
+    pressure = batch_missing_vector(pressure_batch, opponent.storage, opponent.expertise)
+    return tuple(max(pool - need, 0) for pool, need in zip(available, pressure))
 
 
 def update_projects(me_expertise: tuple[int, int, int, int, int], opponent_expertise: tuple[int, int, int, int, int]):

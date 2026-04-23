@@ -59,29 +59,31 @@ class Drone:
 
 
 @dataclass(slots=True)
+class PlayerState:
+    """Stores one player's turn snapshot.
+    :var score: Current player score.
+    :var known_scans: Fish ids already scanned by the player, whether saved or currently carried.
+    :var saved_scans: Fish ids already saved by the player.
+    :var drones: Player drones keyed by id in the exact server order.
+    """
+    score: int
+    known_scans: set[int]
+    saved_scans: set[int]
+    drones: dict[int, Drone]
+
+
+@dataclass(slots=True)
 class GameState:
     """Stores one full turn snapshot.
     :var turn_number: Zero-based turn index.
-    :var my_score: Our current score.
-    :var foe_score: Enemy current score.
-    :var my_saved_scans: Fish ids already saved by us.
-    :var my_known_scans: Fish ids already scanned by us, whether saved or currently carried.
-    :var foe_saved_scans: Fish ids already saved by the enemy.
-    :var foe_known_scans: Fish ids already scanned by the enemy, whether saved or currently carried.
-    :var my_drones: Our drones keyed by id in the exact server order.
-    :var foe_drones: Enemy drones keyed by id in the exact server order.
+    :var my_state: Our current player state.
+    :var foe_state: Enemy current player state.
     :var fishes: Current fish states keyed by creature id.
     :var monsters: Current monster states keyed by creature id.
     """
     turn_number: int
-    my_score: int
-    foe_score: int
-    my_saved_scans: set[int]
-    my_known_scans: set[int]
-    foe_saved_scans: set[int]
-    foe_known_scans: set[int]
-    my_drones: dict[int, Drone]
-    foe_drones: dict[int, Drone]
+    my_state: PlayerState
+    foe_state: PlayerState
     fishes: dict[int, Creature] = field(default_factory=dict)
     monsters: dict[int, Creature] = field(default_factory=dict)
 
@@ -92,9 +94,9 @@ def main_loop():
     while True:
         game_state = update_game_state(previous_game_state)
 
-        for drone in game_state.my_drones.values():
+        for drone in game_state.my_state.drones.values():
             print(f"drone {drone.id}: pos=({drone.coords[0]}, {drone.coords[1]})", file=sys.stderr)
-        for foe_drone in game_state.foe_drones.values():
+        for foe_drone in game_state.foe_state.drones.values():
             print(f"foe drone {foe_drone.id}: pos=({foe_drone.coords[0]}, {foe_drone.coords[1]})", file=sys.stderr)
         for fish in game_state.fishes.values():
             if fish.coords is None:
@@ -129,7 +131,7 @@ def read_initial_data() -> GameState:
             monsters[creature_id] = creature
         else:
             fishes[creature_id] = creature
-    return GameState(0, 0, 0, set(), set(), set(), set(), {}, {}, fishes, monsters)
+    return GameState(0, PlayerState(0, set(), set(), {}), PlayerState(0, set(), set(), {}), fishes, monsters)
 
 
 def update_game_state(previous_game_state: GameState) -> GameState:
@@ -148,40 +150,29 @@ def read_game_state(previous_game_state: GameState) -> GameState:
     :param previous_game_state: Previous turn state used as metadata and carry-over reference.
     :return: Fresh current-turn game state.
     """
-    my_score = int(input())
-    foe_score = int(input())
-    my_scan_count = int(input())
-    my_saved_scans = set()
-    for _ in range(my_scan_count):
-        my_saved_scans.add(int(input()))
-    foe_scan_count = int(input())
-    foe_saved_scans = set()
-    for _ in range(foe_scan_count):
-        foe_saved_scans.add(int(input()))
+    scores = [int(input()) for _ in range(2)]
+    saved_scans = []
+    for _ in range(2):
+        player_saved_scans = set()
+        for _ in range(int(input())):
+            player_saved_scans.add(int(input()))
+        saved_scans.append(player_saved_scans)
 
-    my_drone_count = int(input())
-    my_drones = {}
-    for _ in range(my_drone_count):
-        drone_id, drone_x, drone_y, emergency, battery = map(int, input().split())
-        my_drones[drone_id] = Drone(drone_id, np.array((drone_x, drone_y)), bool(emergency), battery)
-
-    foe_drone_count = int(input())
-    foe_drones = {}
-    for _ in range(foe_drone_count):
-        drone_id, drone_x, drone_y, emergency, battery = map(int, input().split())
-        foe_drones[drone_id] = Drone(drone_id, np.array((drone_x, drone_y)), bool(emergency), battery)
+    drones = []
+    for _ in range(2):
+        player_drones = {}
+        for _ in range(int(input())):
+            drone_id, drone_x, drone_y, emergency, battery = map(int, input().split())
+            player_drones[drone_id] = Drone(drone_id, np.array((drone_x, drone_y)), bool(emergency), battery)
+        drones.append(player_drones)
 
     drone_scan_count = int(input())
-    my_known_scans = set(my_saved_scans)
-    foe_known_scans = set(foe_saved_scans)
+    known_scans = [set(saved_scans[0]), set(saved_scans[1])]
     for _ in range(drone_scan_count):
         drone_id, creature_id = map(int, input().split())
-        if drone_id in my_drones:
-            my_drones[drone_id].scans.add(creature_id)
-            my_known_scans.add(creature_id)
-        else:
-            foe_drones[drone_id].scans.add(creature_id)
-            foe_known_scans.add(creature_id)
+        player_ind = 0 if drone_id in drones[0] else 1
+        drones[player_ind][drone_id].scans.add(creature_id)
+        known_scans[player_ind].add(creature_id)
 
     fishes = {creature_id: Creature(creature_id, fish.color, fish.kind) for creature_id, fish in previous_game_state.fishes.items()}
     monsters = {creature_id: Creature(creature_id, monster.color, monster.kind) for creature_id, monster in previous_game_state.monsters.items()}
@@ -200,9 +191,9 @@ def read_game_state(previous_game_state: GameState) -> GameState:
     for _ in range(radar_blip_count):
         drone_id_str, creature_id_str, radar_location = input().split()
         drone_id, creature_id = int(drone_id_str), int(creature_id_str)
-        my_drones[drone_id].radar[creature_id] = radar_location
-    return GameState(previous_game_state.turn_number + 1, my_score, foe_score, my_saved_scans, my_known_scans, foe_saved_scans, foe_known_scans, my_drones,
-                     foe_drones, fishes, monsters)
+        drones[0][drone_id].radar[creature_id] = radar_location
+    states = [PlayerState(scores[player_ind], known_scans[player_ind], saved_scans[player_ind], drones[player_ind]) for player_ind in range(2)]
+    return GameState(previous_game_state.turn_number + 1, states[0], states[1], fishes, monsters)
 
 
 def update_fishes(game_state: GameState, previous_game_state: GameState):
@@ -214,10 +205,10 @@ def update_fishes(game_state: GameState, previous_game_state: GameState):
         if fish.coords is not None:
             fish.region = np.array((fish.coords[0], fish.coords[0], fish.coords[1], fish.coords[1]))
             continue
-        if all(fish.id not in drone.radar for drone in game_state.my_drones.values()):
+        if all(fish.id not in drone.radar for drone in game_state.my_state.drones.values()):
             fish.region = None
             continue
-        current_region = get_radar_region(fish, game_state.my_drones)
+        current_region = get_radar_region(fish, game_state.my_state.drones)
         previous_region = previous_game_state.fishes[fish.id].region
         if previous_region is not None:
             current_region[0] = max(current_region[0], previous_region[0] - MAX_FISH_SPEED)
@@ -260,8 +251,8 @@ def update_monsters(game_state: GameState, previous_game_state: GameState):
         if monster.coords is None and previous_game_state.monsters[monster.id].coords is not None:
             monster.coords = previous_game_state.monsters[monster.id].coords + previous_game_state.monsters[monster.id].velocity
 
-    drones = game_state.my_drones | game_state.foe_drones
-    previous_drones = previous_game_state.my_drones | previous_game_state.foe_drones
+    drones = game_state.my_state.drones | game_state.foe_state.drones
+    previous_drones = previous_game_state.my_state.drones | previous_game_state.foe_state.drones
     drone_light_circles = [(drone.coords, BIG_SCAN_RADIUS if drone.battery < previous_drones[drone_id].battery else SCAN_RADIUS)
                            for drone_id, drone in drones.items()]
     for monster in game_state.monsters.values():
@@ -319,14 +310,19 @@ def choose_action(game_state: GameState):
     """Chooses move targets and light settings for both drones.
     :param game_state: Parsed state for the current turn.
     """
-    my_base, my_bonus, foe_base, foe_bonus = get_projected_scores(game_state)
-    my_base_2, my_bonus_2, foe_base_2, foe_bonus_2 = get_projected_scores(game_state, False)
-    my_advantage = my_base + my_bonus > foe_base + foe_bonus
-    defense_mode = foe_base_2 + foe_bonus_2 > my_base_2 + my_bonus_2
-    print(f"Projected: my_base={my_base}, my_bonus={my_bonus}, foe_base={foe_base}, foe_bonus={foe_bonus}", file=sys.stderr)
+    player_states = [game_state.my_state, game_state.foe_state]
+    base_scores, bonus_scores = get_projected_scores(game_state, player_states)
+    defense_base_scores, defense_bonus_scores = get_projected_scores(game_state, player_states[::-1], False)
+    totals = [base_scores[player_ind] + bonus_scores[player_ind] for player_ind in range(2)]
+    defense_totals = [defense_base_scores[player_ind] + defense_bonus_scores[player_ind] for player_ind in range(2)]
+    my_advantage = totals[0] > totals[1]
+    defense_mode = defense_totals[0] > defense_totals[1]
+    print(f"Projected: my_base={base_scores[0]}, my_bonus={bonus_scores[0]}, foe_base={base_scores[1]}, foe_bonus={bonus_scores[1]}", file=sys.stderr)
+    print(f"Projected: my_base={defense_base_scores[1]}, my_bonus={defense_bonus_scores[1]}, "
+          f"foe_base={defense_base_scores[0]}, foe_bonus={defense_bonus_scores[0]}", file=sys.stderr)
     drone_paths = get_drone_paths(game_state)
     monsters = [monster for monster in game_state.monsters.values() if monster.coords is not None]
-    for drone in game_state.my_drones.values():
+    for drone in game_state.my_state.drones.values():
         max_depth = get_max_depth(drone, game_state)
         blocked_by_depth = defense_mode and max_depth is not None and drone.coords[1] >= max_depth
         drone_path = drone_paths[drone.id]
@@ -346,41 +342,38 @@ def choose_action(game_state: GameState):
         print(f"MOVE {safe_target[0]} {safe_target[1]} {light}")
 
 
-def get_projected_scores(game_state: GameState, use_claim_y: bool = True) -> tuple[int, int, int, int]:
-    """Calculates projected final base and bonus scores for both sides.
+def get_projected_scores(game_state: GameState, states: list[PlayerState], use_claim_y: bool = True) -> tuple[list[int], list[int]]:
+    """Calculates projected final base and bonus scores for two players in the given order.
     :param game_state: Parsed state for the current turn.
+    :param states: Two player states whose projections should be returned in the same order.
     :param use_claim_y: Whether enemy blockers must also be above our claim depth.
-    :return: Our projected base score, our projected bonus score, foe projected base score, foe projected bonus score.
+    :return: Projected base scores and projected bonus scores in the same player order.
     """
     existing_fish_ids = {fish.id for fish in game_state.fishes.values() if fish.region is not None}
-    my_possible_scans = existing_fish_ids | game_state.my_known_scans
-    foe_possible_scans = existing_fish_ids | game_state.foe_known_scans
-    my_base = get_base_score(game_state.fishes, my_possible_scans)
-    foe_base = get_base_score(game_state.fishes, foe_possible_scans)
-    my_saved_bonus = game_state.my_score - get_base_score(game_state.fishes, game_state.my_saved_scans)
-    foe_saved_bonus = game_state.foe_score - get_base_score(game_state.fishes, game_state.foe_saved_scans)
+    possible_scans = [existing_fish_ids | state.known_scans for state in states]
+    base_scores = [get_base_score(game_state.fishes, scans) for scans in possible_scans]
+    saved_bonus_scores = [states[player_ind].score - get_base_score(game_state.fishes, states[player_ind].saved_scans) for player_ind in range(2)]
     future_bonus_pool = 0
-    my_claimable_bonus = 0
+    claimable_bonus = 0
     bonus_items = [(fish.kind + 1, {fish.id}) for fish in game_state.fishes.values()]
     bonus_items += [(4, {fish.id for fish in game_state.fishes.values() if fish.kind == kind}) for kind in range(3)]
     bonus_items += [(3, {fish.id for fish in game_state.fishes.values() if fish.color == color}) for color in range(4)]
     for points, required_scans in bonus_items:
-        if required_scans <= game_state.my_saved_scans or required_scans <= game_state.foe_saved_scans:
-            continue
-        if not required_scans <= my_possible_scans and not required_scans <= foe_possible_scans:
+        if required_scans <= states[0].saved_scans or required_scans <= states[1].saved_scans or \
+            not required_scans <= possible_scans[0] and not required_scans <= possible_scans[1]:
             continue
         future_bonus_pool += points
-        if not required_scans <= game_state.my_known_scans:
+        if not required_scans <= states[0].known_scans:
             continue
-        if not required_scans <= game_state.foe_known_scans:
-            my_claimable_bonus += points
+        if not required_scans <= states[1].known_scans or not use_claim_y:
+            claimable_bonus += points
             continue
-        claim_y = max(drone.coords[1] for drone in game_state.my_drones.values() if drone.scans & (required_scans - game_state.my_saved_scans))
-        foe_can_deny = any(drone.coords[1] < FIELD_SIZE // 2 and (not use_claim_y or drone.coords[1] < claim_y)
-                           and drone.scans & (required_scans - game_state.foe_saved_scans) for drone in game_state.foe_drones.values())
-        if not foe_can_deny:
-            my_claimable_bonus += points
-    return my_base, my_saved_bonus + my_claimable_bonus, foe_base, foe_saved_bonus + future_bonus_pool - my_claimable_bonus
+        claim_ys = [max(drone.coords[1] for drone in states[player_ind].drones.values() if drone.scans & (required_scans - states[player_ind].saved_scans))
+                    for player_ind in range(2)]
+        if not (claim_ys[1] < FIELD_SIZE // 2 and claim_ys[1] < claim_ys[0]):
+            claimable_bonus += points
+    bonus_scores = [saved_bonus_scores[0] + claimable_bonus, saved_bonus_scores[1] + future_bonus_pool - claimable_bonus]
+    return base_scores, bonus_scores
 
 
 def get_base_score(fishes: dict[int, Creature], obtainable_scans: set[int]) -> int:
@@ -401,8 +394,8 @@ def get_max_depth(drone: Drone, game_state: GameState) -> int | None:
     :param game_state: Parsed state for the current turn.
     :return: Deepest allowed defense-mode y-coordinate for this drone, or None if no foe drone competes with it.
     """
-    competing_foe_depths = [foe_drone.coords[1] for foe_drone in game_state.foe_drones.values()
-                            if (drone.scans & foe_drone.scans) - game_state.my_saved_scans - game_state.foe_saved_scans]
+    competing_foe_depths = [foe_drone.coords[1] for foe_drone in game_state.foe_state.drones.values()
+                            if (drone.scans & foe_drone.scans) - game_state.my_state.saved_scans - game_state.foe_state.saved_scans]
     return None if not competing_foe_depths else max(0, min(competing_foe_depths) - 800)
 
 
@@ -423,8 +416,9 @@ def get_drone_paths(game_state: GameState) -> dict[int, list[IntArray]]:
     :param game_state: Parsed state for the current turn.
     :return: Full target coordinate path for each drone.
     """
-    drone_ids = tuple(game_state.my_drones)
-    fish_ids = [fish_id for fish_id in sorted(game_state.fishes) if fish_id not in game_state.my_known_scans and game_state.fishes[fish_id].region is not None]
+    drone_ids = tuple(game_state.my_state.drones)
+    fish_ids = \
+        [fish_id for fish_id in sorted(game_state.fishes) if fish_id not in game_state.my_state.known_scans and game_state.fishes[fish_id].region is not None]
     fish_coords = {fish_id: get_midpoint(game_state.fishes[fish_id].region) for fish_id in fish_ids}
     drone_paths = {drone_id: [] for drone_id in drone_ids}
     drone_path_fish_ids = {drone_id: [] for drone_id in drone_ids}
@@ -435,7 +429,7 @@ def get_drone_paths(game_state: GameState) -> dict[int, list[IntArray]]:
         best_fish_id = fish_ids[0]
         for fish_id in fish_ids:
             for drone_id in drone_ids:
-                previous_coords = game_state.my_drones[drone_id].coords if not drone_paths[drone_id] else drone_paths[drone_id][-1]
+                previous_coords = game_state.my_state.drones[drone_id].coords if not drone_paths[drone_id] else drone_paths[drone_id][-1]
                 candidate_length = path_lengths[drone_id] + np.linalg.norm(fish_coords[fish_id] - previous_coords)
                 other_drone_id = drone_ids[1] if drone_id == drone_ids[0] else drone_ids[0]
                 candidate_score = max(candidate_length, path_lengths[other_drone_id]), min(fish_coords[fish_id][0], FIELD_SIZE - fish_coords[fish_id][0])
@@ -443,14 +437,14 @@ def get_drone_paths(game_state: GameState) -> dict[int, list[IntArray]]:
                     best_score = candidate_score
                     best_drone_id = drone_id
                     best_fish_id = fish_id
-        previous_coords = game_state.my_drones[best_drone_id].coords if not drone_paths[best_drone_id] else drone_paths[best_drone_id][-1]
+        previous_coords = game_state.my_state.drones[best_drone_id].coords if not drone_paths[best_drone_id] else drone_paths[best_drone_id][-1]
         drone_paths[best_drone_id].append(fish_coords[best_fish_id])
         drone_path_fish_ids[best_drone_id].append(best_fish_id)
         path_lengths[best_drone_id] += np.linalg.norm(fish_coords[best_fish_id] - previous_coords)
         fish_ids.remove(best_fish_id)
 
     for drone_id in drone_ids:
-        previous_coords = game_state.my_drones[drone_id].coords
+        previous_coords = game_state.my_state.drones[drone_id].coords
         path = []
         for path_ind in range(len(drone_paths[drone_id])):
             coords = drone_paths[drone_id][path_ind]
@@ -516,7 +510,7 @@ def choose_light(drone: Drone, target: IntArray, game_state: GameState, blocked_
     drone_end = get_end_point(drone.coords, target, DRONE_SPEED)
     scan_probability_threshold = SCAN_PROBABILITY / 2 if blocked_by_depth else SCAN_PROBABILITY
     fish_likely_nearby = any(get_scan_probability(fish.region, drone_end, BIG_SCAN_RADIUS) > scan_probability_threshold
-                             for fish_id, fish in game_state.fishes.items() if fish_id not in game_state.my_known_scans and fish.region is not None)
+                             for fish_id, fish in game_state.fishes.items() if fish_id not in game_state.my_state.known_scans and fish.region is not None)
     return int(drone.battery >= 5 and fish_likely_nearby)
 
 

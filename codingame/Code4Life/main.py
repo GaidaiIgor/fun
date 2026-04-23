@@ -187,7 +187,15 @@ def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int)
     :return: Rank to request from the samples machine.
     """
     total = sum(expertise)
-    return 1 if remaining_turns <= 12 else 2 if remaining_turns <= 22 or total < 8 or remaining_turns <= 34 else 3
+    return 1 if remaining_turns <= 12 or total < 4 and best_project_gap(expertise) <= 10 else \
+        2 if remaining_turns <= 22 or total < 8 or remaining_turns <= 34 else 3
+
+
+def best_project_gap(expertise: tuple[int, int, int, int, int]) -> int:
+    """:param expertise: Expertise already gained by our robot.
+    :return: Smallest remaining expertise distance to any active science project.
+    """
+    return min((sum(max(need - have, 0) for need, have in zip(project, expertise)) for project in ACTIVE_PROJECTS), default=99)
 
 
 def choose_at_diagnosis(

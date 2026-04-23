@@ -419,36 +419,37 @@ def get_depth_limited_target(drone_path: list[IntArray], max_depth: int) -> IntA
 
 
 def get_drone_paths(game_state: GameState) -> dict[int, list[IntArray]]:
-    """Builds greedy fish-center paths for both drones.
+    """Builds greedy fish-center paths for both drones, prioritizing deeper fish kinds first.
     :param game_state: Parsed state for the current turn.
     :return: Full target coordinate path for each drone.
     """
     drone_ids = tuple(game_state.my_state.drones)
-    fish_ids = \
-        [fish_id for fish_id in sorted(game_state.fishes) if fish_id not in game_state.my_state.known_scans and game_state.fishes[fish_id].region is not None]
-    fish_coords = {fish_id: get_midpoint(game_state.fishes[fish_id].region) for fish_id in fish_ids}
+    fish_coords = {fish_id: get_midpoint(fish.region) for fish_id, fish in game_state.fishes.items()
+                   if fish_id not in game_state.my_state.known_scans and fish.region is not None}
     drone_paths = {drone_id: [] for drone_id in drone_ids}
     drone_path_fish_ids = {drone_id: [] for drone_id in drone_ids}
     path_lengths = {drone_id: 0 for drone_id in drone_ids}
-    while fish_ids:
-        best_score = None
-        best_drone_id = drone_ids[0]
-        best_fish_id = fish_ids[0]
-        for fish_id in fish_ids:
-            for drone_id in drone_ids:
-                previous_coords = game_state.my_state.drones[drone_id].coords if not drone_paths[drone_id] else drone_paths[drone_id][-1]
-                candidate_length = path_lengths[drone_id] + np.linalg.norm(fish_coords[fish_id] - previous_coords)
-                other_drone_id = drone_ids[1] if drone_id == drone_ids[0] else drone_ids[0]
-                candidate_score = max(candidate_length, path_lengths[other_drone_id]), min(fish_coords[fish_id][0], FIELD_SIZE - fish_coords[fish_id][0])
-                if best_score is None or candidate_score < best_score:
-                    best_score = candidate_score
-                    best_drone_id = drone_id
-                    best_fish_id = fish_id
-        previous_coords = game_state.my_state.drones[best_drone_id].coords if not drone_paths[best_drone_id] else drone_paths[best_drone_id][-1]
-        drone_paths[best_drone_id].append(fish_coords[best_fish_id])
-        drone_path_fish_ids[best_drone_id].append(best_fish_id)
-        path_lengths[best_drone_id] += np.linalg.norm(fish_coords[best_fish_id] - previous_coords)
-        fish_ids.remove(best_fish_id)
+    for kind in range(2, -1, -1):
+        fish_ids = [fish_id for fish_id in sorted(fish_coords) if game_state.fishes[fish_id].kind == kind]
+        while fish_ids:
+            best_score = None
+            best_drone_id = drone_ids[0]
+            best_fish_id = fish_ids[0]
+            for fish_id in fish_ids:
+                for drone_id in drone_ids:
+                    previous_coords = game_state.my_state.drones[drone_id].coords if not drone_paths[drone_id] else drone_paths[drone_id][-1]
+                    candidate_length = path_lengths[drone_id] + np.linalg.norm(fish_coords[fish_id] - previous_coords)
+                    other_drone_id = drone_ids[1] if drone_id == drone_ids[0] else drone_ids[0]
+                    candidate_score = max(candidate_length, path_lengths[other_drone_id]), min(fish_coords[fish_id][0], FIELD_SIZE - fish_coords[fish_id][0])
+                    if best_score is None or candidate_score < best_score:
+                        best_score = candidate_score
+                        best_drone_id = drone_id
+                        best_fish_id = fish_id
+            previous_coords = game_state.my_state.drones[best_drone_id].coords if not drone_paths[best_drone_id] else drone_paths[best_drone_id][-1]
+            drone_paths[best_drone_id].append(fish_coords[best_fish_id])
+            drone_path_fish_ids[best_drone_id].append(best_fish_id)
+            path_lengths[best_drone_id] += np.linalg.norm(fish_coords[best_fish_id] - previous_coords)
+            fish_ids.remove(best_fish_id)
 
     for drone_id in drone_ids:
         previous_coords = game_state.my_state.drones[drone_id].coords

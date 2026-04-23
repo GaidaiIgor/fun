@@ -1,4 +1,4 @@
-"""Implements an expertise-aware Bronze bot for Code4Life."""
+"""Implements an expertise-aware Silver bot for Code4Life."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ TOTAL_TURNS = 200
 SELF = 0
 MOLECULE_TYPES = "ABCDE"
 PROJECTS: tuple[tuple[int, int, int, int, int], ...] = ()
+ACTIVE_PROJECTS: tuple[tuple[int, int, int, int, int], ...] = ()
 RECENT_DROPS: dict[int, int] = {}
 DISTANCE = {
     "START_POS": {"SAMPLES": 2, "DIAGNOSIS": 2, "MOLECULES": 2, "LABORATORY": 2},
@@ -65,11 +66,13 @@ class Sample:
 
 def main():
     """Runs the game loop and prints one action per turn."""
-    global PROJECTS
+    global ACTIVE_PROJECTS, PROJECTS
     PROJECTS = tuple(tuple(int(value) for value in input().split()) for _ in range(int(input())))
+    ACTIVE_PROJECTS = PROJECTS
     turn = 0
     while True:
         me, opponent, available, samples = read_turn()
+        update_projects(me.expertise, opponent.expertise)
         mine = [sample for sample in samples if sample.carried_by == SELF]
         cloud = [sample for sample in samples if sample.carried_by == -1]
         remaining_turns = TOTAL_TURNS - turn
@@ -218,7 +221,7 @@ def choose_at_diagnosis(
         sample = worst_sample(rejected, me.expertise)
         RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
         return f"CONNECT {sample.sample_id}"
-    return "GOTO SAMPLES" if remaining_turns > 18 else "WAIT"
+    return "GOTO SAMPLES"
 
 
 def best_batch(
@@ -266,7 +269,10 @@ def diagnosis_candidates(cloud: list[Sample], expertise: tuple[int, int, int, in
     :return: Short candidate list worth combining at DIAGNOSIS.
     """
     current_turn = TOTAL_TURNS - remaining_turns
-    cloud = [sample for sample in cloud if current_turn - RECENT_DROPS.get(sample.sample_id, -DROP_COOLDOWN - 1) > DROP_COOLDOWN]
+    cloud = [
+        sample for sample in cloud
+        if remaining_turns <= 18 or current_turn - RECENT_DROPS.get(sample.sample_id, -DROP_COOLDOWN - 1) > DROP_COOLDOWN
+    ]
     pool: dict[int, Sample] = {}
     for sample in sorted(cloud, key=lambda item: sample_priority(item, expertise), reverse=True)[:DIAGNOSIS_SLICE]:
         pool[sample.sample_id] = sample
@@ -394,6 +400,7 @@ def batch_expertise_value(samples: list[Sample], expertise: tuple[int, int, int,
     :return: Bonus value granted to the batch for useful expertise gains.
     """
     progress = list(expertise)
+    active_projects = list(ACTIVE_PROJECTS)
     value = 0
     for sample in samples:
         index = gain_index(sample.gain)
@@ -401,6 +408,9 @@ def batch_expertise_value(samples: list[Sample], expertise: tuple[int, int, int,
             continue
         value += expertise_need_value(progress, index)
         progress[index] += 1
+        completed = [project for project in active_projects if project_complete(project, progress)]
+        value += 50 * len(completed)
+        active_projects = [project for project in active_projects if not project_complete(project, progress)]
     return value
 
 
@@ -423,9 +433,9 @@ def expertise_need_value(expertise: list[int], index: int) -> int:
     :param index: Molecule type index whose expertise gain is being valued.
     :return: Small heuristic bonus for improving that expertise type.
     """
-    count = sum(project[index] > expertise[index] for project in PROJECTS)
-    close = any(project[index] == expertise[index] + 1 for project in PROJECTS)
-    return 4 * count + 4 * close
+    count = sum(project[index] > expertise[index] for project in ACTIVE_PROJECTS)
+    close = any(project[index] == expertise[index] + 1 for project in ACTIVE_PROJECTS)
+    return 6 * count + 8 * close
 
 
 def choose_at_laboratory(
@@ -596,7 +606,13 @@ def sample_priority(sample: Sample, expertise: tuple[int, int, int, int, int]) -
     :return: Comparable tuple describing the sample priority.
     """
     required = sample_required_cost(sample, expertise)
-    reward = sample.health + expertise_need_value(list(expertise), gain_index(sample.gain)) if gain_index(sample.gain) >= 0 else sample.health
+    reward = sample.health
+    index = gain_index(sample.gain)
+    if index >= 0:
+        progress = list(expertise)
+        reward += expertise_need_value(progress, index)
+        progress[index] += 1
+        reward += 50 * sum(project_complete(project, progress) for project in ACTIVE_PROJECTS)
     return reward / (2 + required), reward, -required, -sample.sample_id
 
 
@@ -653,6 +669,25 @@ def pressured_available(available: tuple[int, int, int, int, int], opponent: Pla
     """
     pressure = 2 if opponent.target == "MOLECULES" and opponent.eta <= 1 else 0
     return tuple(max(pool - pressure, 0) for pool in available)
+
+
+def update_projects(me_expertise: tuple[int, int, int, int, int], opponent_expertise: tuple[int, int, int, int, int]):
+    """:param me_expertise: Expertise already gained by our robot.
+    :param opponent_expertise: Expertise already gained by the opponent.
+    """
+    global ACTIVE_PROJECTS
+    ACTIVE_PROJECTS = tuple(
+        project for project in ACTIVE_PROJECTS
+        if not project_complete(project, me_expertise) and not project_complete(project, opponent_expertise)
+    )
+
+
+def project_complete(project: tuple[int, int, int, int, int], expertise: tuple[int, int, int, int, int] | list[int]) -> bool:
+    """:param project: Science project requirements in A-E order.
+    :param expertise: Expertise totals to test against the project.
+    :return: Whether the expertise satisfies the full project.
+    """
+    return all(have >= need for have, need in zip(expertise, project))
 
 
 def gain_index(gain: str) -> int:

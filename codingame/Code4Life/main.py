@@ -138,11 +138,12 @@ def choose_action(
     """
     if me.eta:
         return "WAIT"
+    planned_available = pressured_available(available, opponent)
     match me.target:
         case "SAMPLES":
             return choose_at_samples(me, mine, cloud, remaining_turns)
         case "DIAGNOSIS":
-            return choose_at_diagnosis(me, available, mine, cloud, remaining_turns)
+            return choose_at_diagnosis(me, planned_available, mine, cloud, remaining_turns)
         case "MOLECULES":
             return choose_at_molecules(me, opponent, available, mine, cloud, remaining_turns)
         case "LABORATORY":
@@ -169,7 +170,7 @@ def desired_sample_count(expertise: tuple[int, int, int, int, int], remaining_tu
     :return: Preferred number of carried samples.
     """
     total = sum(expertise)
-    return 1 if remaining_turns <= 26 else 2 if total < 4 else 3
+    return 1 if remaining_turns <= 24 else 2 if total < 2 else 3
 
 
 def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int) -> int:
@@ -178,7 +179,7 @@ def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int)
     :return: Rank to request from the samples machine.
     """
     total = sum(expertise)
-    return 1 if remaining_turns <= 20 or total < 2 else 2 if total < 8 else 3
+    return 1 if remaining_turns <= 18 else 2 if total < 5 or remaining_turns <= 34 else 3
 
 
 def choose_at_diagnosis(
@@ -231,7 +232,7 @@ def best_batch(
     :return: Highest-value finishable batch reachable from DIAGNOSIS.
     """
     best: list[Sample] = []
-    best_value = batch_value([], 0, expertise)
+    best_value = batch_value([], 0, expertise, available)
     room = MAX_SAMPLES - len(mine)
     candidates = diagnosis_candidates(cloud, expertise)
     for owned in sample_subsets(mine):
@@ -243,7 +244,7 @@ def best_batch(
                 finish_time = finish_time_from("DIAGNOSIS", batch, size, storage, expertise)
                 if finish_time > remaining_turns:
                     continue
-                value = batch_value(batch, finish_time, expertise)
+                value = batch_value(batch, finish_time, expertise, available)
                 if value > best_value:
                     best = batch
                     best_value = value
@@ -306,7 +307,7 @@ def best_owned_batch(
     :return: Highest-value finishable subset of carried samples.
     """
     best: list[Sample] = []
-    best_value = batch_value([], 0, expertise)
+    best_value = batch_value([], 0, expertise, available)
     for batch in sample_subsets(mine):
         ordered = ordered_samples(batch, expertise)
         if not ordered or not batch_fits(ordered, storage, expertise, available):
@@ -314,7 +315,7 @@ def best_owned_batch(
         finish_time = finish_time_from(module, ordered, 0, storage, expertise)
         if finish_time > remaining_turns:
             continue
-        value = batch_value(ordered, finish_time, expertise)
+        value = batch_value(ordered, finish_time, expertise, available)
         if value > best_value:
             best = ordered
             best_value = value
@@ -351,15 +352,23 @@ def finish_time_from(
             return DISTANCE[module]["DIAGNOSIS"] + finish_time_from("DIAGNOSIS", samples, extra_downloads, storage, expertise)
 
 
-def batch_value(samples: list[Sample], finish_time: int, expertise: tuple[int, int, int, int, int]) -> tuple[float, int, int, int, int, tuple[int, ...]]:
+def batch_value(
+    samples: list[Sample],
+    finish_time: int,
+    expertise: tuple[int, int, int, int, int],
+    available: tuple[int, int, int, int, int],
+) -> tuple[float, int, int, int, int, int, tuple[int, ...]]:
     """:param samples: Candidate batch of diagnosed samples.
     :param finish_time: Turns needed to complete the batch from the current module.
     :param expertise: Expertise already gained by our robot.
+    :param available: Molecules still available in the pool.
     :return: Comparable tuple describing how attractive the batch is.
     """
     reward = batch_health(samples) + batch_expertise_value(samples, expertise)
+    scarcity = batch_scarcity(samples, expertise, available)
     return (
-        reward / (finish_time + BATCH_RETURN_TURNS) if samples else 0,
+        reward / (finish_time + BATCH_RETURN_TURNS + scarcity / 2) if samples else 0,
+        -scarcity,
         reward,
         batch_health(samples),
         -finish_time,
@@ -382,6 +391,20 @@ def batch_expertise_value(samples: list[Sample], expertise: tuple[int, int, int,
         value += expertise_need_value(progress, index)
         progress[index] += 1
     return value
+
+
+def batch_scarcity(
+    samples: list[Sample],
+    expertise: tuple[int, int, int, int, int],
+    available: tuple[int, int, int, int, int],
+) -> int:
+    """:param samples: Samples whose missing molecules should be evaluated.
+    :param expertise: Expertise already gained by our robot.
+    :param available: Molecules still available in the pool.
+    :return: Penalty representing how contested the batch is under current supply.
+    """
+    required = batch_required_vector(samples, expertise)
+    return sum(need * max(5 - pool, 0) for need, pool in zip(required, available))
 
 
 def expertise_need_value(expertise: list[int], index: int) -> int:
@@ -610,6 +633,14 @@ def batch_health(samples: list[Sample]) -> int:
     :return: Total health granted by the batch.
     """
     return sum(sample.health for sample in samples)
+
+
+def pressured_available(available: tuple[int, int, int, int, int], opponent: Player) -> tuple[int, int, int, int, int]:
+    """:param available: Molecules still available in the pool.
+    :param opponent: Current state of the opposing robot.
+    :return: Molecule availability adjusted for immediate opponent pressure.
+    """
+    return tuple(max(pool - (opponent.target == "MOLECULES" and not opponent.eta), 0) for pool in available)
 
 
 def gain_index(gain: str) -> int:

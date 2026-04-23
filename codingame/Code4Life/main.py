@@ -224,7 +224,10 @@ def choose_at_diagnosis(
     rejected = carried_diagnosed_samples(mine)
     if rejected:
         if len(mine) < desired_sample_count(me.expertise, remaining_turns):
-            return "GOTO SAMPLES"
+            sample = ordered_samples(rejected, me.expertise)[0]
+            index = gain_index(sample.gain)
+            if index >= 0 and any(0 < project[index] - me.expertise[index] <= 2 for project in ACTIVE_PROJECTS):
+                return "GOTO SAMPLES"
         future = best_owned_batch(rejected, me.storage, me.expertise, released_available(available, opponent), remaining_turns - 1, "DIAGNOSIS")
         if future:
             return "WAIT"

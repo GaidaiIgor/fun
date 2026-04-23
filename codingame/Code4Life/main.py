@@ -205,12 +205,6 @@ def choose_at_diagnosis(
         return f"CONNECT {undiagnosed[0].sample_id}"
     diagnosed = carried_diagnosed_samples(mine)
     chosen = best_batch(diagnosed, diagnosed_samples(cloud), me.storage, me.expertise, available, planned_available, remaining_turns)
-    chosen_ids = {sample.sample_id for sample in chosen}
-    rejected = [sample for sample in diagnosed if sample.sample_id not in chosen_ids]
-    if rejected:
-        sample = worst_sample(rejected, me.expertise)
-        RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
-        return f"CONNECT {sample.sample_id}"
     for sample in chosen:
         if sample.carried_by == -1:
             RECENT_DROPS.pop(sample.sample_id, None)
@@ -219,6 +213,11 @@ def choose_at_diagnosis(
         return "GOTO LABORATORY"
     if chosen:
         return "GOTO MOLECULES"
+    rejected = carried_diagnosed_samples(mine)
+    if rejected:
+        sample = worst_sample(rejected, me.expertise)
+        RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
+        return f"CONNECT {sample.sample_id}"
     return "GOTO SAMPLES" if remaining_turns > 18 else "WAIT"
 
 

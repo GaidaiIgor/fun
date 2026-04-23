@@ -175,7 +175,7 @@ def desired_sample_count(expertise: tuple[int, int, int, int, int], remaining_tu
     :return: Preferred number of carried samples.
     """
     total = sum(expertise)
-    return 1 if remaining_turns <= 24 else 2 if total < 2 else 3
+    return 1 if remaining_turns <= 24 else 2 if total < 1 else 3
 
 
 def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int) -> int:
@@ -184,7 +184,7 @@ def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int)
     :return: Rank to request from the samples machine.
     """
     total = sum(expertise)
-    return 1 if remaining_turns <= 18 else 2 if total < 5 or remaining_turns <= 34 else 3
+    return 1 if remaining_turns <= 12 else 2 if remaining_turns <= 22 or total < 5 or remaining_turns <= 34 else 3
 
 
 def choose_at_diagnosis(

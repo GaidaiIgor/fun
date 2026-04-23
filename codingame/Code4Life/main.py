@@ -305,7 +305,7 @@ def choose_at_molecules(
     :param remaining_turns: Number of turns left including the current one.
     :return: Command to print while standing at MOLECULES.
     """
-    chosen = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, planned_available, remaining_turns, "MOLECULES")
+    chosen = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, available, remaining_turns, "MOLECULES")
     if not chosen:
         return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
     if batch_complete(chosen, me.storage, me.expertise):

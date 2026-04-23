@@ -167,7 +167,7 @@ def choose_at_samples(me: Player, mine: list[Sample], cloud: list[Sample], remai
     :param remaining_turns: Number of turns left including the current one.
     :return: Command to print while standing at SAMPLES.
     """
-    if not carried_diagnosed_samples(mine) and len(mine) < desired_sample_count(me.expertise, remaining_turns):
+    if len(mine) < desired_sample_count(me.expertise, remaining_turns):
         return f"CONNECT {sample_rank(me.expertise, remaining_turns)}"
     return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "WAIT"
 
@@ -223,6 +223,8 @@ def choose_at_diagnosis(
         return "GOTO MOLECULES"
     rejected = carried_diagnosed_samples(mine)
     if rejected:
+        if len(mine) < desired_sample_count(me.expertise, remaining_turns):
+            return "GOTO SAMPLES"
         future = best_owned_batch(rejected, me.storage, me.expertise, released_available(available, opponent), remaining_turns - 1, "DIAGNOSIS")
         if future:
             return "WAIT"

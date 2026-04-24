@@ -435,7 +435,7 @@ def choose_at_molecules(
     """
     chosen = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, available, remaining_turns, "MOLECULES")
     if not chosen:
-        future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, eventual_available(available, opponent), remaining_turns - 1, "MOLECULES")
+        future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, released_available(available, opponent), remaining_turns - 1, "MOLECULES")
         if not future:
             return "GOTO DIAGNOSIS" if mine or best_cloud_batch(
                 me, opponent, available, planned_available, theirs, cloud, remaining_turns, "MOLECULES"
@@ -625,7 +625,7 @@ def choose_at_laboratory(
         return f"CONNECT {ordered_samples(producible, me.expertise)[0].sample_id}"
     if chosen:
         return "GOTO MOLECULES"
-    future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, eventual_available(available, opponent), remaining_turns - 1, "LABORATORY")
+    future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, released_available(available, opponent), remaining_turns - 1, "LABORATORY")
     if future:
         molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
         return "GOTO MOLECULES" if molecule is not None else "WAIT"

@@ -220,7 +220,11 @@ def choose_at_diagnosis(
     if undiagnosed:
         return f"CONNECT {undiagnosed[0].sample_id}"
     diagnosed = carried_diagnosed_samples(mine)
+    owned = best_owned_batch(diagnosed, me.storage, me.expertise, available, remaining_turns, "DIAGNOSIS")
     chosen = best_batch(diagnosed, diagnosed_samples(cloud), me.storage, me.expertise, available, planned_available, remaining_turns)
+    if owned and any(sample.carried_by == -1 for sample in chosen) and \
+        batch_completed_projects(chosen, me.expertise) <= batch_completed_projects(owned, me.expertise):
+        chosen = owned
     for sample in chosen:
         if sample.carried_by == -1:
             RECENT_DROPS.pop(sample.sample_id, None)
@@ -282,6 +286,19 @@ def best_batch(
                     best = batch
                     best_value = value
     return best
+
+
+def batch_completed_projects(samples: list[Sample], expertise: tuple[int, int, int, int, int]) -> int:
+    """:param samples: Candidate batch of diagnosed samples.
+    :param expertise: Expertise already gained by our robot.
+    :return: Number of active science projects completed after the batch gains resolve.
+    """
+    progress = list(expertise)
+    for sample in samples:
+        index = gain_index(sample.gain)
+        if index >= 0:
+            progress[index] += 1
+    return sum(project_complete(project, progress) for project in ACTIVE_PROJECTS)
 
 
 def diagnosis_candidates(cloud: list[Sample], expertise: tuple[int, int, int, int, int], remaining_turns: int) -> list[Sample]:

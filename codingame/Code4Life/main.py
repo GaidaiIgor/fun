@@ -187,7 +187,7 @@ def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int)
     :return: Rank to request from the samples machine.
     """
     total = sum(expertise)
-    return 1 if remaining_turns <= 12 or total < 4 and best_project_gap(expertise) <= 10 else \
+    return 1 if remaining_turns <= 12 or 0 < total < 4 and best_project_gap(expertise) <= 10 else \
         2 if remaining_turns <= 22 or total < 8 or remaining_turns <= 34 else 3
 
 

@@ -151,7 +151,7 @@ def choose_action(
         case "SAMPLES":
             return choose_at_samples(me, mine, cloud, remaining_turns)
         case "DIAGNOSIS":
-            return choose_at_diagnosis(me, opponent, available, planned_available, mine, cloud, remaining_turns)
+            return choose_at_diagnosis(me, opponent, available, planned_available, mine, theirs, cloud, remaining_turns)
         case "MOLECULES":
             return choose_at_molecules(me, opponent, available, planned_available, mine, cloud, remaining_turns)
         case "LABORATORY":
@@ -204,6 +204,7 @@ def choose_at_diagnosis(
     available: tuple[int, int, int, int, int],
     planned_available: tuple[int, int, int, int, int],
     mine: list[Sample],
+    theirs: list[Sample],
     cloud: list[Sample],
     remaining_turns: int,
 ) -> str:
@@ -212,6 +213,7 @@ def choose_at_diagnosis(
     :param available: Molecules still available in the pool.
     :param planned_available: Molecules forecast to remain after opponent pressure.
     :param mine: Samples currently carried by our robot.
+    :param theirs: Samples currently carried by the opposing robot.
     :param cloud: Samples currently available in the cloud.
     :param remaining_turns: Number of turns left including the current one.
     :return: Command to print while standing at DIAGNOSIS.
@@ -220,8 +222,18 @@ def choose_at_diagnosis(
     if undiagnosed:
         return f"CONNECT {undiagnosed[0].sample_id}"
     diagnosed = carried_diagnosed_samples(mine)
-    owned = best_owned_batch(diagnosed, me.storage, me.expertise, available, remaining_turns, "DIAGNOSIS")
-    chosen = best_batch(diagnosed, diagnosed_samples(cloud), me.storage, me.expertise, available, planned_available, remaining_turns)
+    project_deadlines = opponent_project_finish_times(opponent, theirs, available)
+    owned = best_owned_batch(diagnosed, me.storage, me.expertise, available, remaining_turns, "DIAGNOSIS", project_deadlines)
+    chosen = best_batch(
+        diagnosed,
+        diagnosed_samples(cloud),
+        me.storage,
+        me.expertise,
+        available,
+        planned_available,
+        remaining_turns,
+        project_deadlines,
+    )
     if owned and any(sample.carried_by == -1 for sample in chosen):
         owned_projects = batch_completed_project_indexes(owned, me.expertise)
         chosen_projects = batch_completed_project_indexes(chosen, me.expertise)
@@ -236,8 +248,7 @@ def choose_at_diagnosis(
                 me.storage,
                 me.expertise,
             )
-            opponent_finish_times = opponent_project_finish_times(opponent, theirs, available)
-            if all(opponent_finish_times.get(index, TOTAL_TURNS) <= chosen_finish_time for index in extra_projects):
+            if all(project_deadlines.get(index, TOTAL_TURNS) <= chosen_finish_time for index in extra_projects):
                 chosen = owned
     for sample in chosen:
         if sample.carried_by == -1:
@@ -313,6 +324,7 @@ def best_batch(
     available: tuple[int, int, int, int, int],
     planned_available: tuple[int, int, int, int, int],
     remaining_turns: int,
+    project_deadlines: dict[int, int] | None = None,
 ) -> list[Sample]:
     """:param mine: Diagnosed samples currently carried by our robot.
     :param cloud: Diagnosed samples currently available in the cloud.
@@ -321,10 +333,11 @@ def best_batch(
     :param available: Molecules still available in the pool.
     :param planned_available: Molecules forecast to remain after opponent pressure.
     :param remaining_turns: Number of turns left including the current one.
+    :param project_deadlines: Earliest opposing finish time for each active project, if race-aware scoring is enabled.
     :return: Highest-value finishable batch reachable from DIAGNOSIS.
     """
     best: list[Sample] = []
-    best_value = batch_value([], 0, expertise, available)
+    best_value = batch_value([], 0, expertise, available, project_deadlines)
     room = MAX_SAMPLES - len(mine)
     candidates = diagnosis_candidates(cloud, expertise, remaining_turns)
     for owned in sample_subsets(mine):
@@ -337,7 +350,7 @@ def best_batch(
                 finish_time = finish_time_from("DIAGNOSIS", batch, size, storage, expertise)
                 if finish_time > remaining_turns:
                     continue
-                value = batch_value(batch, finish_time, expertise, planned_available)
+                value = batch_value(batch, finish_time, expertise, planned_available, project_deadlines)
                 if value > best_value:
                     best = batch
                     best_value = value
@@ -398,6 +411,7 @@ def best_owned_batch(
     available: tuple[int, int, int, int, int],
     remaining_turns: int,
     module: str,
+    project_deadlines: dict[int, int] | None = None,
 ) -> list[Sample]:
     """:param mine: Diagnosed samples currently carried by our robot.
     :param storage: Molecules currently carried by our robot.
@@ -405,10 +419,11 @@ def best_owned_batch(
     :param available: Molecules still available in the pool.
     :param remaining_turns: Number of turns left including the current one.
     :param module: Module from which the robot is planning the finish.
+    :param project_deadlines: Earliest opposing finish time for each active project, if race-aware scoring is enabled.
     :return: Highest-value finishable subset of carried samples.
     """
     best: list[Sample] = []
-    best_value = batch_value([], 0, expertise, available)
+    best_value = batch_value([], 0, expertise, available, project_deadlines)
     for batch in sample_subsets(mine):
         ordered = ordered_samples(batch, expertise)
         if not ordered or not batch_fits(ordered, storage, expertise, available):
@@ -416,7 +431,7 @@ def best_owned_batch(
         finish_time = finish_time_from(module, ordered, 0, storage, expertise)
         if finish_time > remaining_turns:
             continue
-        value = batch_value(ordered, finish_time, expertise, available)
+        value = batch_value(ordered, finish_time, expertise, available, project_deadlines)
         if value > best_value:
             best = ordered
             best_value = value
@@ -458,14 +473,16 @@ def batch_value(
     finish_time: int,
     expertise: tuple[int, int, int, int, int],
     available: tuple[int, int, int, int, int],
+    project_deadlines: dict[int, int] | None = None,
 ) -> tuple[float, int, int, int, int, int, tuple[int, ...]]:
     """:param samples: Candidate batch of diagnosed samples.
     :param finish_time: Turns needed to complete the batch from the current module.
     :param expertise: Expertise already gained by our robot.
     :param available: Molecules still available in the pool.
+    :param project_deadlines: Earliest opposing finish time for each active project, if race-aware scoring is enabled.
     :return: Comparable tuple describing how attractive the batch is.
     """
-    reward = batch_health(samples) + batch_expertise_value(samples, expertise)
+    reward = batch_health(samples) + batch_expertise_value(samples, expertise) + batch_project_value(samples, expertise, finish_time, project_deadlines)
     scarcity = batch_scarcity(samples, expertise, available)
     return (
         reward / (finish_time + BATCH_RETURN_TURNS + scarcity / 2) if samples else 0,
@@ -484,7 +501,6 @@ def batch_expertise_value(samples: list[Sample], expertise: tuple[int, int, int,
     :return: Bonus value granted to the batch for useful expertise gains.
     """
     progress = list(expertise)
-    active_projects = list(ACTIVE_PROJECTS)
     value = 0
     for sample in samples:
         index = gain_index(sample.gain)
@@ -492,10 +508,24 @@ def batch_expertise_value(samples: list[Sample], expertise: tuple[int, int, int,
             continue
         value += expertise_need_value(progress, index)
         progress[index] += 1
-        completed = [project for project in active_projects if project_complete(project, progress)]
-        value += 50 * len(completed)
-        active_projects = [project for project in active_projects if not project_complete(project, progress)]
     return value
+
+
+def batch_project_value(
+    samples: list[Sample],
+    expertise: tuple[int, int, int, int, int],
+    finish_time: int,
+    project_deadlines: dict[int, int] | None,
+) -> int:
+    """:param samples: Samples whose project completions should be valued.
+    :param expertise: Expertise already gained by our robot.
+    :param finish_time: Turns needed to complete the batch from the current module.
+    :param project_deadlines: Earliest opposing finish time for each active project.
+    :return: Bonus value granted for science projects we can still realistically claim first.
+    """
+    if project_deadlines is None:
+        return 50 * len(batch_completed_project_indexes(samples, expertise))
+    return 50 * sum(project_deadlines.get(index, TOTAL_TURNS) > finish_time for index in batch_completed_project_indexes(samples, expertise))
 
 
 def batch_scarcity(

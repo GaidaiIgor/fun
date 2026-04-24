@@ -153,9 +153,9 @@ def choose_action(
         case "DIAGNOSIS":
             return choose_at_diagnosis(me, opponent, available, planned_available, mine, theirs, cloud, remaining_turns)
         case "MOLECULES":
-            return choose_at_molecules(me, opponent, available, planned_available, mine, cloud, remaining_turns)
+            return choose_at_molecules(me, opponent, available, planned_available, mine, theirs, cloud, remaining_turns)
         case "LABORATORY":
-            return choose_at_laboratory(me, opponent, available, planned_available, mine, cloud, remaining_turns)
+            return choose_at_laboratory(me, opponent, available, planned_available, mine, theirs, cloud, remaining_turns)
         case _:
             return "GOTO SAMPLES" if not mine else "GOTO DIAGNOSIS"
 
@@ -381,12 +381,45 @@ def diagnosis_candidates(cloud: list[Sample], expertise: tuple[int, int, int, in
     return list(pool.values())
 
 
+def best_cloud_batch(
+    me: Player,
+    opponent: Player,
+    available: tuple[int, int, int, int, int],
+    planned_available: tuple[int, int, int, int, int],
+    theirs: list[Sample],
+    cloud: list[Sample],
+    remaining_turns: int,
+    module: str,
+) -> list[Sample]:
+    """:param me: Current state of our robot.
+    :param opponent: Current state of the opposing robot.
+    :param available: Molecules still available in the pool.
+    :param planned_available: Molecules forecast to remain after opponent pressure.
+    :param theirs: Samples currently carried by the opposing robot.
+    :param cloud: Samples currently available in the cloud.
+    :param remaining_turns: Number of turns left including the current one.
+    :param module: Module from which the robot would travel to DIAGNOSIS.
+    :return: Best worth-chasing cloud batch reachable after visiting DIAGNOSIS.
+    """
+    return best_batch(
+        [],
+        diagnosed_samples(cloud),
+        me.storage,
+        me.expertise,
+        eventual_available(available, opponent),
+        planned_available,
+        remaining_turns - DISTANCE[module]["DIAGNOSIS"],
+        opponent_project_finish_times(opponent, theirs, available),
+    )
+
+
 def choose_at_molecules(
     me: Player,
     opponent: Player,
     available: tuple[int, int, int, int, int],
     planned_available: tuple[int, int, int, int, int],
     mine: list[Sample],
+    theirs: list[Sample],
     cloud: list[Sample],
     remaining_turns: int,
 ) -> str:
@@ -395,6 +428,7 @@ def choose_at_molecules(
     :param available: Molecules still available in the pool.
     :param planned_available: Molecules forecast to remain after opponent pressure.
     :param mine: Samples currently carried by our robot.
+    :param theirs: Samples currently carried by the opposing robot.
     :param cloud: Samples currently available in the cloud.
     :param remaining_turns: Number of turns left including the current one.
     :return: Command to print while standing at MOLECULES.
@@ -403,7 +437,9 @@ def choose_at_molecules(
     if not chosen:
         future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, eventual_available(available, opponent), remaining_turns - 1, "MOLECULES")
         if not future:
-            return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
+            return "GOTO DIAGNOSIS" if mine or best_cloud_batch(
+                me, opponent, available, planned_available, theirs, cloud, remaining_turns, "MOLECULES"
+            ) else "GOTO SAMPLES"
         molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
         return "WAIT" if molecule is None else f"CONNECT {molecule}"
     if batch_complete(chosen, me.storage, me.expertise):
@@ -569,6 +605,7 @@ def choose_at_laboratory(
     available: tuple[int, int, int, int, int],
     planned_available: tuple[int, int, int, int, int],
     mine: list[Sample],
+    theirs: list[Sample],
     cloud: list[Sample],
     remaining_turns: int,
 ) -> str:
@@ -577,6 +614,7 @@ def choose_at_laboratory(
     :param available: Molecules still available in the pool.
     :param planned_available: Molecules forecast to remain after opponent pressure.
     :param mine: Samples currently carried by our robot.
+    :param theirs: Samples currently carried by the opposing robot.
     :param cloud: Samples currently available in the cloud.
     :param remaining_turns: Number of turns left including the current one.
     :return: Command to print while standing at LABORATORY.
@@ -591,7 +629,9 @@ def choose_at_laboratory(
     if future:
         molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
         return "GOTO MOLECULES" if molecule is not None else "WAIT"
-    return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
+    return "GOTO DIAGNOSIS" if mine or best_cloud_batch(
+        me, opponent, available, planned_available, theirs, cloud, remaining_turns, "LABORATORY"
+    ) else "GOTO SAMPLES"
 
 
 def sample_subsets(samples: list[Sample]) -> list[list[Sample]]:

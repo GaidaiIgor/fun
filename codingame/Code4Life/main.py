@@ -188,7 +188,7 @@ def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int)
     """
     total = sum(expertise)
     covered = sum(value > 0 for value in expertise)
-    return 1 if remaining_turns <= 12 or 1 < total < 4 and best_project_gap(expertise) <= 10 else \
+    return 1 if remaining_turns <= 12 or 2 < total < 5 and best_project_gap(expertise) <= 10 else \
         3 if remaining_turns > 34 and total >= 7 and max(expertise) >= 3 and covered >= 4 else \
         2 if remaining_turns <= 22 or total < 8 or remaining_turns <= 34 else 3
 

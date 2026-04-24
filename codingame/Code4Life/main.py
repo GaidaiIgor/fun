@@ -222,9 +222,23 @@ def choose_at_diagnosis(
     diagnosed = carried_diagnosed_samples(mine)
     owned = best_owned_batch(diagnosed, me.storage, me.expertise, available, remaining_turns, "DIAGNOSIS")
     chosen = best_batch(diagnosed, diagnosed_samples(cloud), me.storage, me.expertise, available, planned_available, remaining_turns)
-    if owned and any(sample.carried_by == -1 for sample in chosen) and \
-        batch_completed_projects(chosen, me.expertise) <= batch_completed_projects(owned, me.expertise):
-        chosen = owned
+    if owned and any(sample.carried_by == -1 for sample in chosen):
+        owned_projects = batch_completed_project_indexes(owned, me.expertise)
+        chosen_projects = batch_completed_project_indexes(chosen, me.expertise)
+        extra_projects = chosen_projects - owned_projects
+        if not extra_projects:
+            chosen = owned
+        else:
+            chosen_finish_time = finish_time_from(
+                "DIAGNOSIS",
+                chosen,
+                sum(sample.carried_by == -1 for sample in chosen),
+                me.storage,
+                me.expertise,
+            )
+            opponent_finish_times = opponent_project_finish_times(opponent, theirs, available)
+            if all(opponent_finish_times.get(index, TOTAL_TURNS) <= chosen_finish_time for index in extra_projects):
+                chosen = owned
     for sample in chosen:
         if sample.carried_by == -1:
             RECENT_DROPS.pop(sample.sample_id, None)
@@ -247,6 +261,48 @@ def choose_at_diagnosis(
         RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
         return f"CONNECT {sample.sample_id}"
     return "GOTO SAMPLES"
+
+
+def batch_completed_project_indexes(samples: list[Sample], expertise: tuple[int, int, int, int, int]) -> set[int]:
+    """:param samples: Candidate batch of diagnosed samples.
+    :param expertise: Expertise already gained by our robot.
+    :return: Indexes of active science projects completed after the batch gains resolve.
+    """
+    progress = list(expertise)
+    for sample in samples:
+        index = gain_index(sample.gain)
+        if index >= 0:
+            progress[index] += 1
+    return {index for index, project in enumerate(ACTIVE_PROJECTS) if project_complete(project, progress)}
+
+
+def player_finish_time_from(player: Player, samples: list[Sample]) -> int:
+    """:param player: Current state of the player being evaluated.
+    :param samples: Diagnosed samples the player may try to finish.
+    :return: Turns needed for the player to finish the batch from the current state.
+    """
+    return player.eta + finish_time_from(player.target, ordered_samples(samples, player.expertise), 0, player.storage, player.expertise)
+
+
+def opponent_project_finish_times(
+    opponent: Player,
+    theirs: list[Sample],
+    available: tuple[int, int, int, int, int],
+) -> dict[int, int]:
+    """:param opponent: Current state of the opposing robot.
+    :param theirs: Samples currently carried by the opposing robot.
+    :param available: Molecules still available in the pool.
+    :return: Earliest opponent finish time for every currently claimable active project.
+    """
+    finish_times: dict[int, int] = {}
+    for batch in sample_subsets(diagnosed_samples(theirs)):
+        ordered = ordered_samples(batch, opponent.expertise)
+        if not ordered or not batch_fits(ordered, opponent.storage, opponent.expertise, available):
+            continue
+        finish_time = player_finish_time_from(opponent, ordered)
+        for index in batch_completed_project_indexes(ordered, opponent.expertise):
+            finish_times[index] = min(finish_times.get(index, TOTAL_TURNS), finish_time)
+    return finish_times
 
 
 def best_batch(
@@ -286,19 +342,6 @@ def best_batch(
                     best = batch
                     best_value = value
     return best
-
-
-def batch_completed_projects(samples: list[Sample], expertise: tuple[int, int, int, int, int]) -> int:
-    """:param samples: Candidate batch of diagnosed samples.
-    :param expertise: Expertise already gained by our robot.
-    :return: Number of active science projects completed after the batch gains resolve.
-    """
-    progress = list(expertise)
-    for sample in samples:
-        index = gain_index(sample.gain)
-        if index >= 0:
-            progress[index] += 1
-    return sum(project_complete(project, progress) for project in ACTIVE_PROJECTS)
 
 
 def diagnosis_candidates(cloud: list[Sample], expertise: tuple[int, int, int, int, int], remaining_turns: int) -> list[Sample]:

@@ -439,7 +439,10 @@ def choose_at_molecules(
             future = best_owned_batch(
                 diagnosed_samples(mine), me.storage, me.expertise, eventual_available(available, opponent), remaining_turns - 1, "MOLECULES"
             )
-            if future and opponent.target == "MOLECULES" and opponent.eta <= 1:
+            if future and (
+                (opponent.target == "MOLECULES" and opponent.eta <= 1)
+                or (opponent.target == "LABORATORY" and opponent.eta <= 2)
+            ):
                 molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
                 return "WAIT" if molecule is None else f"CONNECT {molecule}"
             return "GOTO DIAGNOSIS" if mine or best_cloud_batch(

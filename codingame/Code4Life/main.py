@@ -155,7 +155,7 @@ def choose_action(
         case "MOLECULES":
             return choose_at_molecules(me, opponent, available, planned_available, mine, cloud, remaining_turns)
         case "LABORATORY":
-            return choose_at_laboratory(me, available, mine, cloud, remaining_turns)
+            return choose_at_laboratory(me, opponent, available, planned_available, mine, cloud, remaining_turns)
         case _:
             return "GOTO SAMPLES" if not mine else "GOTO DIAGNOSIS"
 
@@ -223,13 +223,14 @@ def choose_at_diagnosis(
         return f"CONNECT {undiagnosed[0].sample_id}"
     diagnosed = carried_diagnosed_samples(mine)
     project_deadlines = opponent_project_finish_times(opponent, theirs, available)
-    owned = best_owned_batch(diagnosed, me.storage, me.expertise, available, remaining_turns, "DIAGNOSIS", project_deadlines)
+    reserve = eventual_available(available, opponent)
+    owned = best_owned_batch(diagnosed, me.storage, me.expertise, reserve, remaining_turns, "DIAGNOSIS", project_deadlines)
     chosen = best_batch(
         diagnosed,
         diagnosed_samples(cloud),
         me.storage,
         me.expertise,
-        available,
+        reserve,
         planned_available,
         remaining_turns,
         project_deadlines,
@@ -265,7 +266,7 @@ def choose_at_diagnosis(
             index = gain_index(sample.gain)
             if index >= 0 and any(0 < project[index] - me.expertise[index] <= 2 for project in ACTIVE_PROJECTS):
                 return "GOTO SAMPLES"
-        future = best_owned_batch(rejected, me.storage, me.expertise, released_available(available, opponent), remaining_turns - 1, "DIAGNOSIS")
+        future = best_owned_batch(rejected, me.storage, me.expertise, reserve, remaining_turns - 1, "DIAGNOSIS")
         if future:
             return "WAIT"
         sample = worst_sample(rejected, me.expertise)
@@ -398,7 +399,11 @@ def choose_at_molecules(
     """
     chosen = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, available, remaining_turns, "MOLECULES")
     if not chosen:
-        return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
+        future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, eventual_available(available, opponent), remaining_turns - 1, "MOLECULES")
+        if not future:
+            return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
+        molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
+        return "WAIT" if molecule is None else f"CONNECT {molecule}"
     if batch_complete(chosen, me.storage, me.expertise):
         return "GOTO LABORATORY"
     return f"CONNECT {next_needed_molecule(chosen, me.storage, me.expertise, available, planned_available, opponent.expertise)}"
@@ -558,13 +563,17 @@ def expertise_need_value(expertise: list[int], index: int) -> int:
 
 def choose_at_laboratory(
     me: Player,
+    opponent: Player,
     available: tuple[int, int, int, int, int],
+    planned_available: tuple[int, int, int, int, int],
     mine: list[Sample],
     cloud: list[Sample],
     remaining_turns: int,
 ) -> str:
     """:param me: Current state of our robot.
+    :param opponent: Current state of the opposing robot.
     :param available: Molecules still available in the pool.
+    :param planned_available: Molecules forecast to remain after opponent pressure.
     :param mine: Samples currently carried by our robot.
     :param cloud: Samples currently available in the cloud.
     :param remaining_turns: Number of turns left including the current one.
@@ -576,6 +585,10 @@ def choose_at_laboratory(
         return f"CONNECT {ordered_samples(producible, me.expertise)[0].sample_id}"
     if chosen:
         return "GOTO MOLECULES"
+    future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, eventual_available(available, opponent), remaining_turns - 1, "LABORATORY")
+    if future:
+        molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
+        return "GOTO MOLECULES" if molecule is not None else "WAIT"
     return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "GOTO SAMPLES"
 
 
@@ -688,6 +701,30 @@ def next_needed_molecule(
         key=lambda index: (planned_available[index], available[index], -missing[index], opponent_expertise[index], index),
     )
     return MOLECULE_TYPES[best_index]
+
+
+def next_collectable_molecule(
+    samples: list[Sample],
+    storage: tuple[int, int, int, int, int],
+    expertise: tuple[int, int, int, int, int],
+    available: tuple[int, int, int, int, int],
+    planned_available: tuple[int, int, int, int, int],
+    opponent_expertise: tuple[int, int, int, int, int],
+) -> str | None:
+    """:param samples: Samples currently carried by our robot.
+    :param storage: Molecules currently carried by our robot.
+    :param expertise: Expertise already gained by our robot.
+    :param available: Molecules still available in the pool.
+    :param planned_available: Molecules forecast to remain after opponent pressure.
+    :param opponent_expertise: Expertise already gained by the opponent.
+    :return: Next molecule type that can be collected immediately, if any.
+    """
+    missing = batch_missing_vector(samples, storage, expertise)
+    collectable = [index for index, need in enumerate(missing) if need and available[index]]
+    return None if not collectable else MOLECULE_TYPES[min(
+        collectable,
+        key=lambda index: (planned_available[index], available[index], -missing[index], opponent_expertise[index], index),
+    )]
 
 
 def ready_samples(
@@ -813,6 +850,15 @@ def released_available(available: tuple[int, int, int, int, int], opponent: Play
     """
     return available if opponent.target != "LABORATORY" or opponent.eta > 1 else \
         tuple(min(pool + held, 5) for pool, held in zip(available, opponent.storage))
+
+
+def eventual_available(available: tuple[int, int, int, int, int], opponent: Player) -> tuple[int, int, int, int, int]:
+    """:param available: Molecules still available in the pool.
+    :param opponent: Current state of the opposing robot.
+    :return: Approximate future supply after near-term opposing deliveries release held molecules.
+    """
+    return tuple(min(pool + held, 5) for pool, held in zip(available, opponent.storage)) if opponent.target in {"MOLECULES", "LABORATORY"} and \
+        opponent.eta <= 3 else released_available(available, opponent)
 
 
 def update_projects(me_expertise: tuple[int, int, int, int, int], opponent_expertise: tuple[int, int, int, int, int]):

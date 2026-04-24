@@ -225,7 +225,7 @@ def choose_at_diagnosis(
         return f"CONNECT {undiagnosed[0].sample_id}"
     diagnosed = carried_diagnosed_samples(mine)
     project_deadlines = opponent_project_finish_times(opponent, theirs, available)
-    reserve = eventual_available(available, opponent)
+    reserve = released_available(available, opponent)
     owned = best_owned_batch(diagnosed, me.storage, me.expertise, reserve, remaining_turns, "DIAGNOSIS", project_deadlines)
     chosen = best_batch(
         diagnosed,
@@ -266,9 +266,11 @@ def choose_at_diagnosis(
         future = best_owned_batch(rejected, me.storage, me.expertise, reserve, remaining_turns - 1, "DIAGNOSIS")
         if future:
             return "WAIT"
-        if len(mine) < desired_sample_count(me.expertise, remaining_turns):
-            return "GOTO SAMPLES"
         sample = worst_sample(rejected, me.expertise)
+        if len(mine) < desired_sample_count(me.expertise, remaining_turns):
+            index = gain_index(sample.gain)
+            if index >= 0 and any(0 < project[index] - me.expertise[index] <= 2 for project in ACTIVE_PROJECTS):
+                return "GOTO SAMPLES"
         RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
         return f"CONNECT {sample.sample_id}"
     return "GOTO SAMPLES"
@@ -630,10 +632,6 @@ def choose_at_laboratory(
         return "GOTO MOLECULES"
     future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, released_available(available, opponent), remaining_turns - 1, "LABORATORY")
     if future:
-        molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
-        return "GOTO MOLECULES" if molecule is not None else "WAIT"
-    future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, eventual_available(available, opponent), remaining_turns - 1, "LABORATORY")
-    if future and opponent.target == "MOLECULES" and opponent.eta <= 1:
         molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
         return "GOTO MOLECULES" if molecule is not None else "WAIT"
     return "GOTO DIAGNOSIS" if mine or best_cloud_batch(

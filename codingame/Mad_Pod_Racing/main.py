@@ -12,6 +12,7 @@ from scipy.optimize import minimize
 
 DRAG = 0.85
 BOOST_THRUST = 650
+BOOST_ANGLE_TOL = 1
 COMMAND_TARGET_DIST = 10000
 MAX_TURN_DEG = 18
 
@@ -50,7 +51,12 @@ def main():
     while True:
         prev_game_state = game_state
         game_state = update_game_state(prev_game_state)
-        print(f"pos={game_state.player.position}, vel={game_state.player.velocity}, dir={game_state.player.direction}", file=sys.stderr)
+
+        log("Our pod:")
+        log(f"pos={game_state.player.position}; vel={game_state.player.velocity}; |v|={linalg.norm(game_state.player.velocity):.3g}; "
+            f"angle={game_state.player.direction:.3g}")
+        log("Enemy pod:")
+        log(f"pos={game_state.opponent.position}")
 
         target_pos, thrust = choose_move(game_state)
         if thrust == "BOOST":
@@ -112,13 +118,27 @@ def choose_move(game_state: GameState) -> tuple[NDArray[int], int | str]:
     direction_guess = normalize_angle(game_state.player.direction + direction_delta_guess)
     direction_bounds = (game_state.player.direction - MAX_TURN_DEG, game_state.player.direction + MAX_TURN_DEG)
     result = minimize(lambda move: linalg.norm(predict_next(game_state.player, move[0], move[1]).position - checkpoint_pos),
-                      np.array((direction_guess, 100)), bounds=(direction_bounds, (0, 100)), method="Powell")
-    print(f"guess=({direction_guess:g}, 100), optimized=({result.x[0]:g}, {result.x[1]:g})", file=sys.stderr)
-
+                      np.array((direction_guess, 100)), bounds=(direction_bounds, (0, 100)), method="Nelder-Mead")
     direction = normalize_angle(result.x[0])
     thrust = round(result.x[1])
-    if game_state.player.direction == checkpoint_direction and linalg.norm(checkpoint_delta) > 5000 and game_state.player.boosts:
+    checkpoint_dist = linalg.norm(checkpoint_delta)
+    velocity_angle = -math.degrees(math.atan2(game_state.player.velocity[1], game_state.player.velocity[0]))
+    if abs(game_state.player.direction - checkpoint_direction) <= BOOST_ANGLE_TOL and checkpoint_dist > 5000 and game_state.player.boosts:
         thrust = "BOOST"
+
+    log("This turn:")
+    log(f"my CP dist={round(checkpoint_dist)}; enemy CP dist={round(linalg.norm(game_state.opponent.position - checkpoint_pos))}")
+    log(f"CP angle={checkpoint_direction:.3g}; velocity angle={velocity_angle:.3g}")
+    log(f"optimized move=({result.x[0]:.3g}, {result.x[1]:.3g})")
+    log(f"Predicted:")
+    predicted_player = predict_next(game_state.player, direction, BOOST_THRUST if thrust == "BOOST" else thrust)
+    guess_dist = linalg.norm(predict_next(game_state.player, direction_guess, 100).position - checkpoint_pos)
+    predicted_checkpoint_delta = checkpoint_pos - predicted_player.position
+    predicted_checkpoint_angle = -math.degrees(math.atan2(predicted_checkpoint_delta[1], predicted_checkpoint_delta[0]))
+    predicted_velocity_angle = -math.degrees(math.atan2(predicted_player.velocity[1], predicted_player.velocity[0]))
+    log(f"pos={predicted_player.position}; guess CP dist={round(guess_dist)}; opt CP dist={round(result.fun)}")
+    log(f"CP angle={predicted_checkpoint_angle:.3g}; velocity angle={predicted_velocity_angle:.3g}")
+
     direction_rad = math.radians(direction)
     target_pos = np.rint(game_state.player.position + np.array((math.cos(direction_rad), -math.sin(direction_rad))) * COMMAND_TARGET_DIST).astype(int)
     return target_pos, thrust
@@ -150,4 +170,23 @@ def normalize_angle(angle: float) -> float:
     return (angle + 180) % 360 - 180
 
 
+def log(msg: str):
+    """Prints a debug message.
+    :param msg: Message to print.
+    """
+    print(msg, file=sys.stderr)
+
+
+def test():
+    cp = np.array([10041, 5966])
+    current = Player(np.array([4511, 6283]), np.array([539, -137]), 4.28, None, None)
+    predicted1 = predict_next(current, 3.28, 100)
+    dist1 = linalg.norm(predicted1.position - cp)
+    predicted2 = predict_next(current, -10, 50)
+    dist2 = linalg.norm(predicted2.position - cp)
+    print(predicted1.position, dist1)
+    print(predicted2.position, dist2)
+
+
 main()
+# test()

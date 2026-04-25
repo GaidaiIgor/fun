@@ -5,11 +5,14 @@ import sys
 from dataclasses import dataclass
 
 import numpy as np
+from numpy import linalg
 from numpy.typing import NDArray
+from scipy.optimize import minimize
 
 
 DRAG = 0.85
 BOOST_THRUST = 650
+COMMAND_TARGET_DIST = 10000
 MAX_TURN_DEG = 18
 
 
@@ -49,15 +52,10 @@ def main():
         game_state = update_game_state(prev_game_state)
         print(f"pos={game_state.player.position}, vel={game_state.player.velocity}, dir={game_state.player.direction}", file=sys.stderr)
 
-        next_checkpoint_pos = game_state.checkpoints[game_state.player.next_checkpoint_ind]
-        next_checkpoint_delta = next_checkpoint_pos - game_state.player.position
-        next_checkpoint_dist = np.linalg.norm(next_checkpoint_delta)
-        target_direction = -math.degrees(math.atan2(next_checkpoint_delta[1], next_checkpoint_delta[0]))
-        thrust = 0 if abs(game_state.player.direction - target_direction) > 90 else 100
-        if game_state.player.direction == target_direction and next_checkpoint_dist > 5000 and game_state.player.boosts:
-            thrust = "BOOST"
+        target_pos, thrust = choose_move(game_state)
+        if thrust == "BOOST":
             game_state.player.boosts -= 1
-        print(*next_checkpoint_pos, thrust)
+        print(*target_pos, thrust)
 
 
 def update_game_state(prev_game_state: GameState | None) -> GameState:
@@ -100,6 +98,30 @@ def update_checkpoint_state(checkpoints: list[NDArray[int]], next_checkpoint: ND
     if next_checkpoint_ind == len(checkpoints):
         checkpoints = [*checkpoints, next_checkpoint]
     return checkpoints, next_checkpoint_ind
+
+
+def choose_move(game_state: GameState) -> tuple[NDArray[int], int | str]:
+    """Chooses a command minimizing predicted distance to the next checkpoint.
+    :param game_state: Current game state.
+    :return: Target coordinates and thrust command.
+    """
+    checkpoint_pos = game_state.checkpoints[game_state.player.next_checkpoint_ind]
+    checkpoint_delta = checkpoint_pos - game_state.player.position
+    checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
+    direction_delta_guess = np.clip(normalize_angle(checkpoint_direction - game_state.player.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
+    direction_guess = normalize_angle(game_state.player.direction + direction_delta_guess)
+    direction_bounds = (game_state.player.direction - MAX_TURN_DEG, game_state.player.direction + MAX_TURN_DEG)
+    result = minimize(lambda move: linalg.norm(predict_next(game_state.player, move[0], move[1]).position - checkpoint_pos),
+                      np.array((direction_guess, 100)), bounds=(direction_bounds, (0, 100)), method="Powell")
+    print(f"guess=({direction_guess:g}, 100), optimized=({result.x[0]:g}, {result.x[1]:g})", file=sys.stderr)
+
+    direction = normalize_angle(result.x[0])
+    thrust = round(result.x[1])
+    if game_state.player.direction == checkpoint_direction and linalg.norm(checkpoint_delta) > 5000 and game_state.player.boosts:
+        thrust = "BOOST"
+    direction_rad = math.radians(direction)
+    target_pos = np.rint(game_state.player.position + np.array((math.cos(direction_rad), -math.sin(direction_rad))) * COMMAND_TARGET_DIST).astype(int)
+    return target_pos, thrust
 
 
 def predict_next(current: Player, direction: float, thrust: float) -> Player:

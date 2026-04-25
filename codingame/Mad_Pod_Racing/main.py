@@ -19,11 +19,13 @@ class Player:
     :var position: Pod center coordinates.
     :var velocity: Pod velocity vector since the previous turn.
     :var direction: Pod angle in degrees from the positive x-axis, positive toward negative y, or None when unknown.
+    :var next_checkpoint_ind: Index of the current checkpoint in checkpoints, or None when unknown.
     :var boosts: Number of unused boosts, or None when unknown.
     """
     position: NDArray[int]
     velocity: NDArray[int]
     direction: float | None
+    next_checkpoint_ind: int | None
     boosts: int | None
 
 
@@ -33,12 +35,10 @@ class GameState:
     :var player: Our pod state.
     :var opponent: The opponent pod state.
     :var checkpoints: Known checkpoint coordinates starting with the initial pod position.
-    :var next_checkpoint_ind: Index of the current checkpoint in checkpoints.
     """
     player: Player
     opponent: Player
     checkpoints: list[NDArray[int]]
-    next_checkpoint_ind: int
 
 
 def main():
@@ -49,7 +49,7 @@ def main():
         game_state = read_game_state(prev_game_state)
         print(f"pos={game_state.player.position}, vel={game_state.player.velocity}, dir={game_state.player.direction}", file=sys.stderr)
 
-        next_checkpoint_pos = game_state.checkpoints[game_state.next_checkpoint_ind]
+        next_checkpoint_pos = game_state.checkpoints[game_state.player.next_checkpoint_ind]
         next_checkpoint_delta = next_checkpoint_pos - game_state.player.position
         next_checkpoint_dist = np.linalg.norm(next_checkpoint_delta)
         target_direction = -math.degrees(math.atan2(next_checkpoint_delta[1], next_checkpoint_delta[0]))
@@ -90,8 +90,8 @@ def read_game_state(prev_game_state: GameState | None) -> GameState:
             break
     if next_checkpoint_ind == len(checkpoints):
         checkpoints = [*checkpoints, next_checkpoint]
-    return GameState(Player(player_pos, player_velocity, player_direction, boosts), Player(opponent_pos, opponent_velocity, None, None), checkpoints,
-                     next_checkpoint_ind)
+    return GameState(Player(player_pos, player_velocity, player_direction, next_checkpoint_ind, boosts),
+                     Player(opponent_pos, opponent_velocity, None, None, None), checkpoints)
 
 
 main()

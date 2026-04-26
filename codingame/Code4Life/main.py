@@ -51,9 +51,12 @@ project_count = int(input())
 science_projects = [list(map(int, input().split())) for _ in range(project_count)]
 
 
+prev_signature = None
+stall_turns = 0
+
+
 def effective_need(sample, robot):
     return [max(0, sample.costs[i] - robot.expertise[i]) for i in range(5)]
-
 
 
 def missing_need(sample, robot):
@@ -61,10 +64,13 @@ def missing_need(sample, robot):
     return [max(0, need[i] - robot.storage[i]) for i in range(5)]
 
 
-
 def total_missing(sample, robot):
     return sum(missing_need(sample, robot))
 
+
+def storage_overlap(sample, robot):
+    need = effective_need(sample, robot)
+    return sum(min(need[i], robot.storage[i]) for i in range(5))
 
 
 def can_finish_now(sample, robot):
@@ -73,10 +79,14 @@ def can_finish_now(sample, robot):
     return all(sample.costs[i] <= robot.expertise[i] + robot.storage[i] for i in range(5))
 
 
-
 def can_finish_with_empty_bag(sample, robot):
     return sample.diagnosed and sum(effective_need(sample, robot)) <= 10
 
+
+def can_finish_from_here(sample, robot):
+    if not sample.diagnosed:
+        return False
+    return total_missing(sample, robot) <= 10 - robot.total_storage
 
 
 def finish_eta(sample, robot, current_module):
@@ -92,7 +102,6 @@ def finish_eta(sample, robot, current_module):
     if current_module == "LABORATORY":
         return DIST["LABORATORY"]["MOLECULES"] + add + DIST["MOLECULES"]["LABORATORY"] + 1
     return DIST[current_module]["MOLECULES"] + add + DIST["MOLECULES"]["LABORATORY"] + 1
-
 
 
 def project_progress_bonus(sample, robot, projects):
@@ -113,7 +122,6 @@ def project_progress_bonus(sample, robot, projects):
     return best
 
 
-
 def desired_rank(robot, turn):
     remaining = TURN_LIMIT - turn
     exp_total = robot.total_expertise
@@ -124,7 +132,6 @@ def desired_rank(robot, turn):
     if exp_total >= 8 and robot.score >= 35 and remaining > 60:
         return 3
     return 2
-
 
 
 def desired_sample_count(robot, turn):
@@ -138,7 +145,6 @@ def desired_sample_count(robot, turn):
     if robot.total_expertise < 2 and robot.score < 10:
         return 2
     return 3
-
 
 
 def sample_value(sample, robot, projects, available, turn):
@@ -159,7 +165,7 @@ def sample_value(sample, robot, projects, available, turn):
     value = 5.6 * sample.health - 2.4 * need_total - 1.4 * missing_total - 8.0 * scarcity
     value += project_bonus
     value += 7 - 3 * abs(sample.rank - desired_rank(robot, turn))
-    value += 4 if sample.gain is not None else 0
+    value += 3.0 * storage_overlap(sample, robot)
 
     if sample.rank == 1 and sample.health == 1 and (robot.total_expertise >= 2 or robot.score >= 3):
         value -= 42
@@ -172,8 +178,10 @@ def sample_value(sample, robot, projects, available, turn):
     elif eta + 4 > remaining:
         value -= 40
 
-    return value
+    if total_missing(sample, robot) > 10 - robot.total_storage:
+        value -= 80
 
+    return value
 
 
 def best_ready_sample(samples, robot, projects):
@@ -183,8 +191,7 @@ def best_ready_sample(samples, robot, projects):
     return max(ready, key=lambda s: 4 * s.health + project_progress_bonus(s, robot, projects))
 
 
-
-def viable_to_keep(sample, robot, available, turn):
+def viable_to_keep(sample, robot, turn):
     if not can_finish_with_empty_bag(sample, robot):
         return False
     if finish_eta(sample, robot, "DIAGNOSIS") > (TURN_LIMIT - turn):
@@ -192,35 +199,36 @@ def viable_to_keep(sample, robot, available, turn):
     return True
 
 
-
 def choose_keep_set(diagnosed, robot, projects, available, turn):
+    if not diagnosed:
+        return set()
     target_count = min(3, max(1, desired_sample_count(robot, turn)))
-    viable = [s for s in diagnosed if viable_to_keep(s, robot, available, turn)]
+
+    viable = [s for s in diagnosed if viable_to_keep(s, robot, turn)]
+    if not viable:
+        viable = diagnosed[:]
+
     viable.sort(key=lambda s: sample_value(s, robot, projects, available, turn), reverse=True)
-
-    keep = []
-    for sample in viable:
-        if len(keep) >= target_count:
-            break
-        keep.append(sample)
-
-    if not keep and diagnosed:
-        best = max(diagnosed, key=lambda s: sample_value(s, robot, projects, available, turn))
-        keep = [best]
-
-    return {s.id for s in keep}
-
+    return {s.id for s in viable[:target_count]}
 
 
 def best_cloud_sample(cloud_samples, robot, projects, available, turn):
-    good = [s for s in cloud_samples if viable_to_keep(s, robot, available, turn)]
-    if not good:
+    if not cloud_samples:
         return None
-    best = max(good, key=lambda s: sample_value(s, robot, projects, available, turn))
-    if sample_value(best, robot, projects, available, turn) >= 28:
-        return best
-    return None
 
+    def key(sample):
+        return sample_value(sample, robot, projects, available, turn) + 4.0 * storage_overlap(sample, robot)
+
+    good = [s for s in cloud_samples if viable_to_keep(s, robot, turn)]
+    if robot.total_storage > 0:
+        overlap_good = [s for s in good if storage_overlap(s, robot) > 0 and can_finish_from_here(s, robot)]
+        if overlap_good:
+            return max(overlap_good, key=key)
+    if good:
+        best = max(good, key=key)
+        if key(best) >= 28:
+            return best
+    return None
 
 
 def target_sample(diagnosed, robot, projects, available, turn):
@@ -228,7 +236,7 @@ def target_sample(diagnosed, robot, projects, available, turn):
     for s in diagnosed:
         if not can_finish_with_empty_bag(s, robot):
             continue
-        if total_missing(s, robot) > 10 - robot.total_storage:
+        if not can_finish_from_here(s, robot):
             continue
         if finish_eta(s, robot, robot.target) > (TURN_LIMIT - turn):
             continue
@@ -239,16 +247,17 @@ def target_sample(diagnosed, robot, projects, available, turn):
     def key(sample):
         missing = total_missing(sample, robot)
         scarcity = sum(max(0, missing_need(sample, robot)[i] - available[i]) for i in range(5))
+        overlap = storage_overlap(sample, robot)
         return (
             sample.health * 6
             + project_progress_bonus(sample, robot, projects)
+            + 5 * overlap
             - 5 * missing
             - 6 * scarcity
             - 3 * abs(sample.rank - desired_rank(robot, turn))
         )
 
     return max(candidates, key=key)
-
 
 
 def best_molecule_for_target(primary, diagnosed, opp_samples, me, opp, available, projects):
@@ -288,12 +297,40 @@ def best_molecule_for_target(primary, diagnosed, opp_samples, me, opp, available
     return best_type
 
 
-
 def worst_diagnosed_to_drop(diagnosed, robot, projects, available, turn):
     if not diagnosed:
         return None
-    return min(diagnosed, key=lambda s: sample_value(s, robot, projects, available, turn))
 
+    def key(sample):
+        bad = -sample_value(sample, robot, projects, available, turn)
+        if not can_finish_from_here(sample, robot):
+            bad += 100
+        bad -= 6 * storage_overlap(sample, robot)
+        return bad
+
+    return max(diagnosed, key=key)
+
+
+def anti_stall_override(turn, me, diagnosed, undiagnosed, ready):
+    global stall_turns
+    if stall_turns < 2:
+        return None
+    remaining = TURN_LIMIT - turn
+    if me.target == "MOLECULES":
+        if ready:
+            return "GOTO LABORATORY"
+        if diagnosed:
+            return "GOTO DIAGNOSIS"
+        return "GOTO SAMPLES" if remaining > 6 else "WAIT"
+    if me.target == "LABORATORY":
+        if diagnosed or undiagnosed:
+            return "GOTO DIAGNOSIS"
+        return "GOTO SAMPLES" if remaining > 6 else "WAIT"
+    if me.target == "DIAGNOSIS":
+        if diagnosed:
+            return f"CONNECT {worst_diagnosed_to_drop(diagnosed, me, science_projects, [5,5,5,5,5], turn).id}"
+        return "GOTO SAMPLES" if remaining > 6 else "WAIT"
+    return None
 
 
 def choose_action(turn, me, opp, available, samples, projects):
@@ -305,10 +342,15 @@ def choose_action(turn, me, opp, available, samples, projects):
     diagnosed = [s for s in my_samples if s.diagnosed]
     ready = [s for s in diagnosed if can_finish_now(s, me)]
     keep_set = choose_keep_set(diagnosed, me, projects, available, turn)
-    to_drop = [s for s in diagnosed if s.id not in keep_set]
+    forced_bad = [s for s in diagnosed if not can_finish_from_here(s, me)]
+    to_drop = forced_bad + [s for s in diagnosed if s.id not in keep_set and s not in forced_bad]
     primary = target_sample(diagnosed, me, projects, available, turn)
     target_count = desired_sample_count(me, turn)
     cloud = best_cloud_sample(cloud_samples, me, projects, available, turn)
+
+    override = anti_stall_override(turn, me, diagnosed, undiagnosed, ready)
+    if override is not None:
+        return override
 
     if remaining <= 4 and not my_samples and not ready:
         return "WAIT"
@@ -327,14 +369,6 @@ def choose_action(turn, me, opp, available, samples, projects):
             return "GOTO LABORATORY"
         if undiagnosed and len(my_samples) >= target_count:
             return "GOTO DIAGNOSIS"
-        if not diagnosed and len(my_samples) < target_count:
-            return f"CONNECT {desired_rank(me, turn)}"
-        if undiagnosed:
-            if len(my_samples) < target_count and remaining > 30:
-                return f"CONNECT {desired_rank(me, turn)}"
-            return "GOTO DIAGNOSIS"
-        if diagnosed:
-            return "GOTO DIAGNOSIS" if to_drop else "GOTO MOLECULES"
         if len(my_samples) < target_count:
             return f"CONNECT {desired_rank(me, turn)}"
         return "GOTO DIAGNOSIS"
@@ -347,20 +381,21 @@ def choose_action(turn, me, opp, available, samples, projects):
         if to_drop:
             worst = worst_diagnosed_to_drop(to_drop, me, projects, available, turn)
             return f"CONNECT {worst.id}"
+        if diagnosed and primary is None:
+            worst = worst_diagnosed_to_drop(diagnosed, me, projects, available, turn)
+            return f"CONNECT {worst.id}"
         if len(my_samples) < target_count:
             if cloud is not None:
                 return f"CONNECT {cloud.id}"
             if remaining > 24 and not diagnosed:
                 return "GOTO SAMPLES"
         if diagnosed:
-            if primary is not None:
-                return "GOTO MOLECULES"
-            return "GOTO SAMPLES" if len(my_samples) < target_count and remaining > 22 else "WAIT"
-        if me.total_storage > 0 and remaining > 12:
-            return "GOTO SAMPLES"
+            return "GOTO MOLECULES"
+        if me.total_storage > 0 and cloud is not None:
+            return f"CONNECT {cloud.id}"
         if len(my_samples) < target_count:
             return "GOTO SAMPLES"
-        return "WAIT"
+        return "GOTO SAMPLES" if remaining > 6 else "WAIT"
 
     if me.target == "MOLECULES":
         best_ready = best_ready_sample(my_samples, me, projects)
@@ -373,13 +408,11 @@ def choose_action(turn, me, opp, available, samples, projects):
                 return "GOTO DIAGNOSIS"
             if me.total_storage > 0 and cloud is not None and remaining > 10:
                 return "GOTO DIAGNOSIS"
-            return "GOTO SAMPLES" if target_count > 0 else "WAIT"
+            return "GOTO SAMPLES" if target_count > 0 else ("GOTO DIAGNOSIS" if me.total_storage > 0 else "WAIT")
         molecule = best_molecule_for_target(primary, diagnosed, opp_samples, me, opp, available, projects)
         if molecule is not None:
             return f"CONNECT {molecule}"
-        if best_ready is not None:
-            return "GOTO LABORATORY"
-        return "GOTO DIAGNOSIS" if to_drop else "WAIT"
+        return "GOTO DIAGNOSIS"
 
     if me.target == "LABORATORY":
         best_ready = best_ready_sample(my_samples, me, projects)
@@ -387,13 +420,13 @@ def choose_action(turn, me, opp, available, samples, projects):
             return f"CONNECT {best_ready.id}"
         if undiagnosed or to_drop:
             return "GOTO DIAGNOSIS"
-        if primary is not None:
-            return "GOTO MOLECULES"
+        if diagnosed:
+            return "GOTO MOLECULES" if primary is not None else "GOTO DIAGNOSIS"
         if cloud is not None and me.total_storage > 0 and remaining > 10:
             return "GOTO DIAGNOSIS"
         if len(my_samples) < target_count or (not my_samples and me.total_storage > 0 and remaining > 12):
             return "GOTO SAMPLES"
-        return "WAIT"
+        return "GOTO DIAGNOSIS" if me.total_storage > 0 and remaining > 6 else "WAIT"
 
     return "WAIT"
 
@@ -434,11 +467,18 @@ while True:
         print("WAIT")
         continue
 
+    my_diag = tuple(sorted(s.id for s in samples if s.carried_by == 0 and s.diagnosed))
+    my_und = tuple(sorted(s.id for s in samples if s.carried_by == 0 and not s.diagnosed))
+    signature = (me.target, tuple(me.storage), my_diag, my_und)
+    if signature == prev_signature:
+        stall_turns += 1
+    else:
+        stall_turns = 0
+    prev_signature = signature
+
     action = choose_action(turn, me, opp, available, samples, science_projects)
-    my_diag = [s.id for s in samples if s.carried_by == 0 and s.diagnosed]
-    my_undiag = [s.id for s in samples if s.carried_by == 0 and not s.diagnosed]
     print(action)
     print(
-        f"t={turn} me={me.target} score={me.score} exp={me.expertise} st={me.storage} diag={my_diag} und={my_undiag} act={action}",
+        f"t={turn} me={me.target} score={me.score} exp={me.expertise} st={me.storage} diag={list(my_diag)} und={list(my_und)} stall={stall_turns} act={action}",
         file=sys.stderr,
     )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from itertools import combinations
+from itertools import combinations, permutations
 
 MAX_SAMPLES = 3
 STORAGE_LIMIT = 10
@@ -79,8 +79,8 @@ def main():
         remaining_turns = TOTAL_TURNS - turn
         action = choose_action(me, opponent, available, mine, theirs, cloud, remaining_turns)
         debug(
-            f"t={turn} at={me.target} eta={me.eta} hp={me.score} hold={me.storage} "
-            f"exp={me.expertise} ids={[sample.sample_id for sample in mine]} -> {action}"
+            f"t={turn} at={me.target}/{me.eta} hp={me.score}-{opponent.score} av={available} hold={me.storage} exp={me.expertise} "
+            f"opp={opponent.target}/{opponent.eta} {opponent.storage}/{opponent.expertise} mine={sample_trace(mine)} cloud={len(cloud)} -> {action}"
         )
         print(action)
         turn += 1
@@ -149,7 +149,7 @@ def choose_action(
     planned_available = pressured_available(available, opponent, theirs)
     match me.target:
         case "SAMPLES":
-            return choose_at_samples(me, mine, cloud, remaining_turns)
+            return choose_at_samples(me, opponent, available, planned_available, mine, theirs, cloud, remaining_turns)
         case "DIAGNOSIS":
             return choose_at_diagnosis(me, opponent, available, planned_available, mine, theirs, cloud, remaining_turns)
         case "MOLECULES":
@@ -160,16 +160,38 @@ def choose_action(
             return "GOTO SAMPLES" if not mine else "GOTO DIAGNOSIS"
 
 
-def choose_at_samples(me: Player, mine: list[Sample], cloud: list[Sample], remaining_turns: int) -> str:
+def choose_at_samples(
+    me: Player,
+    opponent: Player,
+    available: tuple[int, int, int, int, int],
+    planned_available: tuple[int, int, int, int, int],
+    mine: list[Sample],
+    theirs: list[Sample],
+    cloud: list[Sample],
+    remaining_turns: int,
+) -> str:
     """:param me: Current state of our robot.
+    :param opponent: Current state of the opposing robot.
+    :param available: Molecules still available in the pool.
+    :param planned_available: Molecules forecast to remain after opponent pressure.
     :param mine: Samples currently carried by our robot.
+    :param theirs: Samples currently carried by the opposing robot.
     :param cloud: Samples currently available in the cloud.
     :param remaining_turns: Number of turns left including the current one.
     :return: Command to print while standing at SAMPLES.
     """
-    if len(mine) < desired_sample_count(me.expertise, remaining_turns):
+    desired = desired_sample_count(me.expertise, remaining_turns)
+    cloud_batch = best_cloud_batch(me, opponent, available, planned_available, theirs, cloud, remaining_turns, "SAMPLES") if diagnosed_samples(cloud) else []
+    if cloud_batch and (
+        len(mine) >= desired
+        or remaining_turns <= 42
+        or batch_health(cloud_batch) >= 20
+        or batch_completed_project_indexes(cloud_batch, me.expertise)
+    ):
+        return "GOTO DIAGNOSIS"
+    if len(mine) < desired:
         return f"CONNECT {sample_rank(me.expertise, remaining_turns)}"
-    return "GOTO DIAGNOSIS" if mine or diagnosed_samples(cloud) else "WAIT"
+    return "GOTO DIAGNOSIS" if mine or cloud_batch else "WAIT"
 
 
 def desired_sample_count(expertise: tuple[int, int, int, int, int], remaining_turns: int) -> int:
@@ -628,6 +650,8 @@ def choose_at_laboratory(
     :return: Command to print while standing at LABORATORY.
     """
     chosen = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, available, remaining_turns, "LABORATORY")
+    if chosen and sample_fits(chosen[0], me.storage, me.expertise):
+        return f"CONNECT {chosen[0].sample_id}"
     producible = ready_samples(chosen, me.storage, me.expertise)
     if producible:
         return f"CONNECT {ordered_samples(producible, me.expertise)[0].sample_id}"
@@ -724,9 +748,17 @@ def batch_missing_cost(
 def batch_required_vector(samples: list[Sample], expertise: tuple[int, int, int, int, int]) -> tuple[int, int, int, int, int]:
     """:param samples: Samples whose molecule costs should be summed.
     :param expertise: Expertise already gained by our robot.
-    :return: Combined A-E molecule requirements after expertise reductions.
+    :return: Combined A-E molecule requirements after sequential expertise reductions.
     """
-    return tuple(sum(max(sample.cost[index] - expertise[index], 0) for sample in samples) for index in range(5))
+    required = [0, 0, 0, 0, 0]
+    progress = list(expertise)
+    for sample in samples:
+        for index in range(5):
+            required[index] += max(sample.cost[index] - progress[index], 0)
+        index = gain_index(sample.gain)
+        if index >= 0:
+            progress[index] += 1
+    return tuple(required)
 
 
 def next_needed_molecule(
@@ -804,7 +836,18 @@ def ordered_samples(samples: list[Sample], expertise: tuple[int, int, int, int, 
     :param expertise: Expertise already gained by our robot.
     :return: Samples sorted from best immediate value to worst.
     """
-    return sorted(samples, key=lambda sample: sample_priority(sample, expertise), reverse=True)
+    if len(samples) < 2:
+        return list(samples)
+    return list(max(permutations(samples), key=lambda order: order_priority(order, expertise)))
+
+
+def order_priority(samples: tuple[Sample, ...], expertise: tuple[int, int, int, int, int]) -> tuple[int, int, tuple[tuple[float, int, int, int], ...]]:
+    """:param samples: Ordered candidate sequence to score.
+    :param expertise: Expertise already gained by our robot.
+    :return: Comparable tuple preferring low molecule demand and high-value first completions.
+    """
+    required = batch_required_vector(list(samples), expertise)
+    return -sum(required), -max(required), tuple(sample_priority(sample, expertise) for sample in samples)
 
 
 def sample_priority(sample: Sample, expertise: tuple[int, int, int, int, int]) -> tuple[float, int, int, int]:
@@ -940,6 +983,13 @@ def gain_index(gain: str) -> int:
 def debug(message: str):
     """:param message: Human-readable trace emitted to stderr."""
     print(message, file=sys.stderr, flush=True)
+
+
+def sample_trace(samples: list[Sample]) -> str:
+    """:param samples: Samples to summarize for stderr.
+    :return: Compact sample state trace.
+    """
+    return "[" + " ".join(f"{sample.sample_id}:{sample.rank}/{sample.health}/{sample.gain}/{sample.cost}" for sample in samples) + "]"
 
 
 try:

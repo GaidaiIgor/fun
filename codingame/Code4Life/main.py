@@ -69,6 +69,7 @@ def main():
     global ACTIVE_PROJECTS, PROJECTS
     PROJECTS = tuple(tuple(int(value) for value in input().split()) for _ in range(int(input())))
     ACTIVE_PROJECTS = PROJECTS
+    debug(f"projects={PROJECTS}")
     turn = 0
     while True:
         me, opponent, available, samples = read_turn()
@@ -80,7 +81,8 @@ def main():
         action = choose_action(me, opponent, available, mine, theirs, cloud, remaining_turns)
         debug(
             f"t={turn} at={me.target}/{me.eta} hp={me.score}-{opponent.score} av={available} hold={me.storage} exp={me.expertise} "
-            f"opp={opponent.target}/{opponent.eta} {opponent.storage}/{opponent.expertise} mine={sample_trace(mine)} cloud={len(cloud)} -> {action}"
+            f"opp={opponent.target}/{opponent.eta} {opponent.storage}/{opponent.expertise} mine={sample_trace(mine)} cloud={len(cloud)} "
+            f"proj={ACTIVE_PROJECTS} -> {action}"
         )
         print(action)
         turn += 1
@@ -200,7 +202,7 @@ def desired_sample_count(expertise: tuple[int, int, int, int, int], remaining_tu
     :return: Preferred number of carried samples.
     """
     total = sum(expertise)
-    return 1 if remaining_turns <= 24 else 2 if remaining_turns <= 36 or total < 1 else 3
+    return 1 if remaining_turns <= 16 else 2 if remaining_turns <= 30 or total < 1 else 3
 
 
 def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int) -> int:
@@ -210,9 +212,10 @@ def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int)
     """
     total = sum(expertise)
     covered = sum(value > 0 for value in expertise)
-    return 1 if remaining_turns <= 12 or 2 < total < 5 and best_project_gap(expertise) <= 10 else \
-        3 if remaining_turns > 34 and total >= 7 and max(expertise) >= 3 and covered >= 4 else \
-        2 if remaining_turns <= 22 or total < 8 or remaining_turns <= 34 else 3
+    gap = best_project_gap(expertise)
+    return 1 if remaining_turns <= 14 or total < 2 or gap <= 3 and remaining_turns <= 36 else \
+        2 if remaining_turns <= 48 or gap <= 6 and remaining_turns <= 58 or total < 10 else \
+        3 if max(expertise) >= 3 and covered >= 4 else 2
 
 
 def best_project_gap(expertise: tuple[int, int, int, int, int]) -> int:
@@ -288,6 +291,11 @@ def choose_at_diagnosis(
         future = best_owned_batch(rejected, me.storage, me.expertise, reserve, remaining_turns - 1, "DIAGNOSIS")
         if future:
             return "WAIT"
+        eventual = best_owned_batch(
+            rejected, me.storage, me.expertise, eventual_available(available, opponent), remaining_turns - 1, "DIAGNOSIS"
+        )
+        if eventual:
+            return "GOTO MOLECULES"
         sample = worst_sample(rejected, me.expertise)
         if len(mine) < desired_sample_count(me.expertise, remaining_turns):
             index = gain_index(sample.gain)
@@ -624,8 +632,9 @@ def expertise_need_value(expertise: list[int], index: int) -> int:
     for project in ACTIVE_PROJECTS:
         if project[index] <= expertise[index]:
             continue
+        needed = project[index] - expertise[index]
         remaining = sum(max(need - have - (slot == index), 0) for slot, (need, have) in enumerate(zip(project, expertise)))
-        value += max(24 - 4 * remaining, 0)
+        value += 50 if not remaining else max(44 - 6 * remaining, 0) + 3 * needed
     return value
 
 
@@ -660,6 +669,12 @@ def choose_at_laboratory(
     future = best_owned_batch(diagnosed_samples(mine), me.storage, me.expertise, released_available(available, opponent), remaining_turns - 1, "LABORATORY")
     if future:
         molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
+        return "GOTO MOLECULES" if molecule is not None else "WAIT"
+    eventual = best_owned_batch(
+        diagnosed_samples(mine), me.storage, me.expertise, eventual_available(available, opponent), remaining_turns - 1, "LABORATORY"
+    )
+    if eventual:
+        molecule = next_collectable_molecule(eventual, me.storage, me.expertise, available, planned_available, opponent.expertise)
         return "GOTO MOLECULES" if molecule is not None else "WAIT"
     return "GOTO DIAGNOSIS" if mine or best_cloud_batch(
         me, opponent, available, planned_available, theirs, cloud, remaining_turns, "LABORATORY"

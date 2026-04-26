@@ -393,8 +393,14 @@ def should_deny_endgame(
     :return: Whether denying opponent molecules is more urgent than starting more samples.
     """
     batch, value = opponent_threat_batch(opponent, theirs, available, remaining_turns)
-    missing = batch_missing_vector(batch, opponent.storage, opponent.expertise) if batch else (0, 0, 0, 0, 0)
-    return remaining_turns <= 42 and value and opponent.score + value >= me.score - 10 and any(missing)
+    if not value:
+        return False
+    missing = batch_missing_vector(batch, opponent.storage, opponent.expertise)
+    if not any(missing):
+        return False
+    late = remaining_turns <= 42 and opponent.score + value >= me.score - 10
+    comeback = remaining_turns <= 70 and value >= 40 and opponent.score + value >= me.score - 20
+    return late or comeback
 
 
 def denial_molecule(
@@ -409,12 +415,16 @@ def denial_molecule(
     :param theirs: Samples currently carried by the opposing robot.
     :param available: Molecules still available in the pool.
     :param remaining_turns: Number of turns left including the current one.
-    :return: Molecule type to steal from the opponent's late threat, if useful.
+    :return: Molecule type to steal from a dangerous opponent threat, if useful.
     """
     if sum(me.storage) >= STORAGE_LIMIT:
         return None
     batch, value = opponent_threat_batch(opponent, theirs, available, remaining_turns)
-    if not value or opponent.score + value < me.score - 10:
+    if not value:
+        return None
+    late = remaining_turns <= 42 and opponent.score + value >= me.score - 10
+    comeback = remaining_turns <= 70 and value >= 40 and opponent.score + value >= me.score - 20
+    if not (late or comeback):
         return None
     missing = batch_missing_vector(batch, opponent.storage, opponent.expertise)
     collectable = [index for index, need in enumerate(missing) if need and available[index]]
@@ -511,7 +521,8 @@ def diagnosis_candidates(cloud: list[Sample], expertise: tuple[int, int, int, in
     current_turn = TOTAL_TURNS - remaining_turns
     cloud = [
         sample for sample in cloud
-        if remaining_turns <= 18 or current_turn - RECENT_DROPS.get(sample.sample_id, -DROP_COOLDOWN - 1) > DROP_COOLDOWN
+        if not sample_is_junk(sample, expertise, remaining_turns)
+        and (remaining_turns <= 18 or current_turn - RECENT_DROPS.get(sample.sample_id, -DROP_COOLDOWN - 1) > DROP_COOLDOWN)
     ]
     pool: dict[int, Sample] = {}
     for sample in sorted(cloud, key=lambda item: sample_priority(item, expertise), reverse=True)[:DIAGNOSIS_SLICE]:

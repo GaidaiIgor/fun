@@ -82,7 +82,7 @@ def main():
         debug(
             f"t={turn} at={me.target}/{me.eta} hp={me.score}-{opponent.score} av={available} hold={me.storage} exp={me.expertise} "
             f"opp={opponent.target}/{opponent.eta} {opponent.storage}/{opponent.expertise} mine={sample_trace(mine)} cloud={len(cloud)} "
-            f"proj={ACTIVE_PROJECTS} -> {action}"
+            f"theirs={sample_trace(theirs)} proj={ACTIVE_PROJECTS} -> {action}"
         )
         print(action)
         turn += 1
@@ -184,6 +184,10 @@ def choose_at_samples(
     """
     desired = desired_sample_count(me.expertise, remaining_turns)
     cloud_batch = best_cloud_batch(me, opponent, available, planned_available, theirs, cloud, remaining_turns, "SAMPLES") if diagnosed_samples(cloud) else []
+    if should_deny_endgame(me, opponent, theirs, available, remaining_turns):
+        return "GOTO MOLECULES"
+    if remaining_turns <= 14 and not mine and not cloud_batch:
+        return "WAIT"
     if cloud_batch and (
         len(mine) >= desired
         or remaining_turns <= 42
@@ -202,7 +206,7 @@ def desired_sample_count(expertise: tuple[int, int, int, int, int], remaining_tu
     :return: Preferred number of carried samples.
     """
     total = sum(expertise)
-    return 1 if remaining_turns <= 16 else 2 if remaining_turns <= 30 or total < 1 else 3
+    return 1 if remaining_turns <= 16 else 2 if remaining_turns <= 30 else 3
 
 
 def sample_rank(expertise: tuple[int, int, int, int, int], remaining_turns: int) -> int:
@@ -223,6 +227,26 @@ def best_project_gap(expertise: tuple[int, int, int, int, int]) -> int:
     :return: Smallest remaining expertise distance to any active science project.
     """
     return min((sum(max(need - have, 0) for need, have in zip(project, expertise)) for project in ACTIVE_PROJECTS), default=99)
+
+
+def sample_is_junk(sample: Sample, expertise: tuple[int, int, int, int, int], remaining_turns: int) -> bool:
+    """:param sample: Diagnosed sample to evaluate.
+    :param expertise: Expertise already gained by our robot.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Whether the sample is too weak to spend a production cycle on.
+    """
+    return sample.is_diagnosed() and not sample_gain_helps_project(sample, expertise) and (
+        sample.health <= 1 or remaining_turns <= 30 and sample.health < 20
+    )
+
+
+def sample_gain_helps_project(sample: Sample, expertise: tuple[int, int, int, int, int]) -> bool:
+    """:param sample: Diagnosed sample to evaluate.
+    :param expertise: Expertise already gained by our robot.
+    :return: Whether the sample gain advances any active science project.
+    """
+    index = gain_index(sample.gain)
+    return index >= 0 and any(project[index] > expertise[index] for project in ACTIVE_PROJECTS)
 
 
 def choose_at_diagnosis(
@@ -282,6 +306,10 @@ def choose_at_diagnosis(
         if sample.carried_by == -1:
             RECENT_DROPS.pop(sample.sample_id, None)
             return f"CONNECT {sample.sample_id}"
+    for sample in diagnosed:
+        if sample not in chosen and sample_is_junk(sample, me.expertise, remaining_turns):
+            RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
+            return f"CONNECT {sample.sample_id}"
     if chosen and batch_complete(chosen, me.storage, me.expertise):
         return "GOTO LABORATORY"
     if chosen:
@@ -303,7 +331,9 @@ def choose_at_diagnosis(
                 return "GOTO SAMPLES"
         RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
         return f"CONNECT {sample.sample_id}"
-    return "GOTO SAMPLES"
+    if should_deny_endgame(me, opponent, theirs, available, remaining_turns):
+        return "GOTO MOLECULES"
+    return "WAIT" if remaining_turns <= 14 else "GOTO SAMPLES"
 
 
 def batch_completed_project_indexes(samples: list[Sample], expertise: tuple[int, int, int, int, int]) -> set[int]:
@@ -348,6 +378,88 @@ def opponent_project_finish_times(
     return finish_times
 
 
+def should_deny_endgame(
+    me: Player,
+    opponent: Player,
+    theirs: list[Sample],
+    available: tuple[int, int, int, int, int],
+    remaining_turns: int,
+) -> bool:
+    """:param me: Current state of our robot.
+    :param opponent: Current state of the opposing robot.
+    :param theirs: Samples currently carried by the opposing robot.
+    :param available: Molecules still available in the pool.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Whether denying opponent molecules is more urgent than starting more samples.
+    """
+    batch, value = opponent_threat_batch(opponent, theirs, available, remaining_turns)
+    missing = batch_missing_vector(batch, opponent.storage, opponent.expertise) if batch else (0, 0, 0, 0, 0)
+    return remaining_turns <= 42 and value and opponent.score + value >= me.score - 10 and any(missing)
+
+
+def denial_molecule(
+    me: Player,
+    opponent: Player,
+    theirs: list[Sample],
+    available: tuple[int, int, int, int, int],
+    remaining_turns: int,
+) -> str | None:
+    """:param me: Current state of our robot.
+    :param opponent: Current state of the opposing robot.
+    :param theirs: Samples currently carried by the opposing robot.
+    :param available: Molecules still available in the pool.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Molecule type to steal from the opponent's late threat, if useful.
+    """
+    if sum(me.storage) >= STORAGE_LIMIT:
+        return None
+    batch, value = opponent_threat_batch(opponent, theirs, available, remaining_turns)
+    if not value or opponent.score + value < me.score - 10:
+        return None
+    missing = batch_missing_vector(batch, opponent.storage, opponent.expertise)
+    collectable = [index for index, need in enumerate(missing) if need and available[index]]
+    if not collectable:
+        return None
+    return MOLECULE_TYPES[max(collectable, key=lambda index: (missing[index], 5 - available[index], project_pressure(index, opponent.expertise)))]
+
+
+def opponent_threat_batch(
+    opponent: Player,
+    theirs: list[Sample],
+    available: tuple[int, int, int, int, int],
+    remaining_turns: int,
+) -> tuple[list[Sample], int]:
+    """:param opponent: Current state of the opposing robot.
+    :param theirs: Samples currently carried by the opposing robot.
+    :param available: Molecules still available in the pool.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Best opposing finishable batch and its score swing.
+    """
+    best: list[Sample] = []
+    best_value = 0
+    pool = eventual_available(available, opponent)
+    for batch in sample_subsets(diagnosed_samples(theirs)):
+        ordered = ordered_samples(batch, opponent.expertise)
+        if not ordered or not batch_fits(ordered, opponent.storage, opponent.expertise, pool):
+            continue
+        finish_time = player_finish_time_from(opponent, ordered)
+        if finish_time > remaining_turns:
+            continue
+        value = batch_health(ordered) + batch_project_value(ordered, opponent.expertise, finish_time, None)
+        if value > best_value:
+            best = ordered
+            best_value = value
+    return best, best_value
+
+
+def project_pressure(index: int, expertise: tuple[int, int, int, int, int]) -> int:
+    """:param index: Molecule index to evaluate.
+    :param expertise: Expertise already gained by the opponent.
+    :return: How much the molecule type matters for active science projects.
+    """
+    return max((project[index] - expertise[index] for project in ACTIVE_PROJECTS), default=0)
+
+
 def best_batch(
     mine: list[Sample],
     cloud: list[Sample],
@@ -371,6 +483,7 @@ def best_batch(
     best: list[Sample] = []
     best_value = batch_value([], 0, expertise, available, project_deadlines)
     room = MAX_SAMPLES - len(mine)
+    mine = [sample for sample in mine if not sample_is_junk(sample, expertise, remaining_turns)]
     candidates = diagnosis_candidates(cloud, expertise, remaining_turns)
     for owned in sample_subsets(mine):
         for size in range(min(room, len(candidates)) + 1):
@@ -475,9 +588,13 @@ def choose_at_molecules(
             ):
                 molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
                 return "WAIT" if molecule is None else f"CONNECT {molecule}"
-            return "GOTO DIAGNOSIS" if mine or best_cloud_batch(
-                me, opponent, available, planned_available, theirs, cloud, remaining_turns, "MOLECULES"
-            ) else "GOTO SAMPLES"
+            molecule = denial_molecule(me, opponent, theirs, available, remaining_turns)
+            if molecule is not None:
+                return f"CONNECT {molecule}"
+            cloud_batch = best_cloud_batch(me, opponent, available, planned_available, theirs, cloud, remaining_turns, "MOLECULES")
+            if remaining_turns <= 14 and not mine and not cloud_batch:
+                return "WAIT"
+            return "GOTO DIAGNOSIS" if mine or cloud_batch else "GOTO SAMPLES"
         molecule = next_collectable_molecule(future, me.storage, me.expertise, available, planned_available, opponent.expertise)
         return "WAIT" if molecule is None else f"CONNECT {molecule}"
     if batch_complete(chosen, me.storage, me.expertise):
@@ -505,6 +622,7 @@ def best_owned_batch(
     """
     best: list[Sample] = []
     best_value = batch_value([], 0, expertise, available, project_deadlines)
+    mine = [sample for sample in mine if not sample_is_junk(sample, expertise, remaining_turns)]
     for batch in sample_subsets(mine):
         ordered = ordered_samples(batch, expertise)
         if not ordered or not batch_fits(ordered, storage, expertise, available):
@@ -676,9 +794,12 @@ def choose_at_laboratory(
     if eventual:
         molecule = next_collectable_molecule(eventual, me.storage, me.expertise, available, planned_available, opponent.expertise)
         return "GOTO MOLECULES" if molecule is not None else "WAIT"
-    return "GOTO DIAGNOSIS" if mine or best_cloud_batch(
-        me, opponent, available, planned_available, theirs, cloud, remaining_turns, "LABORATORY"
-    ) else "GOTO SAMPLES"
+    if should_deny_endgame(me, opponent, theirs, available, remaining_turns):
+        return "GOTO MOLECULES"
+    cloud_batch = best_cloud_batch(me, opponent, available, planned_available, theirs, cloud, remaining_turns, "LABORATORY")
+    if remaining_turns <= 14 and not mine and not cloud_batch:
+        return "WAIT"
+    return "GOTO DIAGNOSIS" if mine or cloud_batch else "GOTO SAMPLES"
 
 
 def sample_subsets(samples: list[Sample]) -> list[list[Sample]]:

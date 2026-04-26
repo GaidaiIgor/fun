@@ -18,133 +18,131 @@ MAX_TURN_DEG = 18
 
 
 @dataclass(slots=True)
-class Player:
+class Pod:
     """Stores one pod state.
+    :var pod_ind: Pod index inside its team.
     :var position: Pod center coordinates.
-    :var velocity: Hidden post-friction velocity carried into this turn, or None when unknown.
-    :var direction: Pod angle in degrees from the positive x-axis, positive toward negative y, or None when unknown.
+    :var velocity: Pod speed vector after the previous turn friction and truncation.
+    :var direction: Pod angle in degrees from the positive x-axis, positive toward negative y.
     :var next_checkpoint_ind: Index of the current checkpoint in checkpoints, or None when unknown.
-    :var boosts: Number of unused boosts, or None when unknown.
     """
+    pod_ind: int
     position: NDArray[int]
-    velocity: NDArray[int] | None
-    direction: float | None
+    velocity: NDArray[int]
+    direction: float
     next_checkpoint_ind: int | None
-    boosts: int | None
 
 
 @dataclass(slots=True)
 class GameState:
     """Stores the current turn state.
-    :var player: Our pod state.
-    :var opponent: The opponent pod state.
-    :var checkpoints: Known checkpoint coordinates starting with the initial pod position.
+    :var laps: Number of laps to complete.
+    :var checkpoints: Circuit checkpoints.
+    :var my_pods: Our pod states.
+    :var foe_pods: Opponent pod states.
+    :var boosts: Number of unused team boosts.
     """
-    player: Player
-    opponent: Player
+    laps: int
     checkpoints: list[NDArray[int]]
+    my_pods: list[Pod]
+    foe_pods: list[Pod]
+    boosts: int
 
 
 def main():
     """Runs the game loop."""
-    game_state = None
+    game_state = read_initial_game_state()
     while True:
-        prev_game_state = game_state
-        game_state = update_game_state(prev_game_state)
+        game_state = update_game_state(game_state)
 
-        log("Our pod:")
-        log(f"pos={game_state.player.position}; vel={game_state.player.velocity}; |v|={linalg.norm(game_state.player.velocity):.3g}; "
-            f"angle={game_state.player.direction:.3g}")
-        log("Enemy pod:")
-        log(f"pos={game_state.opponent.position}")
+        for pod in game_state.my_pods:
+            log(f"Our pod {pod.pod_ind}:")
+            log(f"pos={pod.position}; vel={pod.velocity}; |v|={linalg.norm(pod.velocity):.3g}; angle={pod.direction:.3g}; CP={pod.next_checkpoint_ind}")
+            log(f"CP dist={round(linalg.norm(game_state.checkpoints[pod.next_checkpoint_ind] - pod.position))}")
+        for pod in game_state.foe_pods:
+            log(f"Enemy pod {pod.pod_ind}:")
+            log(f"pos={pod.position}; vel={pod.velocity}; |v|={linalg.norm(pod.velocity):.3g}; angle={pod.direction:.3g}; CP={pod.next_checkpoint_ind}")
+            log(f"CP dist={round(linalg.norm(game_state.checkpoints[pod.next_checkpoint_ind] - pod.position))}")
 
-        target_pos, thrust = choose_move(game_state)
-        if thrust == "BOOST":
-            game_state.player.boosts -= 1
-        print(*target_pos, thrust)
+        for target_pos, thrust in choose_move(game_state):
+            print(*target_pos, thrust)
 
 
-def update_game_state(prev_game_state: GameState | None) -> GameState:
+def read_initial_game_state() -> GameState:
+    """Reads immutable race initialization.
+    :return: Initial game state before the first turn input.
+    """
+    laps = int(input())
+    checkpoint_count = int(input())
+    checkpoints = [np.array(tuple(map(int, input().split()))) for _ in range(checkpoint_count)]
+    return GameState(laps, checkpoints, [], [], 1)
+
+
+def update_game_state(prev_game_state: GameState) -> GameState:
     """Updates game state.
-    :param prev_game_state: Previous turn state carrying persistent data.
+    :param prev_game_state: Previous game state carrying persistent race data.
     :return: Parsed game state for the current turn.
     """
-    x, y, next_checkpoint_x, next_checkpoint_y, _, next_checkpoint_angle = map(int, input().split())
-    opponent_x, opponent_y = map(int, input().split())
-    player_pos = np.array((x, y))
-    next_checkpoint = np.array((next_checkpoint_x, next_checkpoint_y))
-    opponent_pos = np.array((opponent_x, opponent_y))
-    if prev_game_state is None:
-        player_velocity = np.zeros(2, dtype=int)
-        checkpoints = [player_pos]
-        boosts = 1
-    else:
-        player_velocity = ((player_pos - prev_game_state.player.position) * DRAG).astype(int)
-        checkpoints = prev_game_state.checkpoints
-        boosts = prev_game_state.player.boosts
-
-    checkpoint_direction = -math.degrees(math.atan2(next_checkpoint_y - y, next_checkpoint_x - x))
-    player_direction = normalize_angle(checkpoint_direction + next_checkpoint_angle)
-    checkpoints, next_checkpoint_ind = update_checkpoint_state(checkpoints, next_checkpoint)
-    return GameState(Player(player_pos, player_velocity, player_direction, next_checkpoint_ind, boosts), Player(opponent_pos, None, None, None, None),
-                     checkpoints)
+    our_pods = [read_pod(pod_ind) for pod_ind in range(2)]
+    foe_pods = [read_pod(pod_ind) for pod_ind in range(2)]
+    return GameState(prev_game_state.laps, prev_game_state.checkpoints, our_pods, foe_pods, prev_game_state.boosts)
 
 
-def update_checkpoint_state(checkpoints: list[NDArray[int]], next_checkpoint: NDArray[int]) -> tuple[list[NDArray[int]], int]:
-    """Updates known checkpoints with the current next checkpoint.
-    :param checkpoints: Previously known checkpoint coordinates.
-    :param next_checkpoint: Current next checkpoint coordinates.
-    :return: Updated checkpoints and current checkpoint index.
+def read_pod(pod_ind: int) -> Pod:
+    """Reads one pod state.
+    :param pod_ind: Pod index inside its team.
+    :return: Pod state with the game angle converted to the bot angle convention.
     """
-    next_checkpoint_ind = len(checkpoints)
-    for checkpoint_ind, checkpoint in enumerate(checkpoints):
-        if np.array_equal(next_checkpoint, checkpoint):
-            next_checkpoint_ind = checkpoint_ind
-            break
-    if next_checkpoint_ind == len(checkpoints):
-        checkpoints = [*checkpoints, next_checkpoint]
-    return checkpoints, next_checkpoint_ind
+    x, y, vx, vy, angle, next_checkpoint_ind = map(int, input().split())
+    return Pod(pod_ind, np.array((x, y)), np.array((vx, vy)), normalize_angle(-angle), next_checkpoint_ind)
 
 
-def choose_move(game_state: GameState) -> tuple[NDArray[int], int | str]:
-    """Chooses a command minimizing predicted distance to the next checkpoint.
+def choose_move(game_state: GameState) -> list[tuple[NDArray[int], int | str]]:
+    """Chooses commands for both pods.
     :param game_state: Current game state.
+    :return: Target coordinates and thrust command for each pod.
+    """
+    commands = []
+    for pod in game_state.my_pods:
+        commands.append(choose_pod_move(game_state, pod))
+        if commands[-1][1] == "BOOST":
+            game_state.boosts -= 1
+    return commands
+
+
+def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int | str]:
+    """Chooses one pod command minimizing predicted distance to the next checkpoint.
+    :param game_state: Current game state.
+    :param pod: Pod to command.
     :return: Target coordinates and thrust command.
     """
-    checkpoint_pos = game_state.checkpoints[game_state.player.next_checkpoint_ind]
-    checkpoint_delta = checkpoint_pos - game_state.player.position
+    checkpoint_pos = game_state.checkpoints[pod.next_checkpoint_ind]
+    checkpoint_delta = checkpoint_pos - pod.position
     checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
-    direction_delta_guess = np.clip(normalize_angle(checkpoint_direction - game_state.player.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
-    direction_guess = normalize_angle(game_state.player.direction + direction_delta_guess)
-    direction_bounds = (game_state.player.direction - MAX_TURN_DEG, game_state.player.direction + MAX_TURN_DEG)
-    result = minimize(lambda move: linalg.norm(predict_next(game_state.player, move[0], move[1]).position - checkpoint_pos),
+    direction_delta_guess = np.clip(normalize_angle(checkpoint_direction - pod.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
+    direction_guess = normalize_angle(pod.direction + direction_delta_guess)
+    direction_bounds = (pod.direction - MAX_TURN_DEG, pod.direction + MAX_TURN_DEG)
+    result = minimize(lambda move: linalg.norm(predict_next(pod, move[0], move[1]).position - checkpoint_pos),
                       np.array((direction_guess, 100)), bounds=(direction_bounds, (0, 100)), method="Nelder-Mead")
     direction = normalize_angle(result.x[0])
     thrust = round(result.x[1])
     checkpoint_dist = linalg.norm(checkpoint_delta)
-    velocity_angle = -math.degrees(math.atan2(game_state.player.velocity[1], game_state.player.velocity[0]))
-    if abs(game_state.player.direction - checkpoint_direction) <= BOOST_ANGLE_TOL and checkpoint_dist > 5000 and game_state.player.boosts:
+    if abs(normalize_angle(pod.direction - checkpoint_direction)) <= BOOST_ANGLE_TOL and checkpoint_dist > 5000 and game_state.boosts:
         thrust = "BOOST"
 
-    log("This turn:")
-    log(f"my CP dist={round(checkpoint_dist)}; enemy CP dist={round(linalg.norm(game_state.opponent.position - checkpoint_pos))}")
-    log(f"CP angle={checkpoint_direction:.3g}; velocity angle={velocity_angle:.3g}")
+    log(f"Pod {pod.pod_ind} move:")
     log(f"optimized move=({result.x[0]:.3g}, {result.x[1]:.3g})")
-    log(f"Predicted:")
-    predicted_player = predict_next(game_state.player, direction, BOOST_THRUST if thrust == "BOOST" else thrust)
-    guess_dist = linalg.norm(predict_next(game_state.player, direction_guess, 100).position - checkpoint_pos)
-    predicted_checkpoint_delta = checkpoint_pos - predicted_player.position
-    predicted_checkpoint_angle = -math.degrees(math.atan2(predicted_checkpoint_delta[1], predicted_checkpoint_delta[0]))
-    predicted_velocity_angle = -math.degrees(math.atan2(predicted_player.velocity[1], predicted_player.velocity[0]))
-    log(f"pos={predicted_player.position}; guess CP dist={round(guess_dist)}; opt CP dist={round(result.fun)}")
-    log(f"CP angle={predicted_checkpoint_angle:.3g}; velocity angle={predicted_velocity_angle:.3g}")
+    log("Predicted:")
+    predicted_pod = predict_next(pod, direction, BOOST_THRUST if thrust == "BOOST" else thrust)
+    guess_dist = linalg.norm(predict_next(pod, direction_guess, 100).position - checkpoint_pos)
+    log(f"pos={predicted_pod.position}; guess CP dist={round(guess_dist)}; opt CP dist={round(result.fun)}")
 
     direction_rad = math.radians(direction)
-    target_pos = np.rint(game_state.player.position + np.array((math.cos(direction_rad), -math.sin(direction_rad))) * COMMAND_TARGET_DIST).astype(int)
+    target_pos = np.rint(pod.position + np.array((math.cos(direction_rad), -math.sin(direction_rad))) * COMMAND_TARGET_DIST).astype(int)
     return target_pos, thrust
 
 
-def predict_next(current: Player, direction: float, thrust: float) -> Player:
+def predict_next(current: Pod, direction: float, thrust: float) -> Pod:
     """Predicts next pod state after one turn.
     :param current: Current pod state.
     :param direction: Desired pod direction in degrees.
@@ -159,7 +157,7 @@ def predict_next(current: Player, direction: float, thrust: float) -> Player:
     velocity = current.velocity + acceleration
     position = np.floor(current.position + velocity + 0.5).astype(int)
     velocity = (velocity * DRAG).astype(int)
-    return Player(position, velocity, next_direction, None, current.boosts)
+    return Pod(current.pod_ind, position, velocity, next_direction, None)
 
 
 def normalize_angle(angle: float) -> float:
@@ -177,16 +175,4 @@ def log(msg: str):
     print(msg, file=sys.stderr)
 
 
-def test():
-    cp = np.array([10041, 5966])
-    current = Player(np.array([4511, 6283]), np.array([539, -137]), 4.28, None, None)
-    predicted1 = predict_next(current, 3.28, 100)
-    dist1 = linalg.norm(predicted1.position - cp)
-    predicted2 = predict_next(current, -10, 50)
-    dist2 = linalg.norm(predicted2.position - cp)
-    print(predicted1.position, dist1)
-    print(predicted2.position, dist2)
-
-
 main()
-# test()

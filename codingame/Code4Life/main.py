@@ -1,8 +1,16 @@
 import sys
+from itertools import combinations
 
 MOLECULES = "ABCDE"
 IDX = {c: i for i, c in enumerate(MOLECULES)}
 TURN_LIMIT = 200
+DIST = {
+    "START_POS": {"SAMPLES": 2, "DIAGNOSIS": 2, "MOLECULES": 2, "LABORATORY": 2},
+    "SAMPLES": {"SAMPLES": 0, "DIAGNOSIS": 3, "MOLECULES": 3, "LABORATORY": 3},
+    "DIAGNOSIS": {"SAMPLES": 3, "DIAGNOSIS": 0, "MOLECULES": 3, "LABORATORY": 4},
+    "MOLECULES": {"SAMPLES": 3, "DIAGNOSIS": 3, "MOLECULES": 0, "LABORATORY": 3},
+    "LABORATORY": {"SAMPLES": 3, "DIAGNOSIS": 4, "MOLECULES": 3, "LABORATORY": 0},
+}
 
 
 class Robot:
@@ -37,19 +45,16 @@ class Sample:
 
 
 def normalize_module(name):
-    if name in ("SAMPLES", "DIAGNOSIS", "MOLECULES", "LABORATORY"):
-        return name
-    return "START_POS"
+    return name if name in DIST else "START_POS"
 
 
 project_count = int(input())
-science_projects = []
-for _ in range(project_count):
-    science_projects.append([int(x) for x in input().split()])
+science_projects = [list(map(int, input().split())) for _ in range(project_count)]
 
 
 def effective_need(sample, robot):
     return [max(0, sample.costs[i] - robot.expertise[i]) for i in range(5)]
+
 
 
 def missing_need(sample, robot):
@@ -57,8 +62,10 @@ def missing_need(sample, robot):
     return [max(0, need[i] - robot.storage[i]) for i in range(5)]
 
 
+
 def total_missing(sample, robot):
     return sum(missing_need(sample, robot))
+
 
 
 def can_finish_now(sample, robot):
@@ -70,8 +77,37 @@ def can_finish_now(sample, robot):
     return True
 
 
+
 def can_finish_with_empty_bag(sample, robot):
     return sample.diagnosed and sum(effective_need(sample, robot)) <= 10
+
+
+
+def has_available_path(sample, robot, available):
+    if not sample.diagnosed:
+        return False
+    need = effective_need(sample, robot)
+    for i in range(5):
+        if need[i] > available[i] + robot.storage[i]:
+            return False
+    return True
+
+
+
+def finish_eta(sample, robot, current_module):
+    if not sample.diagnosed:
+        return 999
+    if can_finish_now(sample, robot):
+        if current_module == "LABORATORY":
+            return 1
+        return DIST[current_module]["LABORATORY"] + 1
+    add = total_missing(sample, robot)
+    if current_module == "MOLECULES":
+        return add + DIST["MOLECULES"]["LABORATORY"] + 1
+    if current_module == "LABORATORY":
+        return DIST["LABORATORY"]["MOLECULES"] + add + DIST["MOLECULES"]["LABORATORY"] + 1
+    return DIST[current_module]["MOLECULES"] + add + DIST["MOLECULES"]["LABORATORY"] + 1
+
 
 
 def project_progress_bonus(sample, robot, projects):
@@ -85,182 +121,228 @@ def project_progress_bonus(sample, robot, projects):
         before_missing = sum(max(0, project[i] - robot.expertise[i]) for i in range(5))
         after_missing = sum(max(0, project[i] - after[i]) for i in range(5))
         if after_missing < before_missing:
-            bonus = 14 * (before_missing - after_missing)
+            bonus = 10 * (before_missing - after_missing)
             if after_missing == 0:
-                bonus += 80
+                bonus += 65
             best = max(best, bonus)
     return best
+
 
 
 def desired_rank(robot, turn):
     remaining = TURN_LIMIT - turn
     exp_total = robot.total_expertise
-    if remaining <= 28:
-        return 1 if exp_total < 7 else 2
-    if exp_total < 4:
+    if remaining <= 30:
+        return 1 if exp_total < 3 else 2
+    if exp_total < 2 and robot.score < 10:
         return 1
-    if exp_total < 12:
-        return 2
-    if remaining > 70 and exp_total >= 12:
+    if exp_total >= 8 and robot.score >= 35 and remaining > 60:
         return 3
     return 2
 
 
-def desired_sample_count(turn):
+
+def desired_sample_count(robot, turn):
     remaining = TURN_LIMIT - turn
-    if remaining <= 20:
+    if remaining <= 15:
         return 0
-    if remaining <= 35:
+    if remaining <= 28:
         return 1
     if remaining <= 55:
         return 2
+    if robot.total_expertise < 2 and robot.score < 10:
+        return 2
     return 3
+
 
 
 def sample_value(sample, robot, projects, available, turn):
     if not sample.diagnosed:
         return -10_000
+
     need = effective_need(sample, robot)
     need_total = sum(need)
     if need_total > 10:
-        return -5_000 - 50 * (need_total - 10)
+        return -20_000 - 50 * (need_total - 10)
 
-    missing = [max(0, need[i] - robot.storage[i]) for i in range(5)]
+    missing = missing_need(sample, robot)
     missing_total = sum(missing)
-    scarcity = sum(max(0, missing[i] - available[i]) for i in range(5))
-    stage = robot.total_expertise
-    health_weight = 2.1 if stage < 6 else 2.7 if stage < 10 else 3.2
-    expertise_bonus = 16 if stage < 4 else 10 if stage < 8 else 5
-    rank_pref = 10 - 6 * abs(sample.rank - desired_rank(robot, turn))
+    scarcity = sum(max(0, need[i] - available[i]) for i in range(5))
     project_bonus = project_progress_bonus(sample, robot, projects)
-
-    value = (
-        health_weight * sample.health
-        + expertise_bonus
-        + rank_pref
-        + project_bonus
-        - 3.2 * need_total
-        - 1.2 * missing_total
-        - 8.0 * scarcity
-    )
-
     remaining = TURN_LIMIT - turn
-    rough_finish_time = 7 + missing_total
-    if not can_finish_now(sample, robot) and rough_finish_time > remaining:
-        value -= 100
 
-    if sample.rank == 1 and sample.health == 1 and stage >= 6 and project_bonus == 0:
-        value -= 14
+    value = 5.5 * sample.health - 2.5 * need_total - 1.5 * missing_total - 12.0 * scarcity
+    value += project_bonus
+    value += 6 - 4 * abs(sample.rank - desired_rank(robot, turn))
+    value += 4 if sample.gain is not None else 0
+
+    if sample.rank == 1 and sample.health == 1 and (robot.total_expertise >= 2 or robot.score >= 3):
+        value -= 45
+    elif sample.rank == 1 and robot.total_expertise >= 4 and project_bonus == 0:
+        value -= 20
+
+    eta = finish_eta(sample, robot, robot.target)
+    if eta > remaining:
+        value -= 200
+    elif eta + 4 > remaining:
+        value -= 35
 
     return value
 
 
-def lab_value(sample, robot, projects):
-    return 4 * sample.health + project_progress_bonus(sample, robot, projects)
 
-
-def find_bad_sample(samples, robot, projects, available, turn):
-    diagnosed = [s for s in samples if s.diagnosed]
-    if not diagnosed:
+def best_ready_sample(samples, robot, projects):
+    ready = [s for s in samples if s.diagnosed and can_finish_now(s, robot)]
+    if not ready:
         return None
-    worst = min(diagnosed, key=lambda s: sample_value(s, robot, projects, available, turn))
-    value = sample_value(worst, robot, projects, available, turn)
-    if value < 12:
-        return worst
-    return None
+    return max(ready, key=lambda s: 4 * s.health + project_progress_bonus(s, robot, projects))
+
+
+
+def viable_to_keep(sample, robot, available, turn):
+    if not can_finish_with_empty_bag(sample, robot):
+        return False
+    if finish_eta(sample, robot, "DIAGNOSIS") > (TURN_LIMIT - turn):
+        return False
+    # Avoid carrying permanently blocked samples unless they are almost ready already.
+    need = effective_need(sample, robot)
+    if any(need[i] > 0 and available[i] == 0 for i in range(5)):
+        return False
+    return True
+
+
+
+def choose_keep_set(diagnosed, robot, projects, available, turn):
+    target_count = min(3, desired_sample_count(robot, turn))
+    viable = [s for s in diagnosed if viable_to_keep(s, robot, available, turn)]
+    viable.sort(key=lambda s: sample_value(s, robot, projects, available, turn), reverse=True)
+
+    keep = []
+    for sample in viable:
+        if len(keep) >= target_count:
+            break
+        keep.append(sample)
+
+    # Never keep a truly awful sample if we already have something better.
+    keep = [s for s in keep if sample_value(s, robot, projects, available, turn) >= -5 or len(keep) == 1]
+    return {s.id for s in keep}
+
 
 
 def best_cloud_sample(cloud_samples, robot, projects, available, turn):
-    good = [s for s in cloud_samples if can_finish_with_empty_bag(s, robot)]
+    good = [s for s in cloud_samples if viable_to_keep(s, robot, available, turn)]
     if not good:
         return None
     best = max(good, key=lambda s: sample_value(s, robot, projects, available, turn))
-    if sample_value(best, robot, projects, available, turn) >= 24:
+    if sample_value(best, robot, projects, available, turn) >= 35:
         return best
     return None
 
 
-def best_lab_sample(samples, robot, projects):
-    ready = [s for s in samples if s.diagnosed and can_finish_now(s, robot)]
-    if not ready:
-        return None
-    return max(ready, key=lambda s: lab_value(s, robot, projects))
 
-
-def opponent_remaining_needs(opp_samples, opp_robot):
-    needs = [0] * 5
-    for sample in opp_samples:
-        if not sample.diagnosed:
+def target_sample(diagnosed, robot, projects, available, turn):
+    candidates = []
+    for s in diagnosed:
+        if not can_finish_with_empty_bag(s, robot):
             continue
-        for i in range(5):
-            rem = sample.costs[i] - opp_robot.expertise[i] - opp_robot.storage[i]
-            if rem > 0:
-                needs[i] += rem
-    return needs
-
-
-def best_molecule_type(my_samples, opp_samples, me, opp, available, projects, turn):
-    contenders = [s for s in my_samples if s.diagnosed and can_finish_with_empty_bag(s, me)]
-    if not contenders or me.total_storage >= 10:
+        if total_missing(s, robot) > 10 - robot.total_storage:
+            continue
+        if finish_eta(s, robot, robot.target) > (TURN_LIMIT - turn):
+            continue
+        candidates.append(s)
+    if not candidates:
         return None
 
-    opp_needs = opponent_remaining_needs(opp_samples, opp)
-    opp_pressure = opp.target == "MOLECULES" and opp.eta <= 2
+    def key(sample):
+        missing = total_missing(sample, robot)
+        scarcity = sum(max(0, missing_need(sample, robot)[i] - available[i]) for i in range(5))
+        return (
+            sample.health * 6
+            + project_progress_bonus(sample, robot, projects)
+            - 5 * missing
+            - 10 * scarcity
+            - 3 * abs(sample.rank - desired_rank(robot, turn))
+        )
+
+    return max(candidates, key=key)
+
+
+
+def best_molecule_for_target(primary, diagnosed, opp_samples, me, opp, available, projects):
+    missing_primary = missing_need(primary, me)
+    opp_pressure = opp.target == "MOLECULES" and opp.eta <= 1
+    opp_needs = [0] * 5
+    for s in opp_samples:
+        if not s.diagnosed:
+            continue
+        miss = missing_need(s, opp)
+        for i in range(5):
+            opp_needs[i] += miss[i]
 
     best_type = None
     best_score = -10**9
     for i, molecule in enumerate(MOLECULES):
-        if available[i] <= 0:
+        if missing_primary[i] <= 0 or available[i] <= 0:
             continue
-        score = 0.0
-        for sample in contenders:
-            missing = missing_need(sample, me)
-            if missing[i] <= 0:
-                continue
-            sample_priority = 3.5 * sample.health + 1.5 * project_progress_bonus(sample, me, projects)
-            sample_priority += 15 if sum(missing) == 1 else 0
-            sample_priority += 4 * sample.rank
-            score += sample_priority / max(1, sum(missing))
-        if score <= 0:
-            continue
+        score = 100.0
+        score += 18.0 / max(1, available[i])
+        score += 10.0 if sum(missing_primary) == 1 else 0.0
+        score += 8.0 if missing_primary[i] == max(missing_primary) else 0.0
 
-        score += 3 * (5 - available[i])
-        if opp_pressure:
-            score += 6 * opp_needs[i]
-            if opp_needs[i] > 0 and available[i] <= opp_needs[i]:
-                score += 12
-        if best_type is None or score > best_score:
-            best_type = molecule
+        for s in diagnosed:
+            miss = missing_need(s, me)
+            if miss[i] > 0:
+                score += 2.5 * s.health / max(1, sum(miss))
+
+        if opp_pressure and opp_needs[i] > 0:
+            score += 8.0 * opp_needs[i]
+            if available[i] <= opp_needs[i]:
+                score += 12.0
+
+        if score > best_score:
             best_score = score
+            best_type = molecule
     return best_type
 
 
+
+def worst_diagnosed_to_drop(diagnosed, robot, projects, available, turn):
+    if not diagnosed:
+        return None
+    return min(diagnosed, key=lambda s: sample_value(s, robot, projects, available, turn))
+
+
+
 def choose_action(turn, me, opp, available, samples, projects):
+    remaining = TURN_LIMIT - turn
     my_samples = [s for s in samples if s.carried_by == 0]
     opp_samples = [s for s in samples if s.carried_by == 1]
     cloud_samples = [s for s in samples if s.carried_by == -1 and s.diagnosed]
     undiagnosed = [s for s in my_samples if not s.diagnosed]
     diagnosed = [s for s in my_samples if s.diagnosed]
     ready = [s for s in diagnosed if can_finish_now(s, me)]
-    bad_sample = find_bad_sample(my_samples, me, projects, available, turn)
-    desired_count = desired_sample_count(turn)
+    keep_set = choose_keep_set(diagnosed, me, projects, available, turn)
+    to_drop = [s for s in diagnosed if s.id not in keep_set]
+    primary = target_sample(diagnosed, me, projects, available, turn)
+    target_count = desired_sample_count(me, turn)
+
+    if remaining <= 5 and not my_samples and not ready:
+        return "WAIT"
 
     if me.target == "START_POS":
-        if my_samples:
-            return "GOTO DIAGNOSIS"
-        if desired_count == 0:
-            return "GOTO DIAGNOSIS"
-        return "GOTO SAMPLES"
-
-    if me.target == "SAMPLES":
-        if len(my_samples) < desired_count:
-            return f"CONNECT {desired_rank(me, turn)}"
-        if undiagnosed or bad_sample is not None:
-            return "GOTO DIAGNOSIS"
         if ready:
             return "GOTO LABORATORY"
-        if diagnosed:
-            return "GOTO MOLECULES"
+        if my_samples:
+            return "GOTO DIAGNOSIS" if undiagnosed or to_drop else "GOTO MOLECULES"
+        return "GOTO SAMPLES" if target_count > 0 else "WAIT"
+
+    if me.target == "SAMPLES":
+        if ready:
+            return "GOTO LABORATORY"
+        if my_samples and (undiagnosed or diagnosed):
+            return "GOTO DIAGNOSIS" if undiagnosed or to_drop else "GOTO MOLECULES"
+        if len(my_samples) < target_count:
+            return f"CONNECT {desired_rank(me, turn)}"
         return "GOTO DIAGNOSIS"
 
     if me.target == "DIAGNOSIS":
@@ -268,42 +350,43 @@ def choose_action(turn, me, opp, available, samples, projects):
             return "GOTO LABORATORY"
         if undiagnosed:
             return f"CONNECT {undiagnosed[0].id}"
-        if bad_sample is not None:
-            return f"CONNECT {bad_sample.id}"
-        cloud = best_cloud_sample(cloud_samples, me, projects, available, turn)
-        if len(my_samples) < desired_count and cloud is not None:
-            return f"CONNECT {cloud.id}"
+        if to_drop:
+            worst = worst_diagnosed_to_drop(to_drop, me, projects, available, turn)
+            return f"CONNECT {worst.id}"
+        if len(my_samples) < target_count:
+            cloud = best_cloud_sample(cloud_samples, me, projects, available, turn)
+            if cloud is not None:
+                return f"CONNECT {cloud.id}"
         if diagnosed:
-            return "GOTO MOLECULES"
-        if len(my_samples) < desired_count:
+            return "GOTO MOLECULES" if primary is not None else ("GOTO SAMPLES" if len(my_samples) < target_count else "WAIT")
+        if len(my_samples) < target_count:
             return "GOTO SAMPLES"
-        return "GOTO SAMPLES"
+        return "WAIT"
 
     if me.target == "MOLECULES":
-        if ready:
+        best_ready = best_ready_sample(my_samples, me, projects)
+        if best_ready is not None:
             return "GOTO LABORATORY"
-        if undiagnosed or not diagnosed:
+        if undiagnosed:
             return "GOTO DIAGNOSIS"
-        molecule = best_molecule_type(my_samples, opp_samples, me, opp, available, projects, turn)
+        if primary is None:
+            return "GOTO DIAGNOSIS" if diagnosed else ("GOTO SAMPLES" if target_count > 0 else "WAIT")
+        molecule = best_molecule_for_target(primary, diagnosed, opp_samples, me, opp, available, projects)
         if molecule is not None:
             return f"CONNECT {molecule}"
-        if me.total_storage >= 10:
-            return "GOTO DIAGNOSIS"
-        if bad_sample is not None:
-            return "GOTO DIAGNOSIS"
-        return "GOTO LABORATORY" if ready else "GOTO DIAGNOSIS"
+        return "GOTO DIAGNOSIS" if to_drop else "GOTO LABORATORY"
 
     if me.target == "LABORATORY":
-        best = best_lab_sample(my_samples, me, projects)
-        if best is not None:
-            return f"CONNECT {best.id}"
-        if undiagnosed or bad_sample is not None:
+        best_ready = best_ready_sample(my_samples, me, projects)
+        if best_ready is not None:
+            return f"CONNECT {best_ready.id}"
+        if undiagnosed or to_drop:
             return "GOTO DIAGNOSIS"
-        if diagnosed:
+        if primary is not None:
             return "GOTO MOLECULES"
-        if len(my_samples) < desired_count:
+        if len(my_samples) < target_count:
             return "GOTO SAMPLES"
-        return "GOTO DIAGNOSIS"
+        return "WAIT"
 
     return "WAIT"
 

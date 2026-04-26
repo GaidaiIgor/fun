@@ -240,6 +240,27 @@ def sample_is_junk(sample: Sample, expertise: tuple[int, int, int, int, int], re
     )
 
 
+def sample_is_blocked(
+    sample: Sample,
+    storage: tuple[int, int, int, int, int],
+    expertise: tuple[int, int, int, int, int],
+    available: tuple[int, int, int, int, int],
+    remaining_turns: int,
+) -> bool:
+    """:param sample: Diagnosed sample to evaluate.
+    :param storage: Molecules currently carried by our robot.
+    :param expertise: Expertise already gained by our robot.
+    :param available: Molecules still available in the pool.
+    :param remaining_turns: Number of turns left including the current one.
+    :return: Whether the sample is trapped behind an over-concentrated molecule need.
+    """
+    if not sample.is_diagnosed() or sample.health >= 40:
+        return False
+    missing = tuple(max(need - have, 0) for need, have in zip(sample_required_vector(sample, expertise), storage))
+    return remaining_turns <= 150 and any(need >= 5 and pool < need for need, pool in zip(missing, available)) or \
+        remaining_turns <= 110 and any(need >= 4 and pool <= 2 for need, pool in zip(missing, available))
+
+
 def sample_gain_helps_project(sample: Sample, expertise: tuple[int, int, int, int, int]) -> bool:
     """:param sample: Diagnosed sample to evaluate.
     :param expertise: Expertise already gained by our robot.
@@ -307,7 +328,10 @@ def choose_at_diagnosis(
             RECENT_DROPS.pop(sample.sample_id, None)
             return f"CONNECT {sample.sample_id}"
     for sample in diagnosed:
-        if sample not in chosen and sample_is_junk(sample, me.expertise, remaining_turns):
+        if sample not in chosen and (
+            sample_is_junk(sample, me.expertise, remaining_turns)
+            or sample_is_blocked(sample, me.storage, me.expertise, available, remaining_turns)
+        ):
             RECENT_DROPS[sample.sample_id] = TOTAL_TURNS - remaining_turns
             return f"CONNECT {sample.sample_id}"
     if chosen and batch_complete(chosen, me.storage, me.expertise):
@@ -493,8 +517,15 @@ def best_batch(
     best: list[Sample] = []
     best_value = batch_value([], 0, expertise, available, project_deadlines)
     room = MAX_SAMPLES - len(mine)
-    mine = [sample for sample in mine if not sample_is_junk(sample, expertise, remaining_turns)]
-    candidates = diagnosis_candidates(cloud, expertise, remaining_turns)
+    mine = [
+        sample for sample in mine
+        if not sample_is_junk(sample, expertise, remaining_turns)
+        and not sample_is_blocked(sample, storage, expertise, available, remaining_turns)
+    ]
+    candidates = [
+        sample for sample in diagnosis_candidates(cloud, expertise, remaining_turns)
+        if not sample_is_blocked(sample, storage, expertise, available, remaining_turns)
+    ]
     for owned in sample_subsets(mine):
         for size in range(min(room, len(candidates)) + 1):
             for extra in combinations(candidates, size):
@@ -610,6 +641,12 @@ def choose_at_molecules(
         return "WAIT" if molecule is None else f"CONNECT {molecule}"
     if batch_complete(chosen, me.storage, me.expertise):
         return "GOTO LABORATORY"
+    molecule = denial_molecule(me, opponent, theirs, available, remaining_turns)
+    if molecule is not None:
+        finish_time = finish_time_from("MOLECULES", chosen, 0, me.storage, me.expertise)
+        own_value = batch_health(chosen) + batch_project_value(chosen, me.expertise, finish_time, None)
+        if opponent_threat_batch(opponent, theirs, available, remaining_turns)[1] >= own_value:
+            return f"CONNECT {molecule}"
     return f"CONNECT {next_needed_molecule(chosen, me.storage, me.expertise, available, planned_available, opponent.expertise)}"
 
 
@@ -633,7 +670,11 @@ def best_owned_batch(
     """
     best: list[Sample] = []
     best_value = batch_value([], 0, expertise, available, project_deadlines)
-    mine = [sample for sample in mine if not sample_is_junk(sample, expertise, remaining_turns)]
+    mine = [
+        sample for sample in mine
+        if not sample_is_junk(sample, expertise, remaining_turns)
+        and not sample_is_blocked(sample, storage, expertise, available, remaining_turns)
+    ]
     for batch in sample_subsets(mine):
         ordered = ordered_samples(batch, expertise)
         if not ordered or not batch_fits(ordered, storage, expertise, available):

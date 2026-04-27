@@ -11,10 +11,15 @@ from scipy.optimize import minimize
 
 
 DRAG = 0.85
+CHECKPOINT_RADIUS = 600
+
 BOOST_THRUST = 650
-BOOST_ANGLE_TOL = 1
-COMMAND_TARGET_DIST = 10000
 MAX_TURN_DEG = 18
+BOOST_ANGLE_TOL = 1
+
+CHECKPOINT_BONUS = 100000
+COMMAND_TARGET_DIST = 10000
+PREDICT_TURNS = 3
 
 
 @dataclass(slots=True)
@@ -57,12 +62,12 @@ def main():
 
         for pod in game_state.my_pods:
             log(f"Our pod {pod.pod_ind}:")
-            log(f"pos={pod.position}; vel={pod.velocity}; |v|={linalg.norm(pod.velocity):.3g}; angle={pod.direction:.3g}; CP={pod.next_checkpoint_ind}")
-            log(f"CP dist={round(linalg.norm(game_state.checkpoints[pod.next_checkpoint_ind] - pod.position))}")
+            log(f"pos={pod.position}; vel={pod.velocity}; |v|={linalg.norm(pod.velocity):.3g}; angle={pod.direction:.3g}; "
+                f"CP dist={round(linalg.norm(game_state.checkpoints[pod.next_checkpoint_ind] - pod.position))}")
         for pod in game_state.foe_pods:
             log(f"Enemy pod {pod.pod_ind}:")
-            log(f"pos={pod.position}; vel={pod.velocity}; |v|={linalg.norm(pod.velocity):.3g}; angle={pod.direction:.3g}; CP={pod.next_checkpoint_ind}")
-            log(f"CP dist={round(linalg.norm(game_state.checkpoints[pod.next_checkpoint_ind] - pod.position))}")
+            log(f"pos={pod.position}; vel={pod.velocity}; |v|={linalg.norm(pod.velocity):.3g}; angle={pod.direction:.3g}; "
+                f"CP dist={round(linalg.norm(game_state.checkpoints[pod.next_checkpoint_ind] - pod.position))}")
 
         for target_pos, thrust in choose_move(game_state):
             print(*target_pos, thrust)
@@ -120,10 +125,10 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
     checkpoint_delta = checkpoint_pos - pod.position
     checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
     direction_delta_guess = np.clip(normalize_angle(checkpoint_direction - pod.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
-    direction_guess = normalize_angle(pod.direction + direction_delta_guess)
-    direction_bounds = (pod.direction - MAX_TURN_DEG, pod.direction + MAX_TURN_DEG)
-    result = minimize(lambda move: linalg.norm(predict_next(pod, move[0], move[1]).position - checkpoint_pos),
-                      np.array((direction_guess, 100)), bounds=(direction_bounds, (0, 100)), method="Nelder-Mead")
+    direction_guess = pod.direction + direction_delta_guess
+    moves_guess = np.tile(np.array((direction_guess, 100)), PREDICT_TURNS)
+    bounds = [(-360, 360), (0, 100)] * PREDICT_TURNS
+    result = minimize(lambda moves: score_moves(game_state, pod, moves), moves_guess, bounds=bounds, method="Nelder-Mead")
     direction = normalize_angle(result.x[0])
     thrust = round(result.x[1])
     checkpoint_dist = linalg.norm(checkpoint_delta)
@@ -131,33 +136,85 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
         thrust = "BOOST"
 
     log(f"Pod {pod.pod_ind} move:")
-    log(f"optimized move=({result.x[0]:.3g}, {result.x[1]:.3g})")
+    opt_moves = ", ".join(f"{value:.3g}" for value in result.x)
+    log(f"opt moves=[{opt_moves}]; score={round(result.fun)}")
     log("Predicted:")
-    predicted_pod = predict_next(pod, direction, BOOST_THRUST if thrust == "BOOST" else thrust)
-    guess_dist = linalg.norm(predict_next(pod, direction_guess, 100).position - checkpoint_pos)
-    log(f"pos={predicted_pod.position}; guess CP dist={round(guess_dist)}; opt CP dist={round(result.fun)}")
+    predicted_pod = pod
+    for move_ind in range(0, len(result.x), 2):
+        predicted_pod, _ = predict_next(predicted_pod, game_state.checkpoints, result.x[move_ind], result.x[move_ind + 1])
+        log(f"pos={predicted_pod.position}; CP={predicted_pod.next_checkpoint_ind}")
 
     direction_rad = math.radians(direction)
     target_pos = np.rint(pod.position + np.array((math.cos(direction_rad), -math.sin(direction_rad))) * COMMAND_TARGET_DIST).astype(int)
     return target_pos, thrust
 
 
-def predict_next(current: Pod, direction: float, thrust: float) -> Pod:
+def score_moves(game_state: GameState, pod: Pod, moves: NDArray[float]) -> float:
+    """Scores a move over the prediction horizon.
+    :param game_state: Current game state.
+    :param pod: Pod to command.
+    :param moves: Alternating direction and thrust values for every predicted turn.
+    :return: Lower score for better predicted race progress.
+    """
+    predicted_pod, passed_checkpoints = predict_turns(pod, game_state.checkpoints, moves)
+    return linalg.norm(game_state.checkpoints[predicted_pod.next_checkpoint_ind] - predicted_pod.position) - passed_checkpoints * CHECKPOINT_BONUS
+
+
+def predict_turns(current: Pod, checkpoints: list[NDArray[int]], moves: NDArray[float]) -> tuple[Pod, int]:
+    """Predicts pod state after multiple turns.
+    :param current: Current pod state.
+    :param checkpoints: Circuit checkpoints.
+    :param moves: Alternating direction and thrust values for every future turn.
+    :return: Predicted pod state and number of checkpoints crossed.
+    """
+    pod = current
+    passed_checkpoints = 0
+    for move_ind in range(0, len(moves), 2):
+        pod, turn_passed_checkpoints = predict_next(pod, checkpoints, moves[move_ind], moves[move_ind + 1])
+        passed_checkpoints += turn_passed_checkpoints
+    return pod, passed_checkpoints
+
+
+def predict_next(current: Pod, checkpoints: list[NDArray[int]], direction: float, thrust: float) -> tuple[Pod, int]:
     """Predicts next pod state after one turn.
     :param current: Current pod state.
+    :param checkpoints: Circuit checkpoints.
     :param direction: Desired pod direction in degrees.
     :param thrust: Thrust level to apply.
-    :return: Predicted pod state.
+    :return: Predicted pod state and number of checkpoints crossed during movement.
     """
-    direction_delta = normalize_angle(direction - current.direction)
-    direction_delta = np.clip(direction_delta, -MAX_TURN_DEG, MAX_TURN_DEG)
+    direction_delta = np.clip(normalize_angle(direction - current.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
     next_direction = normalize_angle(current.direction + direction_delta)
     next_direction_rad = math.radians(next_direction)
     acceleration = np.array((math.cos(next_direction_rad), -math.sin(next_direction_rad))) * thrust
     velocity = current.velocity + acceleration
-    position = np.floor(current.position + velocity + 0.5).astype(int)
+    segment_start = current.position.astype(float)
+    segment_end = current.position + velocity
+    passed_checkpoints = 0
+    while passed_checkpoints < len(checkpoints) \
+            and checkpoint_crossed(segment_start, segment_end, checkpoints[(current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)]):
+        passed_checkpoints += 1
+
+    position = np.floor(segment_end + 0.5).astype(int)
     velocity = (velocity * DRAG).astype(int)
-    return Pod(current.pod_ind, position, velocity, next_direction, None)
+    next_checkpoint_ind = (current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)
+    return Pod(current.pod_ind, position, velocity, next_direction, next_checkpoint_ind), passed_checkpoints
+
+
+def checkpoint_crossed(start: NDArray[float], end: NDArray[float], checkpoint: NDArray[int]) -> bool:
+    """Checks whether a movement segment enters a checkpoint radius.
+    :param start: Movement segment start.
+    :param end: Movement segment end.
+    :param checkpoint: Checkpoint center.
+    :return: Whether the segment intersects the checkpoint.
+    """
+    movement = end - start
+    relative_start = start - checkpoint
+    a = np.dot(movement, movement)
+    if a == 0:
+        return np.dot(relative_start, relative_start) <= CHECKPOINT_RADIUS ** 2
+    closest_delta = relative_start + movement * np.clip(-np.dot(relative_start, movement) / a, 0, 1)
+    return np.dot(closest_delta, closest_delta) <= CHECKPOINT_RADIUS ** 2
 
 
 def normalize_angle(angle: float) -> float:

@@ -38,6 +38,7 @@ class Sample:
 
 
 def needed_for_set(samples, storage, exp):
+    """Additional molecules needed beyond current storage to produce all samples."""
     result = {t: 0 for t in MTYPES}
     temp = dict(storage)
     for s in samples:
@@ -50,7 +51,7 @@ def needed_for_set(samples, storage, exp):
 
 
 def best_subset(samples, storage, exp, max_mol=10):
-    """Highest-HP subset of <=3 samples that fits in carry cap and terminal cap."""
+    """Highest-HP subset of <=3 samples fitting carry cap and per-type terminal cap."""
     total_stored = sum(storage.values())
     remaining = max(0, max_mol - total_stored)
     best_combo, best_hp = [], -1
@@ -66,6 +67,28 @@ def best_subset(samples, storage, exp, max_mol=10):
         if best_hp >= 0:
             break
     return best_combo
+
+
+def _best_cloud_fit(cloud_diag, held_diag, storage, exp, available):
+    """
+    Highest-efficiency cloud sample that:
+      1. Fits within remaining carry capacity
+      2. Requires no more than TERMINAL_MAX extra of any single type
+      3. Every type still needed (beyond storage) has available > 0
+         (prevents re-downloading a sample we just dropped due to shortage)
+    """
+    best, best_eff = None, -1
+    total_stored = sum(storage.values())
+    for cs in cloud_diag:
+        needed = needed_for_set(held_diag + [cs], storage, exp)
+        addl = sum(needed.values())
+        if (addl <= (10 - total_stored) and
+                all(needed[t] <= TERMINAL_MAX for t in MTYPES) and
+                all(needed[t] == 0 or available[t] > 0 for t in MTYPES)):
+            eff = cs.efficiency(exp)
+            if eff > best_eff:
+                best_eff, best = eff, cs
+    return best
 
 
 def desired_rank(total_exp):
@@ -108,7 +131,6 @@ def decide(game, me, opp, available, samples):
 
     # ── LABORATORY ────────────────────────────────────────────────────
     if target == 'LABORATORY':
-        # Produce highest-HP medicine immediately if possible
         if producible:
             best = max(producible, key=lambda s: s.health)
             game.stuck_turns = 0
@@ -125,11 +147,9 @@ def decide(game, me, opp, available, samples):
         if diag:
             needed = needed_for_set(diag, storage, exp)
             if sum(needed.values()) > 0:
-                # At least one needed type is available → go collect
                 if any(needed[t] > 0 and available[t] > 0 for t in MTYPES):
                     game.stuck_turns = 0
                     return "GOTO MOLECULES"
-                # All needed types are 0 in terminal — wait briefly
                 game.stuck_turns += 1
                 debug(f"  -> Stuck at LAB ({game.stuck_turns}/4)")
                 if game.stuck_turns > 4:
@@ -137,11 +157,8 @@ def decide(game, me, opp, available, samples):
                     game.force_drop = True
                     return "GOTO DIAGNOSIS"
                 return "WAIT"
-            # Nothing more needed — fall through to get more samples
 
-        # Get more samples: prefer SAMPLES (3 turns) over DIAGNOSIS (4 turns)
-        # unless there are high-value cloud samples ready to grab
-        best_cloud = _best_cloud_fit(cloud_diag, diag, storage, exp)
+        best_cloud = _best_cloud_fit(cloud_diag, diag, storage, exp, available)
         if best_cloud and len(mine) < 3 and best_cloud.efficiency(exp) > 5:
             return "GOTO DIAGNOSIS"
         if len(mine) < 3:
@@ -153,7 +170,6 @@ def decide(game, me, opp, available, samples):
         if not diag:
             return "GOTO DIAGNOSIS" if undiag else "GOTO SAMPLES"
 
-        # Immediately produce anything already ready (saves a trip)
         if producible:
             game.stuck_turns = 0
             return "GOTO LABORATORY"
@@ -170,7 +186,7 @@ def decide(game, me, opp, available, samples):
                 game.stuck_turns = 0
                 return f"CONNECT {t}"
 
-        # All needed types show 0 — wait or escalate
+        # All needed types at 0 — wait or escalate to drop
         game.stuck_turns += 1
         debug(f"  -> Stuck at MOLECULES ({game.stuck_turns}/4)")
         if game.stuck_turns <= 4:
@@ -205,18 +221,18 @@ def decide(game, me, opp, available, samples):
                 debug(f"  -> Dropping {worst.id} (infeasible)")
                 return f"CONNECT {worst.id}"
 
-        # 4. If already producible, go straight to lab — skip MOLECULES
+        # 4. Already producible → skip MOLECULES
         if producible:
             return "GOTO LABORATORY"
 
-        # 5. Grab cloud samples to fill up to 3 (no minimum batch requirement)
+        # 5. Try to fill up to 3 from cloud (availability-gated to prevent re-download loops)
         if len(mine) < 3:
-            best_cloud = _best_cloud_fit(cloud_diag, diag, storage, exp)
+            best_cloud = _best_cloud_fit(cloud_diag, diag, storage, exp, available)
             if best_cloud:
                 debug(f"  -> Cloud {best_cloud.id} (eff={best_cloud.efficiency(exp):.2f})")
                 return f"CONNECT {best_cloud.id}"
 
-        # 6. Go to MOLECULES with whatever diagnosed samples we have (even 1)
+        # 6. Go to MOLECULES with any diagnosed sample (even 1 is fine)
         if diag:
             return "GOTO MOLECULES"
 
@@ -230,25 +246,10 @@ def decide(game, me, opp, available, samples):
 
     # ── START / FALLBACK ──────────────────────────────────────────────
     if cloud_diag and len(mine) < 3:
-        best_cloud = _best_cloud_fit(cloud_diag, diag, storage, exp)
+        best_cloud = _best_cloud_fit(cloud_diag, [], storage, exp, available)
         if best_cloud and best_cloud.efficiency(exp) > 5:
             return "GOTO DIAGNOSIS"
     return "GOTO SAMPLES"
-
-
-def _best_cloud_fit(cloud_diag, held_diag, storage, exp):
-    """Return the highest-efficiency cloud sample that still fits our budget."""
-    best, best_eff = None, -1
-    total_stored = sum(storage.values())
-    for cs in cloud_diag:
-        needed = needed_for_set(held_diag + [cs], storage, exp)
-        addl = sum(needed.values())
-        if (addl <= (10 - total_stored) and
-                all(needed[t] <= TERMINAL_MAX for t in MTYPES)):
-            eff = cs.efficiency(exp)
-            if eff > best_eff:
-                best_eff, best = eff, cs
-    return best
 
 
 def parse_turn():

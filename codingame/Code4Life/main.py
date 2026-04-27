@@ -2,6 +2,7 @@ import sys
 from itertools import combinations
 
 MTYPES = ['A', 'B', 'C', 'D', 'E']
+TERMINAL_MAX = 5   # terminal holds at most 5 of each molecule type
 
 def debug(*args):
     print(*args, file=sys.stderr, flush=True)
@@ -12,20 +13,18 @@ def debug(*args):
 
 class Sample:
     def __init__(self, sid, carried_by, rank, gain, health, cost):
-        self.id = sid
+        self.id         = sid
         self.carried_by = carried_by
-        self.rank = rank
-        self.gain = gain      # molecule type of expertise gained on research
-        self.health = health
-        self.cost = cost      # dict {A:n, B:n, C:n, D:n, E:n}
+        self.rank       = rank
+        self.gain       = gain
+        self.health     = health
+        self.cost       = cost      # {A:n, B:n, C:n, D:n, E:n}  (-1 = undiagnosed)
 
     @property
     def diagnosed(self):
-        # Undiagnosed samples have cost fields of -1
         return self.cost['A'] >= 0
 
     def net_cost(self, exp):
-        """Cost after subtracting expertise."""
         return {t: max(0, self.cost[t] - exp[t]) for t in MTYPES}
 
     def total_net_cost(self, exp):
@@ -40,45 +39,53 @@ class Sample:
         return self.health / max(1, tc)
 
     def __repr__(self):
-        return f"Sample(id={self.id}, rank={self.rank}, hp={self.health}, cost={self.cost})"
+        return f"S(id={self.id},rank={self.rank},hp={self.health})"
 
 
 # ---------------------------------------------------------------------------
-# Helper functions
+# Molecule helpers
 # ---------------------------------------------------------------------------
 
 def needed_for_set(samples, storage, exp):
-    """Extra molecules needed (beyond current storage) to produce all samples."""
+    """
+    Return how many ADDITIONAL molecules of each type are needed to
+    produce every sample in `samples`, given current `storage`.
+    Storage is consumed sequentially across samples.
+    """
     result = {t: 0 for t in MTYPES}
-    temp = dict(storage)
+    temp   = dict(storage)
     for s in samples:
         nc = s.net_cost(exp)
         for t in MTYPES:
-            extra = max(0, nc[t] - temp[t])
+            extra      = max(0, nc[t] - temp[t])
             result[t] += extra
-            temp[t] = max(0, temp[t] - nc[t])
+            temp[t]    = max(0, temp[t] - nc[t])
     return result
 
 
-def best_subset(samples, exp, max_mol=10):
+def best_subset(samples, storage, exp, max_mol=10):
     """
-    Return the highest-total-HP subset of ≤3 samples whose combined
-    net molecule cost fits within max_mol.
-    Falls back to smaller subsets if needed.
-    Returns [] if nothing fits.
+    Find the highest-total-HP subset of up to 3 samples such that:
+      1. additional molecules needed <= remaining carry capacity
+      2. no single type requires more than TERMINAL_MAX (terminal cap)
+    Returns [] if no feasible subset exists.
     """
-    zero_storage = {t: 0 for t in MTYPES}
-    n = min(3, len(samples))
-    best_combo, best_hp = [], -1
+    total_stored = sum(storage.values())
+    remaining    = max(0, max_mol - total_stored)
+    n            = min(3, len(samples))
+    best_combo   = []
+    best_hp      = -1
 
     for r in range(n, 0, -1):
         for combo in combinations(samples, r):
-            needed = needed_for_set(list(combo), zero_storage, exp)
-            if sum(needed.values()) <= max_mol:
-                hp = sum(s.health for s in combo)
+            lst    = list(combo)
+            needed = needed_for_set(lst, storage, exp)
+            addl   = sum(needed.values())
+            if addl <= remaining and all(needed[t] <= TERMINAL_MAX for t in MTYPES):
+                hp = sum(s.health for s in lst)
                 if hp > best_hp:
-                    best_hp = hp
-                    best_combo = list(combo)
+                    best_hp    = hp
+                    best_combo = lst
         if best_hp >= 0:
             break
 
@@ -86,10 +93,21 @@ def best_subset(samples, exp, max_mol=10):
 
 
 # ---------------------------------------------------------------------------
+# Per-game persistent state
+# ---------------------------------------------------------------------------
+
+class Game:
+    def __init__(self):
+        self.projects    = []
+        self.stuck_turns = 0     # consecutive turns unable to collect any needed molecule
+        self.force_drop  = False # flag: go to DIAGNOSIS to drop the blocking sample
+
+
+# ---------------------------------------------------------------------------
 # Decision logic
 # ---------------------------------------------------------------------------
 
-def decide(me, opp, available, samples, projects):
+def decide(game, me, opp, available, samples):
     target   = me['target']
     eta      = me['eta']
     storage  = me['storage']
@@ -98,104 +116,142 @@ def decide(me, opp, available, samples, projects):
     if eta > 0:
         return "WAIT"
 
-    # Partition samples
-    mine        = [s for s in samples if s.carried_by == 0]
-    cloud       = [s for s in samples if s.carried_by == -1]
+    mine       = [s for s in samples if s.carried_by ==  0]
+    cloud      = [s for s in samples if s.carried_by == -1]
+    undiag     = [s for s in mine  if not s.diagnosed]
+    diag       = [s for s in mine  if s.diagnosed]
+    cloud_diag = [s for s in cloud if s.diagnosed]
+    producible = [s for s in diag  if s.can_produce(storage, exp)]
+    total_mol  = sum(storage.values())
+    total_exp  = sum(exp.values())
 
-    undiag      = [s for s in mine  if not s.diagnosed]
-    diag        = [s for s in mine  if s.diagnosed]
-    cloud_diag  = [s for s in cloud if s.diagnosed]
+    debug(f"[{target}] mine={len(mine)}({len(undiag)}u) prod={len(producible)} "
+          f"mol={total_mol} exp={total_exp} stuck={game.stuck_turns} fd={game.force_drop}")
+    debug(f"  storage={storage}  avail={available}")
 
-    producible  = [s for s in diag if s.can_produce(storage, exp)]
-    total_mol   = sum(storage.values())
-    total_exp   = sum(exp.values())
-
-    debug(f"[{target}] eta={eta} mine={len(mine)} undiag={len(undiag)} "
-          f"diag={len(diag)} producible={len(producible)} "
-          f"mol={total_mol} exp_total={total_exp}")
-    debug(f"  storage={storage}  expertise={exp}  available={available}")
-
-    # ------------------------------------------------------------------
+    # ==================================================================
     # LABORATORY
-    # ------------------------------------------------------------------
+    # ==================================================================
     if target == 'LABORATORY':
-        # Produce as many medicines as possible
         if producible:
             best = max(producible, key=lambda s: s.health)
-            debug(f"  -> Producing sample {best.id} ({best.health} HP)")
+            game.stuck_turns = 0
+            game.force_drop  = False
+            debug(f"  -> Producing {best.id} ({best.health} HP)")
             return f"CONNECT {best.id}"
 
-        # Still have undiagnosed samples → diagnose first
+        if game.force_drop:
+            return "GOTO DIAGNOSIS"
+
         if undiag:
             return "GOTO DIAGNOSIS"
 
-        # Diagnosed samples but missing molecules
         if diag:
             needed = needed_for_set(diag, storage, exp)
             if sum(needed.values()) > 0:
-                return "GOTO MOLECULES"
+                if any(needed[t] > 0 and available[t] > 0 for t in MTYPES):
+                    game.stuck_turns = 0
+                    return "GOTO MOLECULES"
+                # Needed molecules are all at 0 right now — wait rather than bounce
+                game.stuck_turns += 1
+                debug(f"  -> Stuck at LAB ({game.stuck_turns}/5)")
+                if game.stuck_turns > 5:
+                    game.stuck_turns = 0
+                    game.force_drop  = True
+                    return "GOTO DIAGNOSIS"
+                return "WAIT"
 
-        # Need more samples
         if len(mine) < 3:
-            if cloud_diag:          # free pick-up, skip the SAMPLES trip
-                return "GOTO DIAGNOSIS"
-            return "GOTO SAMPLES"
-
+            return "GOTO DIAGNOSIS" if cloud_diag else "GOTO SAMPLES"
         return "GOTO MOLECULES"
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # MOLECULES
-    # ------------------------------------------------------------------
+    # ==================================================================
     if target == 'MOLECULES':
         if not diag:
             return "GOTO DIAGNOSIS" if undiag else "GOTO SAMPLES"
 
-        needed      = needed_for_set(diag, storage, exp)
-        total_need  = sum(needed.values())
+        needed     = needed_for_set(diag, storage, exp)
+        total_need = sum(needed.values())
 
         if total_need == 0 or total_mol >= 10:
+            game.stuck_turns = 0
             return "GOTO LABORATORY"
 
-        # Collect one molecule we still need
         for t in MTYPES:
             if needed[t] > 0 and available[t] > 0 and total_mol < 10:
+                game.stuck_turns = 0
                 return f"CONNECT {t}"
 
-        # Required molecules temporarily unavailable → go produce what we can
-        debug("  -> Some molecules unavailable, heading to lab")
-        return "GOTO LABORATORY"
+        # All needed molecule types are at 0 in the terminal
+        game.stuck_turns += 1
+        debug(f"  -> Stuck at MOLECULES ({game.stuck_turns}/5), needed={needed}")
+        if game.stuck_turns <= 5:
+            return "WAIT"
+        # Give up: drop the blocking sample
+        game.stuck_turns = 0
+        game.force_drop  = True
+        return "GOTO DIAGNOSIS"
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # DIAGNOSIS
-    # ------------------------------------------------------------------
+    # ==================================================================
     if target == 'DIAGNOSIS':
+
         # 1. Diagnose any undiagnosed sample we carry
         if undiag:
             return f"CONNECT {undiag[0].id}"
 
-        # 2. Drop samples that cannot fit in our 10-molecule budget
+        # 2. Force-drop the sample that caused a deadlock
+        if game.force_drop and diag:
+            game.force_drop = False
+            def block_score(s):
+                ns = needed_for_set([s], storage, exp)
+                return sum(ns[t] for t in MTYPES if available[t] == 0)
+            worst = max(diag, key=lambda s: (block_score(s), -s.efficiency(exp)))
+            debug(f"  -> Force-dropping {worst.id}")
+            return f"CONNECT {worst.id}"
+
+        # 3. Drop samples that exceed budget or hit terminal cap
         if diag:
-            keep = best_subset(diag, exp)
+            keep = best_subset(diag, storage, exp)
             drop = [s for s in diag if s not in keep]
             if drop:
                 worst = min(drop, key=lambda s: s.efficiency(exp))
-                debug(f"  -> Uploading sample {worst.id} to cloud (doesn't fit budget)")
+                debug(f"  -> Budget/cap drop {worst.id}")
                 return f"CONNECT {worst.id}"
 
-        # 3. Opportunistically grab a good cloud sample if we have room
-        if len(mine) < 3:
-            best_cloud   = None
-            best_eff     = -1
+        # 4. If samples already producible, head straight to lab
+        if producible:
+            return "GOTO LABORATORY"
+
+        # 5. Ensure we have at least 2 samples before heading to MOLECULES
+        #    (batching 2-3 per cycle avoids excessive movement overhead)
+        if len(mine) < 2:
             for cs in cloud_diag:
-                # Would we still fit in 10 molecules if we added this?
                 test_needed = needed_for_set(diag + [cs], storage, exp)
-                if sum(test_needed.values()) <= 10:
+                addl = sum(test_needed.values())
+                if (addl <= (10 - total_mol) and
+                        all(test_needed[t] <= TERMINAL_MAX for t in MTYPES)):
+                    debug(f"  -> Cloud sample {cs.id} (filling to 2)")
+                    return f"CONNECT {cs.id}"
+            return "GOTO SAMPLES"
+
+        # 6. Opportunistically grab a 3rd sample from the cloud
+        if len(mine) < 3:
+            best_cloud, best_eff = None, -1
+            for cs in cloud_diag:
+                test_needed = needed_for_set(diag + [cs], storage, exp)
+                addl = sum(test_needed.values())
+                if (addl <= (10 - total_mol) and
+                        all(test_needed[t] <= TERMINAL_MAX for t in MTYPES)):
                     eff = cs.efficiency(exp)
                     if eff > best_eff:
                         best_eff   = eff
                         best_cloud = cs
             if best_cloud:
-                debug(f"  -> Taking cloud sample {best_cloud.id} (eff={best_eff:.2f})")
+                debug(f"  -> Cloud sample {best_cloud.id} (eff={best_eff:.2f})")
                 return f"CONNECT {best_cloud.id}"
 
         if diag:
@@ -203,27 +259,19 @@ def decide(me, opp, available, samples, projects):
 
         return "GOTO SAMPLES"
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # SAMPLES
-    # ------------------------------------------------------------------
+    # ==================================================================
     if target == 'SAMPLES':
         if len(mine) >= 3:
             return "GOTO DIAGNOSIS"
 
-        # Choose rank based on accumulated expertise
-        # More expertise → we can afford rank-3's expensive costs
-        if total_exp >= 5:
-            rank = 3
-        elif total_exp >= 2:
-            rank = 2
-        else:
-            rank = 2        # rank 2 gives 10-30 HP at 5-8 molecules: good ratio early on
-
+        rank = 3 if total_exp >= 5 else 2
         return f"CONNECT {rank}"
 
-    # ------------------------------------------------------------------
-    # START (or any other state, e.g. first turn)
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # START (first turn / any unrecognised state)
+    # ==================================================================
     if cloud_diag and len(mine) < 3:
         return "GOTO DIAGNOSIS"
     return "GOTO SAMPLES"
@@ -236,19 +284,14 @@ def decide(me, opp, available, samples, projects):
 def parse_turn():
     players = []
     for _ in range(2):
-        line = input().split()
-        target   = line[0]
-        eta      = int(line[1])
-        score    = int(line[2])
-        storage  = {t: int(line[3 + i]) for i, t in enumerate(MTYPES)}
-        expertise = {t: int(line[8 + i]) for i, t in enumerate(MTYPES)}
-        players.append({
-            'target':    target,
-            'eta':       eta,
-            'score':     score,
-            'storage':   storage,
-            'expertise': expertise,
-        })
+        line      = input().split()
+        target    = line[0]
+        eta       = int(line[1])
+        score     = int(line[2])
+        storage   = {t: int(line[3+i]) for i, t in enumerate(MTYPES)}
+        expertise = {t: int(line[8+i]) for i, t in enumerate(MTYPES)}
+        players.append({'target': target, 'eta': eta, 'score': score,
+                        'storage': storage, 'expertise': expertise})
 
     avail_raw = list(map(int, input().split()))
     available = {t: avail_raw[i] for i, t in enumerate(MTYPES)}
@@ -256,32 +299,32 @@ def parse_turn():
     n = int(input())
     samples = []
     for _ in range(n):
-        parts     = input().split()
-        sid       = int(parts[0])
-        carried   = int(parts[1])
-        rank      = int(parts[2])
-        gain      = parts[3]
-        health    = int(parts[4])
-        cost      = {t: int(parts[5 + i]) for i, t in enumerate(MTYPES)}
+        parts   = input().split()
+        sid     = int(parts[0])
+        carried = int(parts[1])
+        rank    = int(parts[2])
+        gain    = parts[3]
+        health  = int(parts[4])
+        cost    = {t: int(parts[5+i]) for i, t in enumerate(MTYPES)}
         samples.append(Sample(sid, carried, rank, gain, health, cost))
 
     return players, available, samples
 
 
 def main():
-    project_count = int(input())
-    projects = []
-    for _ in range(project_count):
+    game = Game()
+    n    = int(input())
+    for _ in range(n):
         parts = list(map(int, input().split()))
-        projects.append({t: parts[i] for i, t in enumerate(MTYPES)})
-    debug(f"Science projects: {projects}")
+        game.projects.append({t: parts[i] for i, t in enumerate(MTYPES)})
+    debug(f"Science projects: {game.projects}")
 
     while True:
         players, available, samples = parse_turn()
         me  = players[0]
         opp = players[1]
 
-        action = decide(me, opp, available, samples, projects)
+        action = decide(game, me, opp, available, samples)
         debug(f"  => {action}\n")
         print(action)
 

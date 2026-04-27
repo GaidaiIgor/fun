@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy import linalg
 from numpy.typing import NDArray
-from scipy.optimize import direct
+from scipy.optimize import differential_evolution
 
 
 DRAG = 0.85
@@ -20,7 +20,8 @@ BOOST_ANGLE_TOL = 1
 CHECKPOINT_BONUS = 100000
 COMMAND_TARGET_DIST = 10000
 PREDICT_TURNS = 2
-DIRECT_MAXFUN = 120
+DE_MAX_ITER = 3
+DE_POP_SIZE = 4
 
 
 @dataclass(slots=True)
@@ -122,10 +123,11 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
     checkpoint_delta = checkpoint_pos - pod.position
     checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
     direction_delta_guess = np.clip(normalize_angle(checkpoint_direction - pod.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
-    direction_guess = pod.direction + direction_delta_guess
+    direction_guess = normalize_angle(pod.direction + direction_delta_guess)
     guess_moves = np.tile(np.array((direction_guess, 100)), PREDICT_TURNS)
-    bounds = [(-360, 360), (0, 100)] * PREDICT_TURNS
-    result = direct(lambda moves: score_moves(game_state, pod, moves), bounds, maxfun=DIRECT_MAXFUN)
+    bounds = [(-180, 180), (0, 100)] * PREDICT_TURNS
+    result = differential_evolution(lambda moves: score_moves(game_state, pod, moves), bounds, x0=guess_moves, maxiter=DE_MAX_ITER,
+                                    popsize=DE_POP_SIZE, polish=False, seed=pod.pod_ind, tol=0)
     direction = normalize_angle(result.x[0])
     thrust = round(result.x[1])
     checkpoint_dist = linalg.norm(checkpoint_delta)
@@ -133,9 +135,10 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
         thrust = "BOOST"
 
     log(f"Pod {pod.pod_ind} move:")
+    guess_score = score_moves(game_state, pod, guess_moves)
     guess_moves = ", ".join(f"{value:.3g}" for value in guess_moves)
     opt_moves = ", ".join(f"{value:.3g}" for value in result.x)
-    log(f"guess moves=[{guess_moves}]")
+    log(f"guess moves=[{guess_moves}]; score={round(guess_score)}")
     log(f"opt moves=[{opt_moves}]; score={round(result.fun)}")
     log(f"opt success={result.success}; nfev={result.nfev}; nit={result.nit}; message={result.message}")
     log("Predicted:")
@@ -251,8 +254,9 @@ def test2():
     moves2 = [90, 100, 90, 100]
     print("score1", score_moves(game_state, current, moves1), moves1)
     print("score2", score_moves(game_state, current, moves2), moves2)
-    result = direct(lambda move: score_moves(game_state, current, move), [(-360, 360), (0, 100)] * PREDICT_TURNS, maxfun=DIRECT_MAXFUN)
-    print("direct", result.fun, result.x, result.nfev, result.message)
+    result = differential_evolution(lambda move: score_moves(game_state, current, move), [(-180, 180), (0, 100)] * PREDICT_TURNS,
+                                    x0=moves1, maxiter=DE_MAX_ITER, popsize=DE_POP_SIZE, polish=False, seed=0, tol=0)
+    print("differential_evolution", result.fun, result.x, result.nfev, result.message)
 
 
 main()

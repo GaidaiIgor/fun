@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy import linalg
 from numpy.typing import NDArray
-from scipy.optimize import minimize
+from scipy.optimize import direct
 
 
 DRAG = 0.85
@@ -19,7 +19,8 @@ BOOST_ANGLE_TOL = 1
 
 CHECKPOINT_BONUS = 100000
 COMMAND_TARGET_DIST = 10000
-PREDICT_TURNS = 3
+PREDICT_TURNS = 2
+DIRECT_MAXFUN = 120
 
 
 @dataclass(slots=True)
@@ -53,21 +54,17 @@ class GameState:
     foe_pods: list[Pod]
     boosts: int
 
+    def log(self):
+        """Prints the complete game state."""
+        log(repr(self))
+
 
 def main():
     """Runs the game loop."""
     game_state = read_initial_game_state()
     while True:
         game_state = update_game_state(game_state)
-
-        for pod in game_state.my_pods:
-            log(f"Our pod {pod.pod_ind}:")
-            log(f"pos={pod.position}; vel={pod.velocity}; |v|={linalg.norm(pod.velocity):.3g}; angle={pod.direction:.3g}; "
-                f"CP dist={round(linalg.norm(game_state.checkpoints[pod.next_checkpoint_ind] - pod.position))}")
-        for pod in game_state.foe_pods:
-            log(f"Enemy pod {pod.pod_ind}:")
-            log(f"pos={pod.position}; vel={pod.velocity}; |v|={linalg.norm(pod.velocity):.3g}; angle={pod.direction:.3g}; "
-                f"CP dist={round(linalg.norm(game_state.checkpoints[pod.next_checkpoint_ind] - pod.position))}")
+        game_state.log()
 
         for target_pos, thrust in choose_move(game_state):
             print(*target_pos, thrust)
@@ -126,9 +123,9 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
     checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
     direction_delta_guess = np.clip(normalize_angle(checkpoint_direction - pod.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
     direction_guess = pod.direction + direction_delta_guess
-    moves_guess = np.tile(np.array((direction_guess, 100)), PREDICT_TURNS)
+    guess_moves = np.tile(np.array((direction_guess, 100)), PREDICT_TURNS)
     bounds = [(-360, 360), (0, 100)] * PREDICT_TURNS
-    result = minimize(lambda moves: score_moves(game_state, pod, moves), moves_guess, bounds=bounds, method="Nelder-Mead")
+    result = direct(lambda moves: score_moves(game_state, pod, moves), bounds, maxfun=DIRECT_MAXFUN)
     direction = normalize_angle(result.x[0])
     thrust = round(result.x[1])
     checkpoint_dist = linalg.norm(checkpoint_delta)
@@ -136,8 +133,11 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
         thrust = "BOOST"
 
     log(f"Pod {pod.pod_ind} move:")
+    guess_moves = ", ".join(f"{value:.3g}" for value in guess_moves)
     opt_moves = ", ".join(f"{value:.3g}" for value in result.x)
+    log(f"guess moves=[{guess_moves}]")
     log(f"opt moves=[{opt_moves}]; score={round(result.fun)}")
+    log(f"opt success={result.success}; nfev={result.nfev}; nit={result.nit}; message={result.message}")
     log("Predicted:")
     predicted_pod = pod
     for move_ind in range(0, len(result.x), 2):
@@ -232,4 +232,29 @@ def log(msg: str):
     print(msg, file=sys.stderr)
 
 
+def test():
+    """Runs the local prediction sanity test."""
+    checkpoints = [np.array([11498, 6051]), np.array([9095, 1838])]
+    current = Pod(0, np.array([9988, 6216]), np.array([573, 134]), 0, 0)
+    game_state = GameState(0, checkpoints, [current], [], 0)
+    score1 = score_moves(game_state, current, [6.24, 100, 6.24, 100])
+    score2 = score_moves(game_state, current, [90, 100, 90, 100])
+    print(score1, score2)
+
+
+def test2():
+    """Compares optimizer behavior on the local hard-turn case."""
+    checkpoints = [np.array([11498, 6051]), np.array([9095, 1838])]
+    current = Pod(0, np.array([9988, 6216]), np.array([573, 134]), 0, 0)
+    game_state = GameState(0, checkpoints, [current], [], 0)
+    moves1 = [6.24, 100, 6.24, 100]
+    moves2 = [90, 100, 90, 100]
+    print("score1", score_moves(game_state, current, moves1), moves1)
+    print("score2", score_moves(game_state, current, moves2), moves2)
+    result = direct(lambda move: score_moves(game_state, current, move), [(-360, 360), (0, 100)] * PREDICT_TURNS, maxfun=DIRECT_MAXFUN)
+    print("direct", result.fun, result.x, result.nfev, result.message)
+
+
 main()
+# test()
+# test2()

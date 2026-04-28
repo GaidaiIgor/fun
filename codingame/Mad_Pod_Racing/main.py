@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy import linalg
 from numpy.typing import NDArray
-from scipy.optimize import differential_evolution
+from scipy import optimize
 
 
 DRAG = 0.85
@@ -19,8 +19,7 @@ BOOST_ANGLE_TOL = 1
 CHECKPOINT_BONUS = 100000
 COMMAND_TARGET_DIST = 10000
 PREDICT_TURNS = 2
-DE_MAX_ITER = 3
-DE_POP_SIZE = 4
+OPTIMIZATION_MAX_ITER = 80
 
 
 @dataclass(slots=True)
@@ -159,10 +158,10 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
     direction_delta_guess = np.clip(normalize_angle(checkpoint_direction - pod.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
     direction_guess = normalize_angle(pod.direction + direction_delta_guess)
     guess_moves = np.tile(np.array((direction_guess, 100)), PREDICT_TURNS)
-    bounds = [(-180, 180), (0, 100)] * PREDICT_TURNS
-    result = differential_evolution(lambda moves: predict_turns(pod, game_state.checkpoints, moves).get_score(game_state.checkpoints), bounds,
-                                    x0=guess_moves, maxiter=DE_MAX_ITER, popsize=DE_POP_SIZE, polish=False, seed=pod.ind, tol=0)
-    direction = normalize_angle(result.x[0])
+    result = optimize.minimize(lambda moves: predict_turns(pod, game_state.checkpoints, moves).get_score(game_state.checkpoints),
+                               guess_moves, method="COBYLA", options={"maxiter": OPTIMIZATION_MAX_ITER})
+    result.x = constrain_moves(result.x)
+    direction = result.x[0]
     thrust = round(result.x[1])
     if abs(normalize_angle(pod.direction - checkpoint_direction)) <= BOOST_ANGLE_TOL and pod.get_next_checkpoint_distance(game_state.checkpoints) > 5000 \
             and game_state.boosts:
@@ -174,7 +173,7 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
     opt_moves = ", ".join(f"{value:.3g}" for value in result.x)
     log(f"guess moves=[{guess_moves}]; score={round(guess_score)}")
     log(f"opt moves=[{opt_moves}]; score={round(result.fun)}")
-    log(f"opt success={result.success}; nfev={result.nfev}; nit={result.nit}; message={result.message}")
+    log(f"opt success={result.success}; nfev={result.nfev}; message={result.message}")
     log("Predicted:")
     future_state = FutureState([], pod, 0)
     for move_ind in range(0, len(result.x), 2):
@@ -208,6 +207,7 @@ def predict_next(current: Pod, checkpoints: list[NDArray[int]], direction: float
     :param thrust: Thrust level to apply.
     :return: Predicted future state after one turn.
     """
+    direction, thrust = constrain_moves([direction, thrust])
     direction_delta = np.clip(normalize_angle(direction - current.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
     next_direction = normalize_angle(current.direction + direction_delta)
     next_direction_rad = math.radians(next_direction)
@@ -226,6 +226,17 @@ def predict_next(current: Pod, checkpoints: list[NDArray[int]], direction: float
     return FutureState([direction, thrust], Pod(current.ind, position, velocity, next_direction, next_checkpoint_ind), passed_checkpoints)
 
 
+def constrain_moves(moves: list[float] | NDArray[float]) -> NDArray[float]:
+    """Applies model-level move boundaries.
+    :param moves: Alternating direction and thrust values.
+    :return: Moves with normalized directions and clipped thrusts.
+    """
+    moves = np.array(moves).copy()
+    moves[0::2] = normalize_angle(moves[0::2])
+    moves[1::2] = np.clip(moves[1::2], 0, 100)
+    return moves
+
+
 def checkpoint_crossed(start: NDArray[float], end: NDArray[float], checkpoint: NDArray[int]) -> bool:
     """Checks whether a movement segment enters a checkpoint radius.
     :param start: Movement segment start.
@@ -242,7 +253,7 @@ def checkpoint_crossed(start: NDArray[float], end: NDArray[float], checkpoint: N
     return np.dot(closest_delta, closest_delta) <= CHECKPOINT_RADIUS ** 2
 
 
-def normalize_angle(angle: float) -> float:
+def normalize_angle(angle: float | NDArray[float]) -> float | NDArray[float]:
     """Normalizes an angle to [-180, 180) degrees.
     :param angle: Angle in degrees.
     :return: Equivalent angle in the normalized range.

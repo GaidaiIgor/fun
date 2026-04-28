@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy import linalg
 from numpy.typing import NDArray
+from scipy.optimize import differential_evolution
 
 
 DRAG = 0.85
@@ -17,22 +18,21 @@ MAX_TURN_DEG = 18
 BOOST_ANGLE_TOL = 1
 CHECKPOINT_BONUS = 100000
 COMMAND_TARGET_DIST = 10000
-PREDICT_TURNS = 6
-GRID_BEAM_WIDTH = 30
-GRID_TURN_DELTAS = (-18, -9, 0, 9, 18)
-GRID_THRUSTS = (0, 50, 100)
+PREDICT_TURNS = 2
+DE_MAX_ITER = 3
+DE_POP_SIZE = 4
 
 
 @dataclass(slots=True)
 class Pod:
     """Stores one pod state.
-    :var pod_ind: Pod index inside its team.
+    :var ind: Pod index inside its team.
     :var position: Pod center coordinates.
     :var velocity: Pod speed vector after the previous turn friction and truncation.
     :var direction: Pod angle in degrees from the positive x-axis, positive toward negative y.
     :var next_checkpoint_ind: Index of the current checkpoint in checkpoints, or None when unknown.
     """
-    pod_ind: int
+    ind: int
     position: NDArray[int]
     velocity: NDArray[int]
     direction: float
@@ -47,7 +47,7 @@ class Pod:
 
     def log(self):
         """Prints one pod state."""
-        log(f"{self.pod_ind}: pos=({self.position[0]}, {self.position[1]}); vel=({self.velocity[0]}, {self.velocity[1]}); "
+        log(f"{self.ind}: pos=({self.position[0]}, {self.position[1]}); vel=({self.velocity[0]}, {self.velocity[1]}); "
             f"dir={self.direction:g}; CP={self.next_checkpoint_ind}")
 
 
@@ -149,53 +149,41 @@ def choose_move(game_state: GameState) -> list[tuple[NDArray[int], int | str]]:
 
 
 def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int | str]:
-    """Chooses one pod command by searching discrete future turns.
+    """Chooses one pod command minimizing predicted distance to the next checkpoint.
     :param game_state: Current game state.
     :param pod: Pod to command.
     :return: Target coordinates and thrust command.
     """
-    best_moves = grid_search_moves(pod, game_state.checkpoints)
-    direction = normalize_angle(best_moves[0])
-    thrust = round(best_moves[1])
-
     checkpoint_delta = game_state.checkpoints[pod.next_checkpoint_ind] - pod.position
     checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
+    direction_delta_guess = np.clip(normalize_angle(checkpoint_direction - pod.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
+    direction_guess = normalize_angle(pod.direction + direction_delta_guess)
+    guess_moves = np.tile(np.array((direction_guess, 100)), PREDICT_TURNS)
+    bounds = [(-180, 180), (0, 100)] * PREDICT_TURNS
+    result = differential_evolution(lambda moves: predict_turns(pod, game_state.checkpoints, moves).get_score(game_state.checkpoints), bounds,
+                                    x0=guess_moves, maxiter=DE_MAX_ITER, popsize=DE_POP_SIZE, polish=False, seed=pod.ind, tol=0)
+    direction = normalize_angle(result.x[0])
+    thrust = round(result.x[1])
     if abs(normalize_angle(pod.direction - checkpoint_direction)) <= BOOST_ANGLE_TOL and pod.get_next_checkpoint_distance(game_state.checkpoints) > 5000 \
             and game_state.boosts:
         thrust = "BOOST"
 
-    log(f"Pod {pod.pod_ind} move:")
-    best_moves_text = ", ".join(f"{value:.3g}" for value in best_moves)
-    log(f"grid moves=[{best_moves_text}]")
+    log(f"Pod {pod.ind} move:")
+    guess_score = predict_turns(pod, game_state.checkpoints, guess_moves).get_score(game_state.checkpoints)
+    guess_moves = ", ".join(f"{value:.3g}" for value in guess_moves)
+    opt_moves = ", ".join(f"{value:.3g}" for value in result.x)
+    log(f"guess moves=[{guess_moves}]; score={round(guess_score)}")
+    log(f"opt moves=[{opt_moves}]; score={round(result.fun)}")
+    log(f"opt success={result.success}; nfev={result.nfev}; nit={result.nit}; message={result.message}")
     log("Predicted:")
     future_state = FutureState([], pod, 0)
-    for move_ind in range(0, len(best_moves), 2):
-        future_state = predict_next(future_state.pod, game_state.checkpoints, best_moves[move_ind], best_moves[move_ind + 1])
+    for move_ind in range(0, len(result.x), 2):
+        future_state = predict_next(future_state.pod, game_state.checkpoints, result.x[move_ind], result.x[move_ind + 1])
         log(f"pos={future_state.pod.position}; CP={future_state.pod.next_checkpoint_ind}")
 
     direction_rad = math.radians(direction)
     target_pos = np.rint(pod.position + np.array((math.cos(direction_rad), -math.sin(direction_rad))) * COMMAND_TARGET_DIST).astype(int)
     return target_pos, thrust
-
-
-def grid_search_moves(pod: Pod, checkpoints: list[NDArray[int]]) -> list[float]:
-    """Searches a discrete move grid over several future turns.
-    :param pod: Pod to command.
-    :param checkpoints: Circuit checkpoints.
-    :return: Best move sequence.
-    """
-    candidates = [FutureState([], pod, 0)]
-    for _ in range(PREDICT_TURNS):
-        next_candidates = []
-        for candidate in candidates:
-            for turn_delta in GRID_TURN_DELTAS:
-                for thrust in GRID_THRUSTS:
-                    direction = normalize_angle(candidate.pod.direction + turn_delta)
-                    future_state = predict_next(candidate.pod, checkpoints, direction, thrust)
-                    next_candidates.append(
-                        FutureState(candidate.moves + future_state.moves, future_state.pod, candidate.passed_checkpoints + future_state.passed_checkpoints))
-        candidates = sorted(next_candidates, key=lambda candidate: candidate.get_score(checkpoints))[:GRID_BEAM_WIDTH]
-    return candidates[0].moves
 
 
 def predict_turns(current: Pod, checkpoints: list[NDArray[int]], moves: list[float] | NDArray[float]) -> FutureState:
@@ -235,7 +223,7 @@ def predict_next(current: Pod, checkpoints: list[NDArray[int]], direction: float
     position = np.floor(segment_end + 0.5).astype(int)
     velocity = (velocity * DRAG).astype(int)
     next_checkpoint_ind = (current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)
-    return FutureState([direction, thrust], Pod(current.pod_ind, position, velocity, next_direction, next_checkpoint_ind), passed_checkpoints)
+    return FutureState([direction, thrust], Pod(current.ind, position, velocity, next_direction, next_checkpoint_ind), passed_checkpoints)
 
 
 def checkpoint_crossed(start: NDArray[float], end: NDArray[float], checkpoint: NDArray[int]) -> bool:

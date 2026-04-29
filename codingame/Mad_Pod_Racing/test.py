@@ -1,4 +1,4 @@
-"""Simulates Mad Pod Racing scenarios outside the Codingame server."""
+"""Simulates Mad Pod Racing outside the Codingame server."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle
 from matplotlib.widgets import Button, Slider
+from mpl_toolkits.mplot3d import Axes3D
 from numpy.typing import NDArray
 
 import main as bot
@@ -24,6 +25,8 @@ from main import CHECKPOINT_RADIUS, Pod
 MAP_WIDTH = 16000
 MAP_HEIGHT = 9000
 MAX_TURNS = 120
+LANDSCAPE_DIRECTION_STEPS = 145
+LANDSCAPE_THRUST_STEPS = 151
 POD_RADIUS = 90
 DIRECTION_ARROW_LENGTH = 225
 ARROW_WIDTH = 6
@@ -33,7 +36,7 @@ PREDICTION_LABEL_WIDTH = 720
 PREDICTION_LABEL_HEIGHT = 260
 PREDICTION_LABEL_OFFSETS = ((0, -260), (0, 260), (460, 0), (-460, 0), (460, -260), (-460, -260), (460, 260), (-460, 260), (0, -540), (0, 540),
                             (780, 0), (-780, 0), (780, -420), (-780, -420), (780, 420), (-780, 420), (0, -820), (0, 820))
-CHECKPOINTS = [np.array((5001, 5270)), np.array((11498, 6051)), np.array((9095, 1838))]
+CHECKPOINTS = [np.array((5000, 5300)), np.array((11600, 6100)), np.array((9100, 1800))]
 
 
 @dataclass(slots=True)
@@ -59,6 +62,8 @@ class RaceViewer:
     :var slider: Turn slider.
     :var previous_button: Previous turn button.
     :var next_button: Next turn button.
+    :var move_sliders: Move control sliders for the current turn prediction.
+    :var updating_controls: Whether move controls are being reset from the current turn.
     """
     checkpoints: list[NDArray[int]]
     history: list[TurnSnapshot]
@@ -68,6 +73,8 @@ class RaceViewer:
     slider: Slider
     previous_button: Button
     next_button: Button
+    move_sliders: list[Slider]
+    updating_controls: bool
 
     @classmethod
     def create(cls, checkpoints: list[NDArray[int]], history: list[TurnSnapshot]) -> RaceViewer:
@@ -77,14 +84,22 @@ class RaceViewer:
         :return: Configured race viewer.
         """
         figure, axes = plt.subplots(figsize=(12, 7))
-        plt.subplots_adjust(bottom=0.18)
+        plt.subplots_adjust(bottom=0.22 + 0.035 * 2 * bot.PREDICT_TURNS)
+        move_sliders = []
+        for move_ind in range(2 * bot.PREDICT_TURNS):
+            move_sliders.append(Slider(plt.axes((0.18, 0.14 + 0.035 * (2 * bot.PREDICT_TURNS - move_ind - 1), 0.62, 0.025)),
+                                       ("d" if move_ind % 2 == 0 else "t") + str(move_ind // 2),
+                                       -bot.MAX_TURN_DEG if move_ind % 2 == 0 else 0, bot.MAX_TURN_DEG if move_ind % 2 == 0 else 100, valinit=0))
         viewer = cls(checkpoints, history, 0, figure, axes,
                      Slider(plt.axes((0.18, 0.08, 0.62, 0.03)), "Turn", 0, len(history) - 1, valinit=0, valstep=1),
                      Button(plt.axes((0.18, 0.02, 0.18, 0.04)), "Previous turn"),
-                     Button(plt.axes((0.62, 0.02, 0.18, 0.04)), "Next turn"))
+                     Button(plt.axes((0.62, 0.02, 0.18, 0.04)), "Next turn"), move_sliders, False)
         viewer.slider.on_changed(viewer.set_turn)
         viewer.previous_button.on_clicked(viewer.previous_turn)
         viewer.next_button.on_clicked(viewer.next_turn)
+        for slider in viewer.move_sliders:
+            slider.on_changed(viewer.set_move)
+        viewer.sync_move_sliders()
         viewer.render()
         return viewer
 
@@ -93,7 +108,22 @@ class RaceViewer:
         :param value: Slider value.
         """
         self.turn_ind = int(value)
+        self.sync_move_sliders()
         self.render()
+
+    def sync_move_sliders(self):
+        """Sets move sliders to optimized moves for the displayed turn."""
+        self.updating_controls = True
+        for move_ind, slider in enumerate(self.move_sliders):
+            slider.set_val(self.history[self.turn_ind].moves[move_ind] if move_ind < len(self.history[self.turn_ind].moves) else 0)
+        self.updating_controls = False
+
+    def set_move(self, value: float):
+        """Updates predictions after a move control changes.
+        :param value: Slider value.
+        """
+        if not self.updating_controls:
+            self.render()
 
     def previous_turn(self, event: object):
         """Moves one turn backward.
@@ -113,17 +143,96 @@ class RaceViewer:
         setup_axes(self.axes, self.turn_ind, len(self.history))
         draw_checkpoints(self.axes, self.checkpoints)
         draw_history(self.axes, self.history, self.turn_ind)
-        draw_predictions(self.axes, self.history[self.turn_ind])
+        draw_predictions(self.axes, self.history[self.turn_ind], self.checkpoints, self.get_selected_moves())
         self.figure.canvas.draw_idle()
 
     def show(self):
         """Shows the race viewer."""
         plt.show()
 
+    def get_selected_moves(self) -> list[float]:
+        """Reads selected moves from move controls.
+        :return: Alternating direction delta and thrust values.
+        """
+        return [slider.val for slider in self.move_sliders]
+
 
 def main():
-    """Runs the default simulation scenario."""
-    RaceViewer.create(CHECKPOINTS, simulate_single_pod_lap(CHECKPOINTS)).show()
+    """Runs the default test."""
+    # show_single_pod_lap(CHECKPOINTS)
+    # run_optimization(CHECKPOINTS)
+    plot_optimization_landscape(CHECKPOINTS)
+
+
+def show_single_pod_lap(checkpoints: list[NDArray[int]]):
+    """Shows one simulated pod lap.
+    :param checkpoints: Circuit checkpoints.
+    """
+    RaceViewer.create(checkpoints, simulate_single_pod_lap(checkpoints)).show()
+
+
+def run_optimization(checkpoints: list[NDArray[int]]):
+    """Runs an optimizer check from turn 14 of the current simulation.
+    :param checkpoints: Circuit checkpoints.
+    """
+    turn = 13
+    pod = simulate_single_pod_lap(checkpoints)[turn].pod
+    guess_moves = get_optimizer_guess_moves(pod, checkpoints)
+    result = bot.optimize_pod_moves(pod, checkpoints)
+    guess_moves_text = ", ".join(f"{value:.3g}" for value in guess_moves)
+    optimized_moves_text = ", ".join(f"{value:.3g}" for value in result.x)
+    print(f"guess moves=[{guess_moves_text}]")
+    print(f"optimized moves=[{optimized_moves_text}]")
+
+
+def get_optimizer_guess_moves(pod: Pod, checkpoints: list[NDArray[int]]) -> NDArray[float]:
+    """Computes the initial optimizer move guess.
+    :param pod: Pod state to optimize from.
+    :param checkpoints: Circuit checkpoints.
+    :return: Alternating direction delta and thrust values.
+    """
+    checkpoint_delta = checkpoints[pod.next_checkpoint_ind] - pod.position
+    checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
+    checkpoint_direction_delta = bot.normalize_angle(checkpoint_direction - pod.direction)
+    return np.tile(np.array((np.clip(checkpoint_direction_delta, -bot.MAX_TURN_DEG, bot.MAX_TURN_DEG),
+                             0 if abs(checkpoint_direction_delta) > 45 else 100)), bot.PREDICT_TURNS)
+
+
+def plot_optimization_landscape(checkpoints: list[NDArray[int]]):
+    """Plots the first-move optimization landscape from turn 14 of the current simulation in 3D.
+    :param checkpoints: Circuit checkpoints.
+    """
+    turn = 13
+    pod = simulate_single_pod_lap(checkpoints)[turn].pod
+    guess_moves = get_optimizer_guess_moves(pod, checkpoints)
+    result = bot.optimize_pod_moves(pod, checkpoints)
+    direction_deltas = np.linspace(-bot.MAX_TURN_DEG, bot.MAX_TURN_DEG, LANDSCAPE_DIRECTION_STEPS)
+    thrusts = np.linspace(0, 100, LANDSCAPE_THRUST_STEPS)
+    scores = np.empty((len(thrusts), len(direction_deltas)))
+    for thrust_ind, thrust in enumerate(thrusts):
+        for direction_ind, direction_delta in enumerate(direction_deltas):
+            moves = guess_moves.copy()
+            moves[0] = direction_delta
+            moves[1] = thrust
+            scores[thrust_ind, direction_ind] = bot.predict_turns(pod, checkpoints, moves).get_score(checkpoints)
+
+    figure = plt.figure(figsize=(10, 7))
+    axes = figure.add_subplot(111, projection="3d")
+    direction_grid, thrust_grid = np.meshgrid(direction_deltas, thrusts)
+    surface = axes.plot_surface(direction_grid, thrust_grid, scores, cmap="viridis_r", linewidth=0, antialiased=False, alpha=0.9)
+    figure.colorbar(surface, ax=axes, label="Score", shrink=0.65)
+    optimized_marker_moves = guess_moves.copy()
+    optimized_marker_moves[:2] = result.x[:2]
+    axes.scatter(guess_moves[0], guess_moves[1], bot.predict_turns(pod, checkpoints, guess_moves).get_score(checkpoints), color="white",
+                 edgecolor="black", marker="o", s=60, label="Guess")
+    axes.scatter(optimized_marker_moves[0], optimized_marker_moves[1], bot.predict_turns(pod, checkpoints, optimized_marker_moves).get_score(checkpoints),
+                 color="red", edgecolor="black", marker="x", s=80, label="Optimized")
+    axes.set_xlabel("Direction delta")
+    axes.set_ylabel("Thrust")
+    axes.set_zlabel("Score")
+    axes.set_title("Turn 14 first-move optimization landscape")
+    axes.legend()
+    plt.show()
 
 
 def simulate_single_pod_lap(checkpoints: list[NDArray[int]]) -> list[TurnSnapshot]:
@@ -192,24 +301,29 @@ def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int):
         draw_pod_state(axes, snapshot.pod, 1 if state_ind == turn_ind else 0.35)
 
 
-def draw_predictions(axes: Axes, snapshot: TurnSnapshot):
+def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float]):
     """Draws predicted future states for the current turn.
     :param axes: Matplotlib axes.
     :param snapshot: Current turn snapshot.
+    :param checkpoints: Circuit checkpoints.
+    :param moves: Alternating selected direction delta and thrust values.
     """
-    if not snapshot.predictions:
+    if not snapshot.moves:
         return
-    positions = np.array([snapshot.pod.position] + [pod.position for pod in snapshot.predictions])
+    predictions = predict_planned_states(snapshot.pod, checkpoints, moves)
+    positions = np.array([snapshot.pod.position] + [pod.position for pod in predictions])
     axes.plot(positions[:, 0], positions[:, 1], color="black", linestyle="--", linewidth=1)
+    axes.text(0.02, 0.98, f"score={round(bot.predict_turns(snapshot.pod, checkpoints, moves).get_score(checkpoints))}", color="red",
+              transform=axes.transAxes, ha="left", va="top")
     label_boxes = []
-    for prediction_ind, pod in enumerate(snapshot.predictions):
+    for prediction_ind, pod in enumerate(predictions):
         axes.add_patch(Circle(pod.position, POD_RADIUS, fill=False, edgecolor="black", linestyle="--", linewidth=1))
         draw_pod_arrows(axes, pod, 0.5)
         move_ind = 2 * prediction_ind
         label_position = get_label_position(pod.position, label_boxes)
         axes.plot((pod.position[0], label_position[0]), (pod.position[1], label_position[1]), color="0.4", linestyle=":", linewidth=0.7)
         axes.text(label_position[0], label_position[1],
-                  f"({snapshot.moves[move_ind]:.3g}, {snapshot.moves[move_ind + 1]:.3g})", ha="center", va="center", fontsize=PREDICTION_LABEL_SIZE)
+                  f"({moves[move_ind]:.3g}, {moves[move_ind + 1]:.3g})", ha="center", va="center", fontsize=PREDICTION_LABEL_SIZE)
 
 
 def get_label_position(position: NDArray[int], label_boxes: list[tuple[float, float, float, float]]) -> tuple[float, float]:

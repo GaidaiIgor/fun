@@ -28,13 +28,13 @@ class Pod:
     """Stores one pod state.
     :var ind: Pod index inside its team.
     :var position: Pod center coordinates.
-    :var velocity: Pod speed vector after the previous turn friction and truncation.
+    :var velocity: Pod speed vector.
     :var direction: Pod angle in degrees from the positive x-axis, positive toward negative y.
     :var next_checkpoint_ind: Index of the current checkpoint in checkpoints, or None when unknown.
     """
     ind: int
-    position: NDArray[int]
-    velocity: NDArray[int]
+    position: NDArray[float]
+    velocity: NDArray[float]
     direction: float
     next_checkpoint_ind: int | None
 
@@ -132,7 +132,7 @@ def read_pod(pod_ind: int) -> Pod:
     :return: Pod state with the game angle converted to the bot angle convention.
     """
     x, y, vx, vy, angle, next_checkpoint_ind = map(int, input().split())
-    return Pod(pod_ind, np.array((x, y)), np.array((vx, vy)), normalize_angle(-angle), next_checkpoint_ind)
+    return Pod(pod_ind, np.array((x, y), dtype=float), np.array((vx, vy), dtype=float), normalize_angle(-angle), next_checkpoint_ind)
 
 
 def choose_move(game_state: GameState) -> list[tuple[NDArray[int], int | str]]:
@@ -224,17 +224,15 @@ def predict_next(current: Pod, checkpoints: list[NDArray[int]], direction_delta:
     next_direction_rad = math.radians(next_direction)
     acceleration = np.array((math.cos(next_direction_rad), -math.sin(next_direction_rad))) * thrust
     velocity = current.velocity + acceleration
-    segment_start = current.position.astype(float)
     segment_end = current.position + velocity
     passed_checkpoints = 0
     while passed_checkpoints < len(checkpoints) \
-            and checkpoint_crossed(segment_start, segment_end, checkpoints[(current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)]):
+            and checkpoint_crossed(current.position, segment_end, checkpoints[(current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)]):
         passed_checkpoints += 1
 
-    position = np.floor(segment_end + 0.5).astype(int)
-    velocity = (velocity * DRAG).astype(int)
+    velocity = velocity * DRAG
     next_checkpoint_ind = (current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)
-    return FutureState([direction_delta, thrust], Pod(current.ind, position, velocity, next_direction, next_checkpoint_ind), passed_checkpoints)
+    return FutureState([direction_delta, thrust], Pod(current.ind, segment_end, velocity, next_direction, next_checkpoint_ind), passed_checkpoints)
 
 
 def constrain_moves(moves: list[float] | NDArray[float]) -> NDArray[float]:
@@ -277,15 +275,6 @@ def log(msg: str):
     :param msg: Message to print.
     """
     print(msg, file=sys.stderr)
-
-
-def test():
-    """Runs the local prediction sanity test."""
-    checkpoints = [np.array([11498, 6051]), np.array([9095, 1838])]
-    current = Pod(0, np.array([9988, 6216]), np.array([573, 134]), 0, 0)
-    score1 = predict_turns(current, checkpoints, [6.24, 100, 6.24, 100]).get_score(checkpoints)
-    score2 = predict_turns(current, checkpoints, [90, 100, 90, 100]).get_score(checkpoints)
-    print(score1, score2)
 
 
 if __name__ == "__main__":

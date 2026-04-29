@@ -161,7 +161,8 @@ def main():
     """Runs the default test."""
     # show_single_pod_lap(CHECKPOINTS)
     # run_optimization(CHECKPOINTS)
-    plot_optimization_landscape(CHECKPOINTS)
+    plot_optimization_landscape_1d(CHECKPOINTS)
+    # plot_optimization_landscape_2d(CHECKPOINTS)
 
 
 def show_single_pod_lap(checkpoints: list[NDArray[int]]):
@@ -198,7 +199,7 @@ def get_optimizer_guess_moves(pod: Pod, checkpoints: list[NDArray[int]]) -> NDAr
                              0 if abs(checkpoint_direction_delta) > 45 else 100)), bot.PREDICT_TURNS)
 
 
-def plot_optimization_landscape(checkpoints: list[NDArray[int]]):
+def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]]):
     """Plots the first-move optimization landscape from turn 14 of the current simulation in 3D.
     :param checkpoints: Circuit checkpoints.
     """
@@ -235,12 +236,39 @@ def plot_optimization_landscape(checkpoints: list[NDArray[int]]):
     plt.show()
 
 
+def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]]):
+    """Plots the optimization landscape against one move coordinate.
+    :param checkpoints: Circuit checkpoints.
+    """
+    turn = 13
+    coordinate_ind = 0
+    pod = simulate_single_pod_lap(checkpoints)[turn].pod
+    result = bot.optimize_pod_moves(pod, checkpoints)
+    coordinate_values = np.linspace(-bot.MAX_TURN_DEG, bot.MAX_TURN_DEG, LANDSCAPE_DIRECTION_STEPS) if coordinate_ind % 2 == 0 \
+        else np.linspace(0, 100, LANDSCAPE_THRUST_STEPS)
+    scores = []
+    for coordinate_value in coordinate_values:
+        moves = result.x.copy()
+        moves[coordinate_ind] = coordinate_value
+        scores.append(bot.predict_turns(pod, checkpoints, moves).get_score(checkpoints))
+
+    figure, axes = plt.subplots(figsize=(10, 7))
+    axes.plot(coordinate_values, scores, color="black", marker="o", markersize=3)
+    axes.scatter(result.x[coordinate_ind], bot.predict_turns(pod, checkpoints, result.x).get_score(checkpoints), color="red", marker="x", s=80,
+                 label="Optimized")
+    axes.set_xlabel(f"move[{coordinate_ind}]")
+    axes.set_ylabel("Score")
+    axes.set_title("Turn 14 one-coordinate optimization landscape")
+    axes.legend()
+    plt.show()
+
+
 def simulate_single_pod_lap(checkpoints: list[NDArray[int]]) -> list[TurnSnapshot]:
     """Simulates one pod completing one lap.
     :param checkpoints: Circuit checkpoints.
     :return: Simulated turn snapshots.
     """
-    pod = Pod(0, checkpoints[0].copy(), np.array((0, 0)), 0, 1)
+    pod = Pod(0, checkpoints[0].astype(float), np.array((0, 0), dtype=float), 0, 1)
     passed_checkpoints = 0
     history = []
     while passed_checkpoints < len(checkpoints) and len(history) < MAX_TURNS:
@@ -326,7 +354,7 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
                   f"({moves[move_ind]:.3g}, {moves[move_ind + 1]:.3g})", ha="center", va="center", fontsize=PREDICTION_LABEL_SIZE)
 
 
-def get_label_position(position: NDArray[int], label_boxes: list[tuple[float, float, float, float]]) -> tuple[float, float]:
+def get_label_position(position: NDArray[float], label_boxes: list[tuple[float, float, float, float]]) -> tuple[float, float]:
     """Finds a non-overlapping label position near a point.
     :param position: Point to label.
     :param label_boxes: Already occupied label boxes.
@@ -371,7 +399,7 @@ def draw_pod_arrows(axes: Axes, pod: Pod, alpha: float):
     draw_arrow(axes, pod.position, get_direction_vector(pod.direction, DIRECTION_ARROW_LENGTH), "red", alpha)
 
 
-def draw_arrow(axes: Axes, position: NDArray[int], vector: NDArray[float] | tuple[float, float], color: str, alpha: float):
+def draw_arrow(axes: Axes, position: NDArray[float], vector: NDArray[float] | tuple[float, float], color: str, alpha: float):
     """Draws one vector arrow.
     :param axes: Matplotlib axes.
     :param position: Arrow start position.

@@ -8,6 +8,7 @@ import numpy as np
 from numpy import linalg
 from numpy.typing import NDArray
 from scipy import optimize
+from scipy.optimize import OptimizeResult
 
 
 DRAG = 0.85
@@ -53,7 +54,7 @@ class Pod:
 @dataclass(slots=True)
 class FutureState:
     """Stores a predicted future state.
-    :var moves: Alternating direction and thrust values that produced this state.
+    :var moves: Alternating direction delta and thrust values that produced this state.
     :var pod: Predicted pod state.
     :var passed_checkpoints: Number of checkpoints crossed by the move sequence.
     """
@@ -153,25 +154,18 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
     :param pod: Pod to command.
     :return: Target coordinates and thrust command.
     """
+    result = optimize_pod_moves(pod, game_state.checkpoints)
+    direction = normalize_angle(pod.direction + result.x[0])
+    thrust = round(result.x[1])
+
     checkpoint_delta = game_state.checkpoints[pod.next_checkpoint_ind] - pod.position
     checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
-    direction_delta_guess = np.clip(normalize_angle(checkpoint_direction - pod.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
-    direction_guess = normalize_angle(pod.direction + direction_delta_guess)
-    guess_moves = np.tile(np.array((direction_guess, 100)), PREDICT_TURNS)
-    result = optimize.minimize(lambda moves: predict_turns(pod, game_state.checkpoints, moves).get_score(game_state.checkpoints),
-                               guess_moves, method="COBYLA", options={"maxiter": OPTIMIZATION_MAX_ITER})
-    result.x = constrain_moves(result.x)
-    direction = result.x[0]
-    thrust = round(result.x[1])
     if abs(normalize_angle(pod.direction - checkpoint_direction)) <= BOOST_ANGLE_TOL and pod.get_next_checkpoint_distance(game_state.checkpoints) > 5000 \
             and game_state.boosts:
         thrust = "BOOST"
 
     log(f"Pod {pod.ind} move:")
-    guess_score = predict_turns(pod, game_state.checkpoints, guess_moves).get_score(game_state.checkpoints)
-    guess_moves = ", ".join(f"{value:.3g}" for value in guess_moves)
     opt_moves = ", ".join(f"{value:.3g}" for value in result.x)
-    log(f"guess moves=[{guess_moves}]; score={round(guess_score)}")
     log(f"opt moves=[{opt_moves}]; score={round(result.fun)}")
     log(f"opt success={result.success}; nfev={result.nfev}; message={result.message}")
     log("Predicted:")
@@ -185,11 +179,29 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
     return target_pos, thrust
 
 
+def optimize_pod_moves(pod: Pod, checkpoints: list[NDArray[int]]) -> OptimizeResult:
+    """Optimizes future moves for one pod.
+    :param pod: Pod to command.
+    :param checkpoints: Circuit checkpoints.
+    :return: SciPy optimization result with constrained moves written to x.
+    """
+    checkpoint_delta = checkpoints[pod.next_checkpoint_ind] - pod.position
+    checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
+    checkpoint_direction_delta = normalize_angle(checkpoint_direction - pod.direction)
+    direction_delta_guess = np.clip(checkpoint_direction_delta, -MAX_TURN_DEG, MAX_TURN_DEG)
+    thrust_guess = 0 if abs(checkpoint_direction_delta) > 45 else 100
+    initial_moves = np.tile(np.array((direction_delta_guess, thrust_guess)), PREDICT_TURNS)
+    result = optimize.minimize(lambda moves: predict_turns(pod, checkpoints, moves).get_score(checkpoints), initial_moves, method="COBYLA",
+                               options={"maxiter": OPTIMIZATION_MAX_ITER})
+    result.x = constrain_moves(result.x)
+    return result
+
+
 def predict_turns(current: Pod, checkpoints: list[NDArray[int]], moves: list[float] | NDArray[float]) -> FutureState:
     """Predicts pod state after multiple turns.
     :param current: Current pod state.
     :param checkpoints: Circuit checkpoints.
-    :param moves: Alternating direction and thrust values for every future turn.
+    :param moves: Alternating direction delta and thrust values for every future turn.
     :return: Predicted future state.
     """
     future_state = FutureState([], current, 0)
@@ -199,16 +211,15 @@ def predict_turns(current: Pod, checkpoints: list[NDArray[int]], moves: list[flo
     return future_state
 
 
-def predict_next(current: Pod, checkpoints: list[NDArray[int]], direction: float, thrust: float) -> FutureState:
+def predict_next(current: Pod, checkpoints: list[NDArray[int]], direction_delta: float, thrust: float) -> FutureState:
     """Predicts next pod state after one turn.
     :param current: Current pod state.
     :param checkpoints: Circuit checkpoints.
-    :param direction: Desired pod direction in degrees.
+    :param direction_delta: Desired direction change in degrees.
     :param thrust: Thrust level to apply.
     :return: Predicted future state after one turn.
     """
-    direction, thrust = constrain_moves([direction, thrust])
-    direction_delta = np.clip(normalize_angle(direction - current.direction), -MAX_TURN_DEG, MAX_TURN_DEG)
+    direction_delta, thrust = constrain_moves([direction_delta, thrust])
     next_direction = normalize_angle(current.direction + direction_delta)
     next_direction_rad = math.radians(next_direction)
     acceleration = np.array((math.cos(next_direction_rad), -math.sin(next_direction_rad))) * thrust
@@ -223,16 +234,16 @@ def predict_next(current: Pod, checkpoints: list[NDArray[int]], direction: float
     position = np.floor(segment_end + 0.5).astype(int)
     velocity = (velocity * DRAG).astype(int)
     next_checkpoint_ind = (current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)
-    return FutureState([direction, thrust], Pod(current.ind, position, velocity, next_direction, next_checkpoint_ind), passed_checkpoints)
+    return FutureState([direction_delta, thrust], Pod(current.ind, position, velocity, next_direction, next_checkpoint_ind), passed_checkpoints)
 
 
 def constrain_moves(moves: list[float] | NDArray[float]) -> NDArray[float]:
     """Applies model-level move boundaries.
-    :param moves: Alternating direction and thrust values.
-    :return: Moves with normalized directions and clipped thrusts.
+    :param moves: Alternating direction delta and thrust values.
+    :return: Moves with clipped direction deltas and thrusts.
     """
     moves = np.array(moves).copy()
-    moves[0::2] = normalize_angle(moves[0::2])
+    moves[0::2] = np.clip(moves[0::2], -MAX_TURN_DEG, MAX_TURN_DEG)
     moves[1::2] = np.clip(moves[1::2], 0, 100)
     return moves
 
@@ -277,5 +288,5 @@ def test():
     print(score1, score2)
 
 
-main()
-# test()
+if __name__ == "__main__":
+    main()

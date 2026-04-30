@@ -62,14 +62,12 @@ def is_banned(sample_id):
     return turn < ban_until.get(sample_id, -1)
 
 
-def ban_sample(sample_id, duration=28):
+def ban_sample(sample_id, duration=22):
     ban_until[sample_id] = turn + duration
 
 
 def can_make(sample, storage, exp):
-    if not sample.diagnosed:
-        return False
-    return all(storage[i] + exp[i] >= sample.cost[i] for i in range(5))
+    return sample.diagnosed and all(storage[i] + exp[i] >= sample.cost[i] for i in range(5))
 
 
 def effective_cost(sample, exp):
@@ -120,16 +118,6 @@ def feasible_capacity(req, storage):
     return True
 
 
-def active_projects(projects, my_exp, opp_exp):
-    active = []
-    for p in projects:
-        my_done = all(my_exp[i] >= p[i] for i in range(5))
-        opp_done = all(opp_exp[i] >= p[i] for i in range(5))
-        if not my_done and not opp_done:
-            active.append(p)
-    return active
-
-
 def project_deficit(exp, project):
     return [max(0, project[i] - exp[i]) for i in range(5)]
 
@@ -138,12 +126,51 @@ def project_gap(exp, project):
     return sum(project_deficit(exp, project))
 
 
+def active_projects(projects, my_exp, opp_exp):
+    out = []
+    for p in projects:
+        my_done = all(my_exp[i] >= p[i] for i in range(5))
+        opp_done = all(opp_exp[i] >= p[i] for i in range(5))
+        if not my_done and not opp_done:
+            out.append(p)
+    return out
+
+
 def max_project_need(projects):
     mx = [0] * 5
     for p in projects:
         for i in range(5):
             mx[i] = max(mx[i], p[i])
     return mx
+
+
+def urgent_gain(sample, exp, projects, opp_exp):
+    gi = mi(sample.gain)
+    if gi < 0:
+        return False
+
+    for p in active_projects(projects, exp, opp_exp):
+        my_gap = project_gap(exp, p)
+        opp_gap = project_gap(opp_exp, p)
+        if exp[gi] < p[gi] and (my_gap <= 3 or opp_gap <= 2):
+            return True
+
+    return False
+
+
+def trash_sample(sample, exp, projects, opp_exp, remaining):
+    if not sample.diagnosed:
+        return False
+
+    if sample.rank == 1 and sample.health <= 1 and sum(exp) >= 2:
+        if urgent_gain(sample, exp, projects, opp_exp):
+            return False
+        return True
+
+    if remaining < 80 and sample.health <= 1:
+        return True
+
+    return False
 
 
 def project_bonus(exp, final_exp, projects, opp_exp):
@@ -157,22 +184,19 @@ def project_bonus(exp, final_exp, projects, opp_exp):
 
         before_sum = sum(before)
         after_sum = sum(after)
-
         progress = before_sum - after_sum
-        bottleneck_progress = max(before) - max(after)
 
         if progress > 0:
-            bonus += 5.0 * progress
-            bonus += 3.0 * max(0, bottleneck_progress)
+            bonus += 5.5 * progress
+            bonus += 3.0 * max(0, max(before) - max(after))
 
         if before_sum > 0 and after_sum == 0:
-            bonus += 70.0
+            bonus += 80.0
             if opp_gap <= 2:
-                bonus += 35.0
+                bonus += 40.0
 
-        # If opponent is close, the same expertise is worth more now.
         if opp_gap <= 2 and progress > 0:
-            bonus += 14.0 * progress
+            bonus += 16.0 * progress
 
     return bonus
 
@@ -186,12 +210,11 @@ def expertise_gain_bonus(sample, exp, projects, opp_exp):
     mx_need = max_project_need(active)
     b = 0.0
 
-    # Breadth matters. A single zero expertise can cost a 50-point project.
     if exp[gi] == min(exp):
         b += 10.0
 
     if exp[gi] == 0:
-        b += 13.0
+        b += 12.0
     elif exp[gi] == 1:
         b += 7.0
     elif exp[gi] == 2:
@@ -204,13 +227,13 @@ def expertise_gain_bonus(sample, exp, projects, opp_exp):
         if exp[gi] < p[gi]:
             b += 7.0
             b += 2.0 * (p[gi] - exp[gi])
-            b += 10.0 / (1 + my_gap)
+            b += 12.0 / (1 + my_gap)
 
             if opp_gap <= 2:
-                b += 12.0
+                b += 14.0
 
     if active and exp[gi] >= mx_need[gi] and exp[gi] >= 4:
-        b -= 8.0
+        b -= 10.0
 
     return b
 
@@ -254,10 +277,11 @@ def opponent_plan_need(opp, samples, avail, projects):
         opp.storage,
         avail,
         projects,
-        remaining=200 - turn,
-        current_target=opp.target,
-        require_available=False,
-        opp_exp=[0, 0, 0, 0, 0],
+        200 - turn,
+        opp.target,
+        False,
+        [0, 0, 0, 0, 0],
+        opp_need=[0, 0, 0, 0, 0],
         ignore_ban=True,
         for_opponent=True,
     )
@@ -277,23 +301,25 @@ def contention_penalty(req, storage, avail, opp_need, remaining):
             continue
 
         overlap = min(need[i], opp_need[i])
+
         if overlap > 0:
             if avail[i] <= need[i] + opp_need[i]:
-                p += 5.0 * overlap
+                p += 5.5 * overlap
             if avail[i] <= 2:
-                p += 5.0 * overlap
+                p += 5.5 * overlap
 
         if avail[i] == 0:
-            p += 30.0
+            p += 32.0
             if remaining < 120:
-                p += 30.0
+                p += 35.0
         elif avail[i] == 1:
             p += 4.0 * need[i]
 
     return p
 
 
-def plan_raw_value(order, req, final_exp, storage, avail, exp, projects, remaining, current_target, opp_exp, opp_need, require_available):
+def plan_raw_value(order, req, final_exp, storage, avail, exp, projects,
+                   remaining, current_target, opp_exp, opp_need, require_available):
     health = sum(s.health for s in order)
     need = need_from_req(req, storage)
     shortage = shortage_from_req(req, storage, avail)
@@ -305,9 +331,9 @@ def plan_raw_value(order, req, final_exp, storage, avail, exp, projects, remaini
     value = health
     value += sum(expertise_gain_bonus(s, exp, projects, opp_exp) for s in order)
     value += project_bonus(exp, final_exp, projects, opp_exp)
-    value += 1.5 * (len(order) - 1)
+    value += 1.2 * (len(order) - 1)
 
-    value -= 0.22 * sum(req)
+    value -= 0.18 * sum(req)
     value -= 0.35 * sum(need)
     value -= contention_penalty(req, storage, avail, opp_need, remaining)
 
@@ -320,37 +346,47 @@ def plan_raw_value(order, req, final_exp, storage, avail, exp, projects, remaini
 
     z = zero_blocks(req, storage, avail)
     if z:
-        value -= 25.0 + 18.0 * len(z)
+        value -= 28.0 + 18.0 * len(z)
         if storage_total(storage) >= 5:
-            value -= 30.0
+            value -= 35.0
 
     if est + 1 > remaining:
-        value -= 200.0 + 10.0 * (est + 1 - remaining)
+        value -= 250.0 + 12.0 * (est + 1 - remaining)
 
     for s in order:
-        if s.health <= 1:
-            if remaining < 145:
-                value -= 7.0
-            if remaining < 85:
+        if s.rank == 1 and s.health <= 1:
+            if sum(exp) >= 2:
                 value -= 25.0
+            if remaining < 145:
+                value -= 12.0
+            if remaining < 90:
+                value -= 35.0
+
+        if s.health <= 1 and s.rank >= 2 and remaining < 100:
+            value -= 15.0
 
     return value
 
 
-def plan_metric(raw_value, est):
+def plan_metric(raw_value, est, order):
     if raw_value <= -10**8:
         return raw_value
-    # Ratio dominates, raw value breaks ties toward bigger batches.
-    return raw_value / max(1, est) + 0.035 * raw_value
+
+    health = sum(s.health for s in order)
+    # Better blend: do not let a tiny sample look brilliant just because it is short.
+    return raw_value / max(1, est) + 0.055 * raw_value + 0.015 * health
 
 
 def select_best_plan(samples, exp, storage, avail, projects, remaining, current_target,
-                     require_available, opp_exp, opp_need=None, ignore_ban=False, for_opponent=False):
+                     require_available, opp_exp, opp_need=None, ignore_ban=False,
+                     for_opponent=False, ignore_trash=True):
     diagnosed = []
     for s in samples:
         if not s.diagnosed:
             continue
         if not ignore_ban and is_banned(s.id):
+            continue
+        if ignore_trash and not for_opponent and trash_sample(s, exp, projects, opp_exp, remaining):
             continue
         diagnosed.append(s)
 
@@ -371,6 +407,7 @@ def select_best_plan(samples, exp, storage, avail, projects, remaining, current_
                     continue
 
                 need = need_from_req(req, storage)
+
                 if require_available and any(need[i] > avail[i] for i in range(5)):
                     continue
 
@@ -383,11 +420,8 @@ def select_best_plan(samples, exp, storage, avail, projects, remaining, current_
                     projects, remaining, current_target, opp_exp, opp_need,
                     require_available,
                 )
-                metric = plan_metric(raw, est)
 
-                # Opponent model should be rough. Don't overthink the enemy's soul.
-                if for_opponent:
-                    metric = raw / max(1, est)
+                metric = raw / max(1, est) if for_opponent else plan_metric(raw, est, order)
 
                 if best is None or metric > best["metric"]:
                     best = {
@@ -415,6 +449,7 @@ def choose_completion_sample(makeable, plan, exp, projects, opp_exp):
                 return s
 
     best = None
+
     for s in makeable:
         e2 = apply_gain(exp, s)
         score = s.health
@@ -431,32 +466,27 @@ def choose_rank(me, opp, projects, carried_count, remaining):
     exp = me.expertise
     et = sum(exp)
 
-    if remaining < 35:
+    if remaining < 32:
         return 1 if et < 5 else 2
 
     if et < 3:
         return 1
 
-    # Rank 2 is the money printer in this league: reliable, fast, and less likely
-    # to create a molecular hostage situation.
-    if et < 11:
-        return 2
-
-    active = active_projects(projects, me.expertise, opp.expertise)
-
-    # Take rank 3 only with decent breadth and enough time.
-    if remaining > 75 and min(exp) >= 1 and et >= 12:
-        # Do not fill all three slots with rank 3. That is not strategy; that is hoarding.
-        if carried_count < 2:
+    # Controlled rank-3 aggression. The previous version stayed too civilized
+    # and got mugged by higher-value work.
+    if remaining > 95 and et >= 8:
+        if carried_count == 0:
             return 3
         return 2
 
-    # If badly behind and not too late, accept more variance.
-    if me.score + 45 < opp.score and remaining > 65 and et >= 9 and min(exp) >= 1:
-        return 3 if carried_count == 0 else 2
+    if remaining > 70 and et >= 11:
+        if carried_count == 0:
+            return 3
+        return 2
 
-    # If a project bottleneck exists, stay rank 2 to farm targeted expertise faster.
-    if active:
+    if me.score + 35 < opp.score and remaining > 55 and et >= 8:
+        if carried_count == 0:
+            return 3
         return 2
 
     return 2
@@ -468,6 +498,7 @@ def choose_molecule(plan, storage, avail, exp, opp_need):
 
     req = plan["req"]
     need = need_from_req(req, storage)
+
     if sum(need) == 0:
         return None
 
@@ -482,17 +513,14 @@ def choose_molecule(plan, storage, avail, exp, opp_need):
         if need[i] <= 0 or avail[i] <= 0:
             continue
 
-        score = 0.0
-        score += 50.0 * min(1, first_need[i])
+        score = 52.0 * min(1, first_need[i])
         score += 10.0 * need[i]
         score += 5.0 * max(0, 4 - avail[i])
 
-        # If the opponent probably wants it too, grab it before the tiny molecule
-        # economy collapses again.
         if opp_need[i] > 0:
             score += 8.0
             if avail[i] <= need[i] + opp_need[i]:
-                score += 10.0
+                score += 12.0
 
         if best is None or score > best[0]:
             best = (score, i)
@@ -511,7 +539,6 @@ def recoverable_loose_plan(plan, storage, avail, remaining):
     if sum(need) == 0:
         return True
 
-    # If there are still useful molecules to collect, do not panic-drop.
     useful_now = any(need[i] > 0 and avail[i] > 0 for i in range(5))
     if useful_now:
         return True
@@ -525,19 +552,24 @@ def recoverable_loose_plan(plan, storage, avail, remaining):
     return False
 
 
-def choose_drop_sample(carried, exp, storage, avail, projects, remaining, current_target, loose_plan, opp_exp, opp_need):
+def choose_drop_sample(carried, exp, storage, avail, projects, remaining,
+                       current_target, loose_plan, opp_exp, opp_need):
     diagnosed = [s for s in carried if s.diagnosed]
     if not diagnosed:
         return None
 
-    # No donation if the plan is recoverable. We already learned this lesson the
-    # expensive way.
+    # Drop trash samples even if a "plan" exists, because otherwise they become
+    # ceremonial anchors.
+    trash = [s for s in diagnosed if trash_sample(s, exp, projects, opp_exp, remaining)]
+    if trash:
+        trash.sort(key=lambda s: (s.health, -sum(effective_cost(s, exp))))
+        return trash[0]
+
     if recoverable_loose_plan(loose_plan, storage, avail, remaining):
         return None
 
     current_ids = set(loose_plan["ids"]) if loose_plan else set()
     blocked = zero_blocks(loose_plan["req"], storage, avail) if loose_plan else []
-
     best = None
 
     for s in diagnosed:
@@ -546,16 +578,15 @@ def choose_drop_sample(carried, exp, storage, avail, projects, remaining, curren
         without = [x for x in diagnosed if x.id != s.id]
         plan_without = select_best_plan(
             without, exp, storage, avail, projects, remaining, current_target,
-            require_available=False, opp_exp=opp_exp, opp_need=opp_need
+            False, opp_exp, opp_need
         )
 
-        # Higher badness means more disposable.
         badness = 0.0
 
         if plan_without is not None:
             badness += plan_without["metric"] * 6.0
 
-        badness -= 1.4 * max(0, s.health)
+        badness -= 1.5 * max(0, s.health)
         badness -= expertise_gain_bonus(s, exp, projects, opp_exp)
 
         if sum(ec) > 10:
@@ -568,32 +599,26 @@ def choose_drop_sample(carried, exp, storage, avail, projects, remaining, curren
         if any(ec[i] > 0 and avail[i] == 0 for i in range(5)):
             badness += 35
 
-        if s.health <= 1:
-            badness += 20
-
         if s.id not in current_ids:
-            badness += 15
+            badness += 12
 
         if best is None or badness > best[0]:
             best = (badness, s)
 
-    if best is None:
-        return None
-
-    # Strong threshold to avoid gifting decent samples.
-    if best[0] < 35:
+    if best is None or best[0] < 35:
         return None
 
     return best[1]
 
 
-def choose_cloud_sample(cloud, carried, exp, storage, avail, projects, remaining, current_target, opp_exp, opp_need):
+def choose_cloud_sample(cloud, carried, exp, storage, avail, projects,
+                        remaining, current_target, opp_exp, opp_need):
     if len(carried) >= 3:
         return None
 
     current = select_best_plan(
         carried, exp, storage, avail, projects, remaining, current_target,
-        require_available=True, opp_exp=opp_exp, opp_need=opp_need
+        True, opp_exp, opp_need
     )
     current_metric = current["metric"] if current else 0.0
 
@@ -603,10 +628,14 @@ def choose_cloud_sample(cloud, carried, exp, storage, avail, projects, remaining
         if not s.diagnosed or is_banned(s.id):
             continue
 
+        if trash_sample(s, exp, projects, opp_exp, remaining):
+            continue
+
         combined = select_best_plan(
-            carried + [s], exp, storage, avail, projects, remaining, current_target,
-            require_available=True, opp_exp=opp_exp, opp_need=opp_need
+            carried + [s], exp, storage, avail, projects, remaining,
+            current_target, True, opp_exp, opp_need
         )
+
         if combined is None:
             continue
 
@@ -625,9 +654,11 @@ def choose_cloud_sample(cloud, carried, exp, storage, avail, projects, remaining
 def block_key(plan, storage, avail):
     if plan is None:
         return None
+
     z = zero_blocks(plan["req"], storage, avail)
     if not z:
         return None
+
     return tuple(plan["ids"]), tuple(z), tuple(need_from_req(plan["req"], storage))
 
 
@@ -673,6 +704,28 @@ def summarize(samples):
     return "[" + ",".join(out) + "]"
 
 
+def should_skip_low_value_plan(plan, carried, exp, projects, opp_exp, remaining):
+    if plan is None:
+        return False
+
+    if remaining < 60:
+        return False
+
+    planned_ids = set(plan["ids"])
+    planned = [s for s in carried if s.id in planned_ids]
+
+    if not planned:
+        return False
+
+    if all(trash_sample(s, exp, projects, opp_exp, remaining) for s in planned):
+        return True
+
+    if plan["raw"] < 22 and len(carried) < 3:
+        return True
+
+    return False
+
+
 def decide(projects, robots, avail, samples):
     global turn
 
@@ -692,12 +745,12 @@ def decide(projects, robots, avail, samples):
 
     strict_plan = select_best_plan(
         diagnosed, me.expertise, me.storage, avail, projects, remaining,
-        me.target, require_available=True, opp_exp=opp.expertise, opp_need=opp_need
+        me.target, True, opp.expertise, opp_need
     )
 
     loose_plan = strict_plan or select_best_plan(
         diagnosed, me.expertise, me.storage, avail, projects, remaining,
-        me.target, require_available=False, opp_exp=opp.expertise, opp_need=opp_need
+        me.target, False, opp.expertise, opp_need
     )
 
     makeable = makeable_samples(diagnosed, me.storage, me.expertise)
@@ -712,26 +765,31 @@ def decide(projects, robots, avail, samples):
         if remaining <= 6:
             return "WAIT", loose_plan, "lab_late_wait"
 
+        if should_skip_low_value_plan(strict_plan, carried, me.expertise, projects, opp.expertise, remaining):
+            if len(carried) < 3:
+                return goto(SAMP, me), strict_plan, "lab_skip_trash_to_samples"
+            return goto(DIAG, me), strict_plan, "lab_skip_trash_to_diag"
+
         if strict_plan is not None:
             return goto(MOLMOD, me), strict_plan, "lab_to_mol"
 
         if undiagnosed:
             return goto(DIAG, me), loose_plan, "lab_to_diag"
 
-        if remaining > 20:
+        if len(carried) < 3 and remaining > 22:
             return goto(SAMP, me), loose_plan, "lab_to_samples"
 
         return "WAIT", loose_plan, "lab_wait"
 
     if me.target == MOLMOD:
         if makeable:
-            # Bank points unless continuing a strict plan is clearly worth it.
             mol = choose_molecule(strict_plan, me.storage, avail, me.expertise, opp_need)
+
             if (
                 mol is not None
                 and strict_plan is not None
                 and strict_plan["est"] + 2 < remaining
-                and strict_plan["raw"] >= 25
+                and strict_plan["raw"] >= 35
                 and remaining > 35
             ):
                 clear_block()
@@ -743,6 +801,10 @@ def decide(projects, robots, avail, samples):
         if not diagnosed:
             clear_block()
             return goto(DIAG if undiagnosed else SAMP, me), loose_plan, "mol_no_diag"
+
+        if should_skip_low_value_plan(strict_plan, carried, me.expertise, projects, opp.expertise, remaining):
+            clear_block()
+            return goto(DIAG if len(carried) >= 3 else SAMP, me), strict_plan, "mol_skip_low"
 
         if strict_plan is not None:
             mol = choose_molecule(strict_plan, me.storage, avail, me.expertise, opp_need)
@@ -759,7 +821,6 @@ def decide(projects, robots, avail, samples):
             if mol is not None:
                 return "CONNECT {}".format(mol), loose_plan, "mol_take_loose"
 
-            # Wait only briefly on true zero-blocks.
             if zero_blocks(loose_plan["req"], me.storage, avail) and count <= 1 and remaining > 90:
                 return "WAIT", loose_plan, "mol_wait_once"
 
@@ -772,28 +833,30 @@ def decide(projects, robots, avail, samples):
         clear_block()
 
         if undiagnosed:
-            # Diagnose high-rank first to reveal strategic value quickly.
             s = max(undiagnosed, key=lambda x: (x.rank, x.id))
             return "CONNECT {}".format(s.id), loose_plan, "diag_diagnose"
 
         if makeable:
             return goto(LAB, me), loose_plan, "diag_to_lab"
 
-        if strict_plan is not None:
+        if strict_plan is not None and not should_skip_low_value_plan(
+            strict_plan, carried, me.expertise, projects, opp.expertise, remaining
+        ):
             return goto(MOLMOD, me), strict_plan, "diag_to_mol_strict"
+
+        bad = choose_drop_sample(
+            carried, me.expertise, me.storage, avail, projects,
+            remaining, me.target, loose_plan, opp.expertise, opp_need
+        )
+
+        if bad is not None:
+            ban_sample(bad.id)
+            return "CONNECT {}".format(bad.id), loose_plan, "diag_drop"
 
         if loose_plan is not None:
             mol = choose_molecule(loose_plan, me.storage, avail, me.expertise, opp_need)
             if mol is not None and recoverable_loose_plan(loose_plan, me.storage, avail, remaining):
                 return goto(MOLMOD, me), loose_plan, "diag_to_mol_loose"
-
-            bad = choose_drop_sample(
-                carried, me.expertise, me.storage, avail, projects,
-                remaining, me.target, loose_plan, opp.expertise, opp_need
-            )
-            if bad is not None:
-                ban_sample(bad.id)
-                return "CONNECT {}".format(bad.id), loose_plan, "diag_drop"
 
         if len(carried) < 3:
             s = choose_cloud_sample(

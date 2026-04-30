@@ -8,7 +8,7 @@ def debug(msg):
 # --- INITIALIZATION INPUT ---
 project_count = int(input())
 for i in range(project_count):
-    # Ignoring science projects for Version 3
+    # We will let dynamic rank scaling naturally handle late game for now
     input()
 
 # --- GAME LOOP ---
@@ -42,7 +42,7 @@ while True:
     samples = []
     for i in range(sample_count):
         inputs = input().split()
-        sample = {
+        samples.append({
             'id': int(inputs[0]),
             'carried_by': int(inputs[1]),
             'rank': int(inputs[2]),
@@ -52,8 +52,7 @@ while True:
                 'A': int(inputs[5]), 'B': int(inputs[6]),
                 'C': int(inputs[7]), 'D': int(inputs[8]), 'E': int(inputs[9])
             }
-        }
-        samples.append(sample)
+        })
 
     # --- BOT LOGIC ---
     my_samples = [s for s in samples if s['carried_by'] == 0]
@@ -62,31 +61,29 @@ while True:
 
     # Calculate real costs for diagnosed samples (Cost minus Expertise)
     for s in diagnosed:
-        s['real_cost'] = {}
-        for mol in 'ABCDE':
-            s['real_cost'][mol] = max(0, s['costs'][mol] - my_expertise[mol])
+        s['real_cost'] = {mol: max(0, s['costs'][mol] - my_expertise[mol]) for mol in 'ABCDE'}
 
     # 1. Identify Ready Samples (We have all required molecules in storage)
     ready_samples = []
     for s in diagnosed:
-        is_ready = True
-        for mol in 'ABCDE':
-            if my_storage[mol] < s['real_cost'][mol]:
-                is_ready = False
-                break
-        if is_ready:
+        if all(my_storage[m] >= s['real_cost'][m] for m in 'ABCDE'):
             ready_samples.append(s)
 
-    # 2. Identify Impossible Samples (Cost > 10 slots)
+    # 2. Identify Impossible Samples (Cost > 10 slots even after expertise)
     impossible_samples = [s for s in diagnosed if sum(s['real_cost'].values()) > 10]
 
-    # 3. Determine Target Sample for Gathering
+    # 3. Sort remaining viable samples by ease of completion (fewest missing molecules)
+    valid_diagnosed = [s for s in diagnosed if s not in impossible_samples]
+    # Tie-breaker: if same missing cost, prioritize higher health points
+    valid_diagnosed.sort(key=lambda s: (sum(max(0, s['real_cost'][m] - my_storage[m]) for m in 'ABCDE'), -s['health']))
+
+    # 4. Determine Target Sample & Molecule
     target_gather_sample = None
     target_mol = None
 
-    if not ready_samples and not impossible_samples and diagnosed:
-        # First, try to find a sample we can completely finish right now without getting stuck
-        for s in diagnosed:
+    if valid_diagnosed:
+        # Try to find a sample we can perfectly finish right now without getting stuck
+        for s in valid_diagnosed:
             missing = {m: max(0, s['real_cost'][m] - my_storage[m]) for m in 'ABCDE'}
             can_finish = all(available[m] >= missing[m] for m in 'ABCDE')
             has_space = sum(my_storage.values()) + sum(missing.values()) <= 10
@@ -95,11 +92,10 @@ while True:
                 target_gather_sample = s
                 break
 
-        # If no sample is perfectly available, strictly lock onto the first one to avoid deadlocks
+        # If no perfect finish, lock onto the mathematically easiest sample to complete
         if not target_gather_sample:
-            target_gather_sample = diagnosed[0]
+            target_gather_sample = valid_diagnosed[0]
 
-        # Find the first missing molecule for the locked target sample that is available
         missing = {m: max(0, target_gather_sample['real_cost'][m] - my_storage[m]) for m in 'ABCDE'}
         for mol in 'ABCDE':
             if missing[mol] > 0 and available[mol] > 0:
@@ -107,21 +103,30 @@ while True:
                     target_mol = mol
                     break
 
-    # --- ACTION DECISION ---
+    # 5. Dynamic Rank Scaling
+    total_exp = sum(my_expertise.values())
+    if total_exp <= 2:
+        target_rank = 1  # Fast early game points/expertise
+    elif total_exp <= 5:
+        target_rank = 2  # Mid game stability
+    else:
+        target_rank = 3  # Late game heavy hitters
+
+    # --- ACTION DECISION TREE ---
     action = "WAIT"
 
     if my_eta > 0:
         action = "WAIT"
-        debug("Moving, ETA: " + str(my_eta))
+        debug(f"Moving, ETA: {my_eta}")
 
     elif impossible_samples:
         target_sample = impossible_samples[0]
         if my_target != 'DIAGNOSIS':
             action = "GOTO DIAGNOSIS"
-            debug("Going to diag to drop impossible sample.")
+            debug("Going to dump impossible sample.")
         else:
             action = f"CONNECT {target_sample['id']}"
-            debug(f"Dropping impossible sample {target_sample['id']}")
+            debug(f"Dumping impossible sample {target_sample['id']} to cloud.")
 
     elif ready_samples:
         target_sample = ready_samples[0]
@@ -133,10 +138,10 @@ while True:
             debug(f"Crafting sample {target_sample['id']}")
 
     elif undiagnosed:
-        # Batch samples: if at SAMPLES and have < 3, grab another before leaving
+        # Batching: stay at SAMPLES until full
         if my_target == 'SAMPLES' and len(my_samples) < 3:
-            action = "CONNECT 2"
-            debug("At SAMPLES, grabbing another to batch.")
+            action = f"CONNECT {target_rank}"
+            debug(f"At SAMPLES, batching another Rank {target_rank}.")
         else:
             if my_target != 'DIAGNOSIS':
                 action = "GOTO DIAGNOSIS"
@@ -156,14 +161,14 @@ while True:
     elif len(my_samples) < 3:
         if my_target != 'SAMPLES':
             action = "GOTO SAMPLES"
-            debug("Going to get new samples.")
+            debug("Going to get new samples to cycle inventory.")
         else:
-            action = "CONNECT 2"
-            debug("Grabbing a rank 2 sample.")
+            action = f"CONNECT {target_rank}"
+            debug(f"Grabbing a rank {target_rank} sample.")
 
     else:
         action = "WAIT"
-        debug("Idle - target molecules unavailable. Waiting.")
+        debug("Stalled out waiting for enemy to release molecules. Waiting.")
 
     # Execute action
     print(action)

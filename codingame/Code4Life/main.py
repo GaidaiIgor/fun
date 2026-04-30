@@ -1,40 +1,24 @@
 import sys
-import itertools
-from typing import Dict, List, Optional, Tuple
-
-MODULES = ["START", "SAMPLES", "DIAGNOSIS", "MOLECULES", "LABORATORY"]
-
-# Distance matrix
-DIST = {
-    "START":      {"SAMPLES":2, "DIAGNOSIS":2, "MOLECULES":2, "LABORATORY":2},
-    "SAMPLES":    {"DIAGNOSIS":3, "MOLECULES":3, "LABORATORY":3},
-    "DIAGNOSIS":  {"SAMPLES":3, "MOLECULES":3, "LABORATORY":4},
-    "MOLECULES":  {"SAMPLES":3, "DIAGNOSIS":3, "LABORATORY":3},
-    "LABORATORY": {"SAMPLES":3, "DIAGNOSIS":4, "MOLECULES":3},
-}
+from typing import Dict, List, Optional
 
 class Bot:
     def __init__(self):
-        self.projects: List[Dict[str,int]] = []
+        self.projects = []                         # not used heavily but kept for initialization
         self.my_mol = {'A':0,'B':0,'C':0,'D':0,'E':0}
         self.my_exp = {'A':0,'B':0,'C':0,'D':0,'E':0}
-        self.my_samples: List[Dict] = []          # each: id, rank, gain, health, cost dict, diagnosed bool
-        self.cloud_samples: Dict[int, Dict] = {}  # id -> sample dict
-        self.diagnosed_ids = set()
-        self.next_rank = 1                        # 1,2,3 cycle
-        self.pending_sample_connect = False
-        self.samples_before = 0
-        self.mol_gather_wait = 0                  # turns waiting for unavailable molecule
-        self.next_action_after_store = None       # used after storing at DIAGNOSIS
+        self.my_samples: List[Dict] = []           # carried samples, each: id, rank, gain, health, cost dict, diagnosed
+        self.cloud_samples: Dict[int, Dict] = {}   # id -> sample in cloud
+        self.diagnosed_ids = set()                 # ids we have diagnosed (own)
+        self.wait_counter = 0                      # turns waiting for molecules
+        self.target_sample_id = None               # id of the sample we are currently focusing on
 
     def parse_initial(self):
         project_count = int(input())
         for _ in range(project_count):
-            a,b,c,d,e = map(int, input().split())
+            a, b, c, d, e = map(int, input().split())
             self.projects.append({'A':a,'B':b,'C':c,'D':d,'E':e})
 
     def parse_turn(self):
-        # my player line
         parts = input().split()
         target = parts[0]
         eta = int(parts[1])
@@ -50,14 +34,11 @@ class Bot:
         self.my_exp['D'] = int(parts[11])
         self.my_exp['E'] = int(parts[12])
 
-        # opponent line (ignore)
-        input()
+        input()  # opponent – not used
 
-        # available molecules
         avail = list(map(int, input().split()))
         available = {'A':avail[0],'B':avail[1],'C':avail[2],'D':avail[3],'E':avail[4]}
 
-        # samples
         sample_count = int(input())
         new_carried = []
         new_cloud = {}
@@ -85,7 +66,7 @@ class Bot:
             elif carried_by == -1:
                 new_cloud[sid] = s
 
-        # update local samples preserving diagnosed flag
+        # update carried list, keeping diagnosed flag
         new_my_samples = []
         for s in new_carried:
             s['diagnosed'] = s['id'] in self.diagnosed_ids
@@ -95,211 +76,170 @@ class Bot:
 
         return target, eta, available
 
-    def project_bonus(self, old_exp, new_exp):
-        bonus = 0
-        for proj in self.projects:
-            old_ok = all(old_exp[t] >= proj[t] for t in 'ABCDE')
-            new_ok = all(new_exp[t] >= proj[t] for t in 'ABCDE')
-            if new_ok and not old_ok:
-                bonus += 50
-        return bonus
+    def missing_to_produce(self, sample: Dict) -> Dict[str, int]:
+        """Molecules we still need to gather for this sample (given current inventory & expertise)."""
+        need = {}
+        for m in 'ABCDE':
+            need[m] = max(0, sample['cost'][m] - self.my_exp[m] - self.my_mol[m])
+        return need
 
-    def evaluate_sequence(self, sample_list, available):
-        """Return (total_score, gather_plan_dict) or (None, None) if infeasible."""
-        exp = dict(self.my_exp)
-        inv = dict(self.my_mol)
-        initial_sum = sum(inv.values())
-        gather = {m:0 for m in 'ABCDE'}
-        health = 0
+    def can_produce_now(self, sample: Dict) -> bool:
+        """True if we have enough molecules in inventory to produce the sample right now."""
+        for m in 'ABCDE':
+            if self.my_mol[m] < max(0, sample['cost'][m] - self.my_exp[m]):
+                return False
+        return True
 
-        for s in sample_list:
-            needed = {m: max(0, s['cost'][m] - exp[m]) for m in 'ABCDE'}
-            for m in 'ABCDE':
-                short = needed[m] - inv[m]
-                if short > 0:
-                    if gather[m] + short > available[m]:
-                        return None, None
-                    gather[m] += short
-                    inv[m] += short
-            # capacity check
-            if initial_sum + sum(gather.values()) > 10:
-                return None, None
-            # consume required molecules
-            for m in 'ABCDE':
-                inv[m] -= needed[m]
-            exp[s['gain']] += 1
-            health += s['health']
+    def sample_is_feasible(self, sample: Dict, available: Dict[str, int]) -> bool:
+        """Can we eventually produce this sample given the current market and our inventory capacity?"""
+        missing = self.missing_to_produce(sample)
+        for m in 'ABCDE':
+            if missing[m] > available[m]:
+                return False
+        if sum(self.my_mol.values()) + sum(missing.values()) > 10:
+            return False
+        return True
 
-        bonus = self.project_bonus(self.my_exp, exp)
-        return health + bonus, gather
-
-    def select_best_sequence(self, available):
-        """Return best sequence of sample IDs (ordered) from carried diagnosed samples."""
+    def select_best_feasible_sample(self, available: Dict[str, int]) -> Optional[Dict]:
+        """Among carried diagnosed samples, pick one that can be produced after gathering,
+           preferring highest health (ties: fewer total missing molecules)."""
         diag = [s for s in self.my_samples if s['diagnosed']]
-        if not diag:
-            return []
-        best_score = -1
-        best_seq = []
-        # try all non-empty subsets, any order
-        for r in range(1, len(diag)+1):
-            for subset in itertools.combinations(diag, r):
-                for perm in itertools.permutations(subset):
-                    score, gather = self.evaluate_sequence(list(perm), available)
-                    if score is not None and score > best_score:
-                        best_score = score
-                        best_seq = [s['id'] for s in perm]
-                    elif score is not None and score == best_score:
-                        if gather and best_seq:
-                            # prefer fewer total gathered molecules
-                            prev_score, prev_gather = self.evaluate_sequence(
-                                [s for s in diag if s['id'] in best_seq], available
-                            )
-                            if prev_gather and sum(gather.values()) < sum(prev_gather.values()):
-                                best_seq = [s['id'] for s in perm]
-        return best_seq
+        best = None
+        best_health = -1
+        best_gather = 999
+        for s in diag:
+            if not self.sample_is_feasible(s, available):
+                continue
+            missing = self.missing_to_produce(s)
+            gather = sum(missing.values())
+            if s['health'] > best_health or (s['health'] == best_health and gather < best_gather):
+                best_health = s['health']
+                best_gather = gather
+                best = s
+        return best
 
-    def decide_action(self, target, eta, available):
+    def select_sample_to_produce_now(self) -> Optional[Dict]:
+        """Carried diagnosed sample that can be produced immediately (no gathering needed), highest health."""
+        diag = [s for s in self.my_samples if s['diagnosed'] and self.can_produce_now(s)]
+        if not diag:
+            return None
+        return max(diag, key=lambda s: s['health'])
+
+    def decide_action(self, target: str, eta: int, available: Dict[str, int]):
         if eta > 0:
             print("WAIT")
             return
 
         current = target
 
-        # resolve pending sample connect
-        if current == "SAMPLES" and self.pending_sample_connect:
-            if len(self.my_samples) > self.samples_before:
-                # success: cycle rank to next
-                self.next_rank = self.next_rank % 3 + 1
-            else:
-                # failure: also cycle (maybe that rank exhausted)
-                self.next_rank = self.next_rank % 3 + 1
-            self.pending_sample_connect = False
+        if current == "START":
+            print("GOTO SAMPLES")
+            return
 
         if current == "SAMPLES":
             if len(self.my_samples) < 3:
-                self.samples_before = len(self.my_samples)
-                print(f"CONNECT {self.next_rank}")
-                self.pending_sample_connect = True
+                # always ask for rank 1 – low cost, quick expertise
+                print("CONNECT 1")
             else:
-                # inventory full, go diagnose if any undiagnosed
                 if any(not s['diagnosed'] for s in self.my_samples):
                     print("GOTO DIAGNOSIS")
                 else:
-                    # all diagnosed, see if we should store a weak one to get better
-                    total_health = sum(s['health'] for s in self.my_samples)
-                    if total_health < 20:   # threshold to discard low-value samples
-                        # prepare to store the worst one
-                        worst = min(self.my_samples, key=lambda s: (s['health'], -sum(s['cost'].values())))
-                        # go to DIAGNOSIS to store it
-                        self.next_action_after_store = "SAMPLES"
-                        print("GOTO DIAGNOSIS")
+                    # all diagnosed, head for production
+                    if self.select_sample_to_produce_now():
+                        print("GOTO LABORATORY")
                     else:
-                        # proceed to produce
                         print("GOTO MOLECULES")
+            return
 
-        elif current == "DIAGNOSIS":
-            # handle any pending action after a store
-            if self.next_action_after_store is not None:
-                dest = self.next_action_after_store
-                self.next_action_after_store = None
-                print(f"GOTO {dest}")
-                return
-
+        if current == "DIAGNOSIS":
             undiag = [s for s in self.my_samples if not s['diagnosed']]
             if undiag:
                 s = undiag[0]
                 print(f"CONNECT {s['id']}")
                 self.diagnosed_ids.add(s['id'])
-            else:
-                # all carried diagnosed, maybe fetch from cloud if space
-                if len(self.my_samples) < 3:
-                    owned_cloud = [sid for sid, s in self.cloud_samples.items() if sid in self.diagnosed_ids]
-                    if owned_cloud:
-                        # pick the best by health
-                        best_cloud_id = max(owned_cloud, key=lambda sid: self.cloud_samples[sid]['health'])
-                        print(f"CONNECT {best_cloud_id}")
-                        # will be added to carried next turn
-                        return
-                # decide production or storage
-                best_seq = self.select_best_sequence(available)
-                if best_seq:
+                return
+
+            # all carried are diagnosed
+            # try to retrieve a feasible cloud sample if we have room
+            if len(self.my_samples) < 3:
+                own_cloud_ids = [sid for sid in self.cloud_samples if sid in self.diagnosed_ids]
+                feasible_cloud = []
+                for sid in own_cloud_ids:
+                    s = self.cloud_samples[sid]
+                    if self.sample_is_feasible(s, available):
+                        feasible_cloud.append(s)
+                if feasible_cloud:
+                    best_cloud = max(feasible_cloud, key=lambda s: s['health'])
+                    print(f"CONNECT {best_cloud['id']}")
+                    return
+
+            # check if we can produce something
+            best_feasible = self.select_best_feasible_sample(available)
+            if best_feasible:
+                self.target_sample_id = best_feasible['id']
+                if self.can_produce_now(best_feasible):
+                    print("GOTO LABORATORY")
+                else:
                     print("GOTO MOLECULES")
+            else:
+                # no feasible production – store the hardest sample to free a slot
+                if self.my_samples:
+                    worst = max(self.my_samples, key=lambda s: sum(s['cost'].values()))
+                    print(f"CONNECT {worst['id']}")
+                    self.my_samples = [s for s in self.my_samples if s['id'] != worst['id']]
+                    # stay at DIAGNOSIS, next turn we might retrieve a better cloud sample or go to SAMPLES
                 else:
-                    # no feasible plan, if we have 3 diagnosed samples, store the most expensive
-                    if len(self.my_samples) == 3:
-                        worst = max(self.my_samples, key=lambda s: sum(s['cost'].values()))
-                        print(f"CONNECT {worst['id']}")
-                        self.my_samples = [s for s in self.my_samples if s['id'] != worst['id']]
-                        self.diagnosed_ids.discard(worst['id'])  # not necessary, but keep
-                        self.next_action_after_store = "SAMPLES"
-                    else:
-                        # less than 3, go get more samples
-                        print("GOTO SAMPLES")
+                    print("GOTO SAMPLES")
+            return
 
-        elif current == "MOLECULES":
-            # reset wait counter if we just arrived? don't
-            best_seq = self.select_best_sequence(available)
-            if not best_seq:
-                # can't produce anything, go store or get new samples
-                print("GOTO DIAGNOSIS")
-                self.next_action_after_store = "SAMPLES"
-                return
-
-            first_id = best_seq[0]
-            try:
-                first_s = next(s for s in self.my_samples if s['id'] == first_id and s['diagnosed'])
-            except StopIteration:
-                print("GOTO SAMPLES")
-                return
-
-            needed = {m: max(0, first_s['cost'][m] - self.my_exp[m]) for m in 'ABCDE'}
-            if all(self.my_mol[m] >= needed[m] for m in 'ABCDE'):
-                # ready to produce
+        if current == "MOLECULES":
+            # can we produce anything right now?
+            prod_now = self.select_sample_to_produce_now()
+            if prod_now:
+                self.target_sample_id = prod_now['id']
                 print("GOTO LABORATORY")
-                self.mol_gather_wait = 0
-            else:
-                # gather a missing type that is available
-                for m in 'ABCDE':
-                    if self.my_mol[m] < needed[m] and available[m] > 0:
-                        print(f"CONNECT {m}")
-                        self.mol_gather_wait = 0
-                        break
-                else:
-                    # none available, wait (maybe later restocked)
-                    self.mol_gather_wait += 1
-                    if self.mol_gather_wait > 10:
-                        # abandon this plan, store the first sample and go to DIAGNOSIS
-                        worst = first_s
-                        print("GOTO DIAGNOSIS")
-                        self.next_action_after_store = "SAMPLES"
-                        self.mol_gather_wait = 0
-                    else:
-                        print("WAIT")
+                return
 
-        elif current == "LABORATORY":
-            best_seq = self.select_best_sequence(available)
-            if not best_seq:
-                print("GOTO SAMPLES")
+            best_feasible = self.select_best_feasible_sample(available)
+            if best_feasible is None:
+                # nothing producible with current market; go store a sample
+                self.wait_counter = 0
+                print("GOTO DIAGNOSIS")
                 return
-            first_id = best_seq[0]
-            try:
-                first_s = next(s for s in self.my_samples if s['id'] == first_id and s['diagnosed'])
-            except StopIteration:
-                print("GOTO SAMPLES")
-                return
-            needed = {m: max(0, first_s['cost'][m] - self.my_exp[m]) for m in 'ABCDE'}
-            if all(self.my_mol[m] >= needed[m] for m in 'ABCDE'):
-                print(f"CONNECT {first_s['id']}")
-                self.my_samples = [s for s in self.my_samples if s['id'] != first_s['id']]
-                self.diagnosed_ids.discard(first_s['id'])
+
+            self.target_sample_id = best_feasible['id']
+            missing = self.missing_to_produce(best_feasible)
+            for m in 'ABCDE':
+                if missing[m] > 0 and available[m] > 0:
+                    print(f"CONNECT {m}")
+                    self.wait_counter = 0
+                    return
+
+            # required molecules not available – wait a few turns
+            self.wait_counter += 1
+            if self.wait_counter > 3:
+                self.wait_counter = 0
+                self.target_sample_id = None
+                print("GOTO DIAGNOSIS")   # go store this problematic sample
             else:
-                # shouldn't happen, fallback
+                print("WAIT")
+            return
+
+        if current == "LABORATORY":
+            prod = self.select_sample_to_produce_now()
+            if prod:
+                print(f"CONNECT {prod['id']}")
+                self.my_samples = [s for s in self.my_samples if s['id'] != prod['id']]
+                self.diagnosed_ids.discard(prod['id'])
+                self.target_sample_id = None
+                self.wait_counter = 0
+            else:
                 print("GOTO MOLECULES")
+            return
 
-        elif current == "START":
-            print("GOTO SAMPLES")
-        else:
-            print("GOTO SAMPLES")
+        # fallback (should never reach)
+        print("GOTO SAMPLES")
+
 
 def main():
     bot = Bot()
@@ -310,6 +250,7 @@ def main():
             bot.decide_action(target, eta, available)
         except EOFError:
             break
+
 
 if __name__ == "__main__":
     main()

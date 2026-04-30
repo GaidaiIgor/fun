@@ -62,7 +62,7 @@ def is_banned(sample_id):
     return turn < ban_until.get(sample_id, -1)
 
 
-def ban_sample(sample_id, duration=22):
+def ban_sample(sample_id, duration=14):
     ban_until[sample_id] = turn + duration
 
 
@@ -158,18 +158,21 @@ def urgent_gain(sample, exp, projects, opp_exp):
     return False
 
 
-def trash_sample(sample, exp, projects, opp_exp, remaining):
+def discardable_sample(sample, exp, projects, opp_exp, remaining, avail):
     if not sample.diagnosed:
         return False
 
-    if sample.rank == 1 and sample.health <= 1 and sum(exp) >= 2:
-        if urgent_gain(sample, exp, projects, opp_exp):
-            return False
+    ec = effective_cost(sample, exp)
+
+    # Truly impossible / poisonous.
+    if sum(ec) > 10:
         return True
 
-    if remaining < 80 and sample.health <= 1:
+    # Late-game tiny samples are not worth a full cycle unless they matter for projects.
+    if remaining < 70 and sample.health <= 1 and not urgent_gain(sample, exp, projects, opp_exp):
         return True
 
+    # Opening rank-1 samples are allowed. Do not repeat the v2 shredder disaster.
     return False
 
 
@@ -191,9 +194,9 @@ def project_bonus(exp, final_exp, projects, opp_exp):
             bonus += 3.0 * max(0, max(before) - max(after))
 
         if before_sum > 0 and after_sum == 0:
-            bonus += 80.0
+            bonus += 82.0
             if opp_gap <= 2:
-                bonus += 40.0
+                bonus += 42.0
 
         if opp_gap <= 2 and progress > 0:
             bonus += 16.0 * progress
@@ -309,9 +312,9 @@ def contention_penalty(req, storage, avail, opp_need, remaining):
                 p += 5.5 * overlap
 
         if avail[i] == 0:
-            p += 32.0
+            p += 35.0
             if remaining < 120:
-                p += 35.0
+                p += 40.0
         elif avail[i] == 1:
             p += 4.0 * need[i]
 
@@ -346,23 +349,23 @@ def plan_raw_value(order, req, final_exp, storage, avail, exp, projects,
 
     z = zero_blocks(req, storage, avail)
     if z:
-        value -= 28.0 + 18.0 * len(z)
-        if storage_total(storage) >= 5:
-            value -= 35.0
+        value -= 32.0 + 20.0 * len(z)
+        if storage_total(storage) >= 4:
+            value -= 45.0
 
     if est + 1 > remaining:
-        value -= 250.0 + 12.0 * (est + 1 - remaining)
+        value -= 260.0 + 12.0 * (est + 1 - remaining)
 
     for s in order:
         if s.rank == 1 and s.health <= 1:
-            if sum(exp) >= 2:
-                value -= 25.0
-            if remaining < 145:
-                value -= 12.0
+            # Penalize, do not delete from consideration. Deleting caused the
+            # previous bot to throw away its entire workload like a lunatic.
+            if sum(exp) >= 4:
+                value -= 10.0
             if remaining < 90:
-                value -= 35.0
+                value -= 30.0
 
-        if s.health <= 1 and s.rank >= 2 and remaining < 100:
+        if s.health <= 1 and s.rank >= 2 and remaining < 95:
             value -= 15.0
 
     return value
@@ -373,20 +376,18 @@ def plan_metric(raw_value, est, order):
         return raw_value
 
     health = sum(s.health for s in order)
-    # Better blend: do not let a tiny sample look brilliant just because it is short.
     return raw_value / max(1, est) + 0.055 * raw_value + 0.015 * health
 
 
 def select_best_plan(samples, exp, storage, avail, projects, remaining, current_target,
                      require_available, opp_exp, opp_need=None, ignore_ban=False,
-                     for_opponent=False, ignore_trash=True):
+                     for_opponent=False):
     diagnosed = []
+
     for s in samples:
         if not s.diagnosed:
             continue
         if not ignore_ban and is_banned(s.id):
-            continue
-        if ignore_trash and not for_opponent and trash_sample(s, exp, projects, opp_exp, remaining):
             continue
         diagnosed.append(s)
 
@@ -412,6 +413,7 @@ def select_best_plan(samples, exp, storage, avail, projects, remaining, current_
                     continue
 
                 est = estimate_finish_turns(order, req, storage, current_target)
+
                 if est + 1 > remaining:
                     continue
 
@@ -466,28 +468,22 @@ def choose_rank(me, opp, projects, carried_count, remaining):
     exp = me.expertise
     et = sum(exp)
 
-    if remaining < 32:
-        return 1 if et < 5 else 2
-
-    if et < 3:
+    # Rank 1 only for the opening. No more rank-1 trash carousel.
+    if turn < 25 and et < 2:
         return 1
 
-    # Controlled rank-3 aggression. The previous version stayed too civilized
-    # and got mugged by higher-value work.
-    if remaining > 95 and et >= 8:
-        if carried_count == 0:
-            return 3
+    if remaining < 32:
         return 2
 
-    if remaining > 70 and et >= 11:
-        if carried_count == 0:
-            return 3
-        return 2
+    # Controlled rank-3 aggression: first slot only.
+    if remaining > 95 and et >= 8 and carried_count == 0:
+        return 3
 
-    if me.score + 35 < opp.score and remaining > 55 and et >= 8:
-        if carried_count == 0:
-            return 3
-        return 2
+    if remaining > 70 and et >= 11 and carried_count == 0:
+        return 3
+
+    if me.score + 35 < opp.score and remaining > 55 and et >= 8 and carried_count == 0:
+        return 3
 
     return 2
 
@@ -543,10 +539,12 @@ def recoverable_loose_plan(plan, storage, avail, remaining):
     if useful_now:
         return True
 
-    if not z and sum(shortage) <= 1:
-        return True
+    # v3 fix: do not call a zero-blocked plan recoverable just because the
+    # remaining time is large. This caused the D=0 sample hostage crisis.
+    if z:
+        return False
 
-    if remaining > 110 and sum(shortage) <= 2:
+    if sum(shortage) <= 1:
         return True
 
     return False
@@ -558,12 +556,15 @@ def choose_drop_sample(carried, exp, storage, avail, projects, remaining,
     if not diagnosed:
         return None
 
-    # Drop trash samples even if a "plan" exists, because otherwise they become
-    # ceremonial anchors.
-    trash = [s for s in diagnosed if trash_sample(s, exp, projects, opp_exp, remaining)]
-    if trash:
-        trash.sort(key=lambda s: (s.health, -sum(effective_cost(s, exp))))
-        return trash[0]
+    # Drop only truly discardable samples. Do not mass-dump rank 1.
+    discardable = [
+        s for s in diagnosed
+        if discardable_sample(s, exp, projects, opp_exp, remaining, avail)
+    ]
+
+    if discardable:
+        discardable.sort(key=lambda s: (s.health, -sum(effective_cost(s, exp))))
+        return discardable[0]
 
     if recoverable_loose_plan(loose_plan, storage, avail, remaining):
         return None
@@ -594,18 +595,18 @@ def choose_drop_sample(carried, exp, storage, avail, projects, remaining,
 
         for i in blocked:
             if ec[i] > 0:
-                badness += 65 + 20 * ec[i]
+                badness += 70 + 20 * ec[i]
 
         if any(ec[i] > 0 and avail[i] == 0 for i in range(5)):
-            badness += 35
+            badness += 40
 
         if s.id not in current_ids:
-            badness += 12
+            badness += 10
 
         if best is None or badness > best[0]:
             best = (badness, s)
 
-    if best is None or best[0] < 35:
+    if best is None or best[0] < 45:
         return None
 
     return best[1]
@@ -626,9 +627,6 @@ def choose_cloud_sample(cloud, carried, exp, storage, avail, projects,
 
     for s in cloud:
         if not s.diagnosed or is_banned(s.id):
-            continue
-
-        if trash_sample(s, exp, projects, opp_exp, remaining):
             continue
 
         combined = select_best_plan(
@@ -705,10 +703,7 @@ def summarize(samples):
 
 
 def should_skip_low_value_plan(plan, carried, exp, projects, opp_exp, remaining):
-    if plan is None:
-        return False
-
-    if remaining < 60:
+    if plan is None or remaining < 65:
         return False
 
     planned_ids = set(plan["ids"])
@@ -717,10 +712,8 @@ def should_skip_low_value_plan(plan, carried, exp, projects, opp_exp, remaining)
     if not planned:
         return False
 
-    if all(trash_sample(s, exp, projects, opp_exp, remaining) for s in planned):
-        return True
-
-    if plan["raw"] < 22 and len(carried) < 3:
+    # Only skip extremely weak plans when we have room to replace them.
+    if plan["raw"] < 14 and len(carried) < 3:
         return True
 
     return False
@@ -767,8 +760,8 @@ def decide(projects, robots, avail, samples):
 
         if should_skip_low_value_plan(strict_plan, carried, me.expertise, projects, opp.expertise, remaining):
             if len(carried) < 3:
-                return goto(SAMP, me), strict_plan, "lab_skip_trash_to_samples"
-            return goto(DIAG, me), strict_plan, "lab_skip_trash_to_diag"
+                return goto(SAMP, me), strict_plan, "lab_skip_weak_to_samples"
+            return goto(DIAG, me), strict_plan, "lab_skip_weak_to_diag"
 
         if strict_plan is not None:
             return goto(MOLMOD, me), strict_plan, "lab_to_mol"
@@ -839,11 +832,6 @@ def decide(projects, robots, avail, samples):
         if makeable:
             return goto(LAB, me), loose_plan, "diag_to_lab"
 
-        if strict_plan is not None and not should_skip_low_value_plan(
-            strict_plan, carried, me.expertise, projects, opp.expertise, remaining
-        ):
-            return goto(MOLMOD, me), strict_plan, "diag_to_mol_strict"
-
         bad = choose_drop_sample(
             carried, me.expertise, me.storage, avail, projects,
             remaining, me.target, loose_plan, opp.expertise, opp_need
@@ -852,6 +840,11 @@ def decide(projects, robots, avail, samples):
         if bad is not None:
             ban_sample(bad.id)
             return "CONNECT {}".format(bad.id), loose_plan, "diag_drop"
+
+        if strict_plan is not None and not should_skip_low_value_plan(
+            strict_plan, carried, me.expertise, projects, opp.expertise, remaining
+        ):
+            return goto(MOLMOD, me), strict_plan, "diag_to_mol_strict"
 
         if loose_plan is not None:
             mol = choose_molecule(loose_plan, me.storage, avail, me.expertise, opp_need)
@@ -866,13 +859,19 @@ def decide(projects, robots, avail, samples):
             if s is not None:
                 return "CONNECT {}".format(s.id), loose_plan, "diag_take_cloud"
 
-        if len(carried) < 3 and remaining > 22:
-            return goto(SAMP, me), loose_plan, "diag_to_samples"
+        # Do not go to Samples while carrying a dead diagnosed sample.
+        if len(carried) < 3 and not diagnosed and remaining > 22:
+            return goto(SAMP, me), loose_plan, "diag_to_samples_empty"
 
         return "WAIT", loose_plan, "diag_wait"
 
     if me.target == SAMP:
         clear_block()
+
+        # If we are carrying diagnosed samples, leave. No sample hoarding with
+        # half-finished work in hand.
+        if diagnosed:
+            return goto(DIAG, me), loose_plan, "sample_leave_with_diag"
 
         if len(carried) < 3 and remaining > 22:
             r = choose_rank(me, opp, projects, len(carried), remaining)

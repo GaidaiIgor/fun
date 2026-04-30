@@ -16,17 +16,12 @@ DIST = {
 }
 
 turn = 0
-ban_until = {}
-last_block_key = None
-block_count = 0
+blocked_key = None
+blocked_count = 0
 
 
 def mi(g):
     return MOLS.find(g)
-
-
-def mol_name(i):
-    return MOLS[i]
 
 
 class Robot:
@@ -58,224 +53,165 @@ def storage_total(storage):
     return sum(storage)
 
 
-def is_banned(sample_id):
-    return turn < ban_until.get(sample_id, -1)
+def dist(a, b):
+    return DIST.get(a, DIST["START_POS"]).get(b, 3)
 
 
-def ban_sample(sample_id, duration=14):
-    ban_until[sample_id] = turn + duration
+def can_make(s, storage, exp):
+    return s.diagnosed and all(storage[i] + exp[i] >= s.cost[i] for i in range(5))
 
 
-def can_make(sample, storage, exp):
-    return sample.diagnosed and all(storage[i] + exp[i] >= sample.cost[i] for i in range(5))
+def eff_cost(s, exp):
+    return [max(0, s.cost[i] - exp[i]) for i in range(5)]
 
 
-def effective_cost(sample, exp):
-    return [max(0, sample.cost[i] - exp[i]) for i in range(5)]
-
-
-def apply_gain(exp, sample):
+def apply_gain(exp, s):
     e = exp[:]
-    gi = mi(sample.gain)
+    gi = mi(s.gain)
     if gi >= 0:
         e[gi] += 1
     return e
 
 
-def order_requirements(order, exp):
+def order_req(order, exp):
     e = exp[:]
     req = [0] * 5
 
     for s in order:
-        ec = effective_cost(s, e)
+        c = eff_cost(s, e)
         for i in range(5):
-            req[i] += ec[i]
+            req[i] += c[i]
         e = apply_gain(e, s)
 
     return req, e
 
 
-def need_from_req(req, storage):
+def need(req, storage):
     return [max(0, req[i] - storage[i]) for i in range(5)]
 
 
-def shortage_from_req(req, storage, avail):
-    need = need_from_req(req, storage)
-    return [max(0, need[i] - avail[i]) for i in range(5)]
+def shortage(req, storage, avail):
+    n = need(req, storage)
+    return [max(0, n[i] - avail[i]) for i in range(5)]
 
 
-def zero_blocks(req, storage, avail):
-    need = need_from_req(req, storage)
-    return [i for i in range(5) if need[i] > 0 and avail[i] <= 0]
+def zero_block(req, storage, avail):
+    n = need(req, storage)
+    return [i for i in range(5) if n[i] > 0 and avail[i] <= 0]
 
 
 def feasible_capacity(req, storage):
-    need = need_from_req(req, storage)
-    if storage_total(storage) + sum(need) > 10:
-        return False
-    if any(req[i] > 10 for i in range(5)):
-        return False
-    return True
+    n = need(req, storage)
+    return storage_total(storage) + sum(n) <= 10 and all(r <= 10 for r in req)
 
 
-def project_deficit(exp, project):
-    return [max(0, project[i] - exp[i]) for i in range(5)]
+def project_deficit(exp, pr):
+    return [max(0, pr[i] - exp[i]) for i in range(5)]
 
 
-def project_gap(exp, project):
-    return sum(project_deficit(exp, project))
+def project_gap(exp, pr):
+    return sum(project_deficit(exp, pr))
 
 
 def active_projects(projects, my_exp, opp_exp):
     out = []
-    for p in projects:
-        my_done = all(my_exp[i] >= p[i] for i in range(5))
-        opp_done = all(opp_exp[i] >= p[i] for i in range(5))
+
+    for pr in projects:
+        my_done = all(my_exp[i] >= pr[i] for i in range(5))
+        opp_done = all(opp_exp[i] >= pr[i] for i in range(5))
+
         if not my_done and not opp_done:
-            out.append(p)
+            out.append(pr)
+
     return out
 
 
-def max_project_need(projects):
-    mx = [0] * 5
-    for p in projects:
-        for i in range(5):
-            mx[i] = max(mx[i], p[i])
-    return mx
-
-
-def urgent_gain(sample, exp, projects, opp_exp):
-    gi = mi(sample.gain)
-    if gi < 0:
-        return False
-
-    for p in active_projects(projects, exp, opp_exp):
-        my_gap = project_gap(exp, p)
-        opp_gap = project_gap(opp_exp, p)
-        if exp[gi] < p[gi] and (my_gap <= 3 or opp_gap <= 2):
-            return True
-
-    return False
-
-
-def discardable_sample(sample, exp, projects, opp_exp, remaining, avail):
-    if not sample.diagnosed:
-        return False
-
-    ec = effective_cost(sample, exp)
-
-    # Truly impossible / poisonous.
-    if sum(ec) > 10:
-        return True
-
-    # Late-game tiny samples are not worth a full cycle unless they matter for projects.
-    if remaining < 70 and sample.health <= 1 and not urgent_gain(sample, exp, projects, opp_exp):
-        return True
-
-    # Opening rank-1 samples are allowed. Do not repeat the v2 shredder disaster.
-    return False
-
-
 def project_bonus(exp, final_exp, projects, opp_exp):
-    active = active_projects(projects, exp, opp_exp)
-    bonus = 0.0
+    b = 0.0
 
-    for p in active:
-        before = project_deficit(exp, p)
-        after = project_deficit(final_exp, p)
-        opp_gap = project_gap(opp_exp, p)
+    for pr in active_projects(projects, exp, opp_exp):
+        before = project_deficit(exp, pr)
+        after = project_deficit(final_exp, pr)
 
         before_sum = sum(before)
         after_sum = sum(after)
         progress = before_sum - after_sum
+        opp_gap = project_gap(opp_exp, pr)
 
         if progress > 0:
-            bonus += 5.5 * progress
-            bonus += 3.0 * max(0, max(before) - max(after))
+            b += 4.5 * progress
+            b += 2.5 * max(0, max(before) - max(after))
 
         if before_sum > 0 and after_sum == 0:
-            bonus += 82.0
+            b += 65.0
             if opp_gap <= 2:
-                bonus += 42.0
+                b += 35.0
 
         if opp_gap <= 2 and progress > 0:
-            bonus += 16.0 * progress
-
-    return bonus
-
-
-def expertise_gain_bonus(sample, exp, projects, opp_exp):
-    gi = mi(sample.gain)
-    if gi < 0:
-        return 0.0
-
-    active = active_projects(projects, exp, opp_exp)
-    mx_need = max_project_need(active)
-    b = 0.0
-
-    if exp[gi] == min(exp):
-        b += 10.0
-
-    if exp[gi] == 0:
-        b += 12.0
-    elif exp[gi] == 1:
-        b += 7.0
-    elif exp[gi] == 2:
-        b += 3.0
-
-    for p in active:
-        my_gap = project_gap(exp, p)
-        opp_gap = project_gap(opp_exp, p)
-
-        if exp[gi] < p[gi]:
-            b += 7.0
-            b += 2.0 * (p[gi] - exp[gi])
-            b += 12.0 / (1 + my_gap)
-
-            if opp_gap <= 2:
-                b += 14.0
-
-    if active and exp[gi] >= mx_need[gi] and exp[gi] >= 4:
-        b -= 10.0
+            b += 12.0 * progress
 
     return b
 
 
-def dist_from(target, dest):
-    return DIST.get(target, DIST["START_POS"]).get(dest, 3)
+def gain_bonus(s, exp, projects, opp_exp):
+    gi = mi(s.gain)
+    if gi < 0:
+        return 0.0
+
+    b = 0.0
+
+    if exp[gi] == min(exp):
+        b += 8.0
+
+    if exp[gi] == 0:
+        b += 10.0
+    elif exp[gi] == 1:
+        b += 6.0
+    elif exp[gi] == 2:
+        b += 2.0
+
+    for pr in active_projects(projects, exp, opp_exp):
+        if exp[gi] < pr[gi]:
+            my_gap = project_gap(exp, pr)
+            opp_gap = project_gap(opp_exp, pr)
+
+            b += 5.0
+            b += 1.5 * (pr[gi] - exp[gi])
+            b += 8.0 / (1 + my_gap)
+
+            if opp_gap <= 2:
+                b += 10.0
+
+    return b
 
 
-def estimate_finish_turns(order, req, storage, current_target):
-    need = need_from_req(req, storage)
-    mol_actions = sum(need)
-    lab_actions = len(order)
+def est_finish(order, req, storage, target):
+    n = need(req, storage)
+    mol_turns = sum(n)
+    lab_turns = len(order)
 
     if not order:
         return 999
 
-    if mol_actions == 0:
-        if current_target == LAB:
-            return lab_actions
-        return dist_from(current_target, LAB) + lab_actions
+    if mol_turns == 0:
+        if target == LAB:
+            return lab_turns
+        return dist(target, LAB) + lab_turns
 
-    if current_target == MOLMOD:
-        return mol_actions + dist_from(MOLMOD, LAB) + lab_actions
+    if target == MOLMOD:
+        return mol_turns + dist(MOLMOD, LAB) + lab_turns
 
-    return (
-        dist_from(current_target, MOLMOD)
-        + mol_actions
-        + dist_from(MOLMOD, LAB)
-        + lab_actions
-    )
+    return dist(target, MOLMOD) + mol_turns + dist(MOLMOD, LAB) + lab_turns
 
 
-def opponent_plan_need(opp, samples, avail, projects):
-    opp_carried = [s for s in samples if s.carried_by == 1 and s.diagnosed]
-    if not opp_carried:
+def opponent_need(opp, samples, avail, projects):
+    carried = [s for s in samples if s.carried_by == 1 and s.diagnosed]
+
+    if not carried:
         return [0] * 5
 
-    plan = select_best_plan(
-        opp_carried,
+    p = best_plan(
+        carried,
         opp.expertise,
         opp.storage,
         avail,
@@ -284,167 +220,150 @@ def opponent_plan_need(opp, samples, avail, projects):
         opp.target,
         False,
         [0, 0, 0, 0, 0],
-        opp_need=[0, 0, 0, 0, 0],
-        ignore_ban=True,
-        for_opponent=True,
+        [0, 0, 0, 0, 0],
+        opponent=True,
     )
 
-    if plan is None:
+    if p is None:
         return [0] * 5
 
-    return need_from_req(plan["req"], opp.storage)
+    return need(p["req"], opp.storage)
 
 
-def contention_penalty(req, storage, avail, opp_need, remaining):
-    need = need_from_req(req, storage)
-    p = 0.0
+def raw_value(order, req, final_exp, storage, avail, exp, projects,
+              remaining, target, opp_exp, opp_need, require_available):
+    n = need(req, storage)
+    sh = shortage(req, storage, avail)
+    z = zero_block(req, storage, avail)
+    est = est_finish(order, req, storage, target)
 
-    for i in range(5):
-        if need[i] <= 0:
-            continue
-
-        overlap = min(need[i], opp_need[i])
-
-        if overlap > 0:
-            if avail[i] <= need[i] + opp_need[i]:
-                p += 5.5 * overlap
-            if avail[i] <= 2:
-                p += 5.5 * overlap
-
-        if avail[i] == 0:
-            p += 35.0
-            if remaining < 120:
-                p += 40.0
-        elif avail[i] == 1:
-            p += 4.0 * need[i]
-
-    return p
-
-
-def plan_raw_value(order, req, final_exp, storage, avail, exp, projects,
-                   remaining, current_target, opp_exp, opp_need, require_available):
-    health = sum(s.health for s in order)
-    need = need_from_req(req, storage)
-    shortage = shortage_from_req(req, storage, avail)
-    est = estimate_finish_turns(order, req, storage, current_target)
-
-    if require_available and any(need[i] > avail[i] for i in range(5)):
+    if require_available and any(n[i] > avail[i] for i in range(5)):
         return -10**9
 
-    value = health
-    value += sum(expertise_gain_bonus(s, exp, projects, opp_exp) for s in order)
+    value = sum(s.health for s in order)
+    value += sum(gain_bonus(s, exp, projects, opp_exp) for s in order)
     value += project_bonus(exp, final_exp, projects, opp_exp)
-    value += 1.2 * (len(order) - 1)
 
-    value -= 0.18 * sum(req)
-    value -= 0.35 * sum(need)
-    value -= contention_penalty(req, storage, avail, opp_need, remaining)
+    # Batch bonus, but deliberately small. Old versions got drunk on batch theory.
+    value += 0.8 * (len(order) - 1)
 
-    if remaining > 100:
-        value -= 2.0 * sum(shortage)
-    elif remaining > 55:
-        value -= 8.0 * sum(shortage)
+    value -= 0.14 * sum(req)
+    value -= 0.25 * sum(n)
+
+    for i in range(5):
+        if n[i] <= 0:
+            continue
+
+        overlap = min(n[i], opp_need[i])
+        if overlap > 0 and avail[i] <= n[i] + opp_need[i]:
+            value -= 6.0 * overlap
+
+        if avail[i] == 0:
+            value -= 35.0
+            if remaining < 80:
+                value -= 45.0
+        elif avail[i] == 1:
+            value -= 4.0 * n[i]
+
+    if remaining > 80:
+        value -= 2.0 * sum(sh)
+    elif remaining > 45:
+        value -= 8.0 * sum(sh)
     else:
-        value -= 35.0 * sum(shortage)
+        value -= 40.0 * sum(sh)
 
-    z = zero_blocks(req, storage, avail)
-    if z:
-        value -= 32.0 + 20.0 * len(z)
-        if storage_total(storage) >= 4:
-            value -= 45.0
+    if z and storage_total(storage) >= 4:
+        value -= 35.0
 
     if est + 1 > remaining:
-        value -= 260.0 + 12.0 * (est + 1 - remaining)
+        value -= 300.0 + 15.0 * (est + 1 - remaining)
 
     for s in order:
-        if s.rank == 1 and s.health <= 1:
-            # Penalize, do not delete from consideration. Deleting caused the
-            # previous bot to throw away its entire workload like a lunatic.
-            if sum(exp) >= 4:
-                value -= 10.0
-            if remaining < 90:
-                value -= 30.0
-
-        if s.health <= 1 and s.rank >= 2 and remaining < 95:
-            value -= 15.0
+        if s.rank == 1 and s.health <= 1 and remaining < 100:
+            value -= 18.0
+        if s.health <= 1 and remaining < 65:
+            value -= 30.0
 
     return value
 
 
-def plan_metric(raw_value, est, order):
-    if raw_value <= -10**8:
-        return raw_value
+def metric(raw, est, order, remaining):
+    if raw <= -10**8:
+        return raw
 
     health = sum(s.health for s in order)
-    return raw_value / max(1, est) + 0.055 * raw_value + 0.015 * health
+
+    # Late game: raw points dominate. Earlier: tempo matters more.
+    if remaining < 55:
+        return raw / max(1, est) + 0.075 * raw + 0.035 * health
+
+    return raw / max(1, est) + 0.045 * raw + 0.015 * health
 
 
-def select_best_plan(samples, exp, storage, avail, projects, remaining, current_target,
-                     require_available, opp_exp, opp_need=None, ignore_ban=False,
-                     for_opponent=False):
-    diagnosed = []
-
-    for s in samples:
-        if not s.diagnosed:
-            continue
-        if not ignore_ban and is_banned(s.id):
-            continue
-        diagnosed.append(s)
+def best_plan(samples, exp, storage, avail, projects, remaining, target,
+              require_available, opp_exp, opp_need, opponent=False):
+    diagnosed = [s for s in samples if s.diagnosed]
 
     if not diagnosed:
         return None
 
-    if opp_need is None:
-        opp_need = [0] * 5
-
     best = None
 
     for r in range(1, len(diagnosed) + 1):
-        for subset in combinations(diagnosed, r):
-            for order in permutations(subset):
-                req, final_exp = order_requirements(order, exp)
+        for sub in combinations(diagnosed, r):
+            for order in permutations(sub):
+                req, final_exp = order_req(order, exp)
 
                 if not feasible_capacity(req, storage):
                     continue
 
-                need = need_from_req(req, storage)
+                n = need(req, storage)
 
-                if require_available and any(need[i] > avail[i] for i in range(5)):
+                if require_available and any(n[i] > avail[i] for i in range(5)):
                     continue
 
-                est = estimate_finish_turns(order, req, storage, current_target)
+                est = est_finish(order, req, storage, target)
 
                 if est + 1 > remaining:
                     continue
 
-                raw = plan_raw_value(
-                    order, req, final_exp, storage, avail, exp,
-                    projects, remaining, current_target, opp_exp, opp_need,
+                raw = raw_value(
+                    order,
+                    req,
+                    final_exp,
+                    storage,
+                    avail,
+                    exp,
+                    projects,
+                    remaining,
+                    target,
+                    opp_exp,
+                    opp_need,
                     require_available,
                 )
 
-                metric = raw / max(1, est) if for_opponent else plan_metric(raw, est, order)
+                m = raw / max(1, est) if opponent else metric(raw, est, order, remaining)
 
-                if best is None or metric > best["metric"]:
+                if best is None or m > best["metric"]:
                     best = {
                         "order": list(order),
                         "ids": [s.id for s in order],
                         "req": req,
-                        "need": need,
+                        "need": n,
                         "final_exp": final_exp,
                         "raw": raw,
-                        "metric": metric,
+                        "metric": m,
                         "est": est,
                     }
 
     return best
 
 
-def makeable_samples(carried, storage, exp):
-    return [s for s in carried if s.diagnosed and can_make(s, storage, exp)]
+def makeable_samples(samples, storage, exp):
+    return [s for s in samples if s.diagnosed and can_make(s, storage, exp)]
 
 
-def choose_completion_sample(makeable, plan, exp, projects, opp_exp):
+def choose_completion(makeable, plan, exp, projects, opp_exp):
     if plan is not None:
         for s in plan["order"]:
             if s in makeable:
@@ -454,8 +373,7 @@ def choose_completion_sample(makeable, plan, exp, projects, opp_exp):
 
     for s in makeable:
         e2 = apply_gain(exp, s)
-        score = s.health
-        score += expertise_gain_bonus(s, exp, projects, opp_exp)
+        score = s.health + gain_bonus(s, exp, projects, opp_exp)
         score += project_bonus(exp, e2, projects, opp_exp)
 
         if best is None or score > best[0]:
@@ -464,25 +382,29 @@ def choose_completion_sample(makeable, plan, exp, projects, opp_exp):
     return best[1]
 
 
-def choose_rank(me, opp, projects, carried_count, remaining):
-    exp = me.expertise
-    et = sum(exp)
+def desired_batch_size(remaining, exp_sum):
+    if remaining < 38:
+        return 1
+    if remaining < 60:
+        return 2
+    return 3
 
-    # Rank 1 only for the opening. No more rank-1 trash carousel.
+
+def choose_rank(me, opp, carried_count, remaining):
+    et = sum(me.expertise)
+
+    # Only opening rank 1. Stop creating late paperwork goblins.
     if turn < 25 and et < 2:
         return 1
 
-    if remaining < 32:
-        return 2
-
-    # Controlled rank-3 aggression: first slot only.
-    if remaining > 95 and et >= 8 and carried_count == 0:
+    # Endgame variance: one rank 3 can beat two mediocre rank 2s.
+    if remaining > 32 and et >= 10 and carried_count == 0:
         return 3
 
-    if remaining > 70 and et >= 11 and carried_count == 0:
+    if remaining > 55 and et >= 8 and carried_count == 0:
         return 3
 
-    if me.score + 35 < opp.score and remaining > 55 and et >= 8 and carried_count == 0:
+    if me.score + 35 < opp.score and remaining > 45 and et >= 8 and carried_count == 0:
         return 3
 
     return 2
@@ -492,202 +414,161 @@ def choose_molecule(plan, storage, avail, exp, opp_need):
     if plan is None or storage_total(storage) >= 10:
         return None
 
-    req = plan["req"]
-    need = need_from_req(req, storage)
+    n = need(plan["req"], storage)
 
-    if sum(need) == 0:
+    if sum(n) == 0:
         return None
 
     first_need = [0] * 5
     if plan["order"]:
-        first_req, _ = order_requirements([plan["order"][0]], exp)
-        first_need = need_from_req(first_req, storage)
+        first_req, _ = order_req([plan["order"][0]], exp)
+        first_need = need(first_req, storage)
 
     best = None
 
     for i in range(5):
-        if need[i] <= 0 or avail[i] <= 0:
+        if n[i] <= 0 or avail[i] <= 0:
             continue
 
-        score = 52.0 * min(1, first_need[i])
-        score += 10.0 * need[i]
+        score = 55.0 * min(1, first_need[i])
+        score += 11.0 * n[i]
         score += 5.0 * max(0, 4 - avail[i])
 
         if opp_need[i] > 0:
             score += 8.0
-            if avail[i] <= need[i] + opp_need[i]:
+            if avail[i] <= n[i] + opp_need[i]:
                 score += 12.0
 
         if best is None or score > best[0]:
             best = (score, i)
 
-    return None if best is None else mol_name(best[1])
-
-
-def recoverable_loose_plan(plan, storage, avail, remaining):
-    if plan is None:
-        return False
-
-    need = need_from_req(plan["req"], storage)
-    z = zero_blocks(plan["req"], storage, avail)
-    shortage = shortage_from_req(plan["req"], storage, avail)
-
-    if sum(need) == 0:
-        return True
-
-    useful_now = any(need[i] > 0 and avail[i] > 0 for i in range(5))
-    if useful_now:
-        return True
-
-    # v3 fix: do not call a zero-blocked plan recoverable just because the
-    # remaining time is large. This caused the D=0 sample hostage crisis.
-    if z:
-        return False
-
-    if sum(shortage) <= 1:
-        return True
-
-    return False
-
-
-def choose_drop_sample(carried, exp, storage, avail, projects, remaining,
-                       current_target, loose_plan, opp_exp, opp_need):
-    diagnosed = [s for s in carried if s.diagnosed]
-    if not diagnosed:
+    if best is None:
         return None
 
-    # Drop only truly discardable samples. Do not mass-dump rank 1.
-    discardable = [
-        s for s in diagnosed
-        if discardable_sample(s, exp, projects, opp_exp, remaining, avail)
-    ]
-
-    if discardable:
-        discardable.sort(key=lambda s: (s.health, -sum(effective_cost(s, exp))))
-        return discardable[0]
-
-    if recoverable_loose_plan(loose_plan, storage, avail, remaining):
-        return None
-
-    current_ids = set(loose_plan["ids"]) if loose_plan else set()
-    blocked = zero_blocks(loose_plan["req"], storage, avail) if loose_plan else []
-    best = None
-
-    for s in diagnosed:
-        ec = effective_cost(s, exp)
-
-        without = [x for x in diagnosed if x.id != s.id]
-        plan_without = select_best_plan(
-            without, exp, storage, avail, projects, remaining, current_target,
-            False, opp_exp, opp_need
-        )
-
-        badness = 0.0
-
-        if plan_without is not None:
-            badness += plan_without["metric"] * 6.0
-
-        badness -= 1.5 * max(0, s.health)
-        badness -= expertise_gain_bonus(s, exp, projects, opp_exp)
-
-        if sum(ec) > 10:
-            badness += 100
-
-        for i in blocked:
-            if ec[i] > 0:
-                badness += 70 + 20 * ec[i]
-
-        if any(ec[i] > 0 and avail[i] == 0 for i in range(5)):
-            badness += 40
-
-        if s.id not in current_ids:
-            badness += 10
-
-        if best is None or badness > best[0]:
-            best = (badness, s)
-
-    if best is None or best[0] < 45:
-        return None
-
-    return best[1]
-
-
-def choose_cloud_sample(cloud, carried, exp, storage, avail, projects,
-                        remaining, current_target, opp_exp, opp_need):
-    if len(carried) >= 3:
-        return None
-
-    current = select_best_plan(
-        carried, exp, storage, avail, projects, remaining, current_target,
-        True, opp_exp, opp_need
-    )
-    current_metric = current["metric"] if current else 0.0
-
-    best = None
-
-    for s in cloud:
-        if not s.diagnosed or is_banned(s.id):
-            continue
-
-        combined = select_best_plan(
-            carried + [s], exp, storage, avail, projects, remaining,
-            current_target, True, opp_exp, opp_need
-        )
-
-        if combined is None:
-            continue
-
-        improvement = combined["metric"] - current_metric
-        score = combined["metric"] + 0.7 * improvement
-
-        if best is None or score > best[0]:
-            best = (score, s)
-
-    if best is not None and best[0] > 2.5:
-        return best[1]
-
-    return None
+    return MOLS[best[1]]
 
 
 def block_key(plan, storage, avail):
     if plan is None:
         return None
 
-    z = zero_blocks(plan["req"], storage, avail)
+    z = zero_block(plan["req"], storage, avail)
     if not z:
         return None
 
-    return tuple(plan["ids"]), tuple(z), tuple(need_from_req(plan["req"], storage))
+    return tuple(plan["ids"]), tuple(z), tuple(need(plan["req"], storage))
 
 
 def update_block(plan, storage, avail):
-    global last_block_key, block_count
+    global blocked_key, blocked_count
 
     k = block_key(plan, storage, avail)
+
     if k is None:
-        last_block_key = None
-        block_count = 0
+        blocked_key = None
+        blocked_count = 0
         return 0
 
-    if k == last_block_key:
-        block_count += 1
+    if k == blocked_key:
+        blocked_count += 1
     else:
-        last_block_key = k
-        block_count = 1
+        blocked_key = k
+        blocked_count = 1
 
-    return block_count
+    return blocked_count
 
 
 def clear_block():
-    global last_block_key, block_count
-    last_block_key = None
-    block_count = 0
+    global blocked_key, blocked_count
+    blocked_key = None
+    blocked_count = 0
 
 
 def goto(module, me):
     if me.target == module:
         return "WAIT"
     return "GOTO " + module
+
+
+def should_drop(s, exp, avail, remaining):
+    c = eff_cost(s, exp)
+
+    if sum(c) > 10:
+        return True
+
+    if remaining < 45 and s.health <= 1:
+        return True
+
+    if remaining < 55 and any(c[i] > 0 and avail[i] == 0 for i in range(5)):
+        return True
+
+    return False
+
+
+def choose_drop(carried, exp, storage, avail, projects, remaining, target,
+                loose_plan, opp_exp, opp_need):
+    diagnosed = [s for s in carried if s.diagnosed]
+
+    if not diagnosed:
+        return None
+
+    candidates = [s for s in diagnosed if should_drop(s, exp, avail, remaining)]
+
+    if not candidates:
+        z = zero_block(loose_plan["req"], storage, avail) if loose_plan else []
+        if not z:
+            return None
+
+        # Drop only if we are genuinely blocked, not merely inconvenienced.
+        if any(need(loose_plan["req"], storage)[i] > 0 and avail[i] > 0 for i in range(5)):
+            return None
+
+        candidates = diagnosed
+
+    best = None
+
+    for s in candidates:
+        c = eff_cost(s, exp)
+        bad = sum(c) - 0.7 * s.health - gain_bonus(s, exp, projects, opp_exp)
+
+        if any(c[i] > 0 and avail[i] == 0 for i in range(5)):
+            bad += 25
+
+        if best is None or bad > best[0]:
+            best = (bad, s)
+
+    return None if best is None else best[1]
+
+
+def choose_cloud(cloud, carried, exp, storage, avail, projects, remaining,
+                 target, opp_exp, opp_need):
+    if len(carried) >= 3:
+        return None
+
+    best = None
+    current = best_plan(carried, exp, storage, avail, projects, remaining,
+                        target, True, opp_exp, opp_need)
+    cur_m = current["metric"] if current else 0.0
+
+    for s in cloud:
+        if not s.diagnosed:
+            continue
+
+        p = best_plan(carried + [s], exp, storage, avail, projects, remaining,
+                      target, True, opp_exp, opp_need)
+
+        if p is None:
+            continue
+
+        score = p["metric"] + 0.7 * (p["metric"] - cur_m)
+
+        if best is None or score > best[0]:
+            best = (score, s)
+
+    if best and best[0] > 2.5:
+        return best[1]
+
+    return None
 
 
 def summarize(samples):
@@ -700,23 +581,6 @@ def summarize(samples):
         else:
             out.append("{}:r{}:?".format(s.id, s.rank))
     return "[" + ",".join(out) + "]"
-
-
-def should_skip_low_value_plan(plan, carried, exp, projects, opp_exp, remaining):
-    if plan is None or remaining < 65:
-        return False
-
-    planned_ids = set(plan["ids"])
-    planned = [s for s in carried if s.id in planned_ids]
-
-    if not planned:
-        return False
-
-    # Only skip extremely weak plans when we have room to replace them.
-    if plan["raw"] < 14 and len(carried) < 3:
-        return True
-
-    return False
 
 
 def decide(projects, robots, avail, samples):
@@ -734,17 +598,12 @@ def decide(projects, robots, avail, samples):
     if me.eta > 0:
         return "WAIT", None, "moving"
 
-    opp_need = opponent_plan_need(opp, samples, avail, projects)
+    opp_need = opponent_need(opp, samples, avail, projects)
 
-    strict_plan = select_best_plan(
-        diagnosed, me.expertise, me.storage, avail, projects, remaining,
-        me.target, True, opp.expertise, opp_need
-    )
-
-    loose_plan = strict_plan or select_best_plan(
-        diagnosed, me.expertise, me.storage, avail, projects, remaining,
-        me.target, False, opp.expertise, opp_need
-    )
+    strict = best_plan(diagnosed, me.expertise, me.storage, avail, projects,
+                       remaining, me.target, True, opp.expertise, opp_need)
+    loose = strict or best_plan(diagnosed, me.expertise, me.storage, avail, projects,
+                                remaining, me.target, False, opp.expertise, opp_need)
 
     makeable = makeable_samples(diagnosed, me.storage, me.expertise)
 
@@ -752,142 +611,139 @@ def decide(projects, robots, avail, samples):
         clear_block()
 
         if makeable:
-            s = choose_completion_sample(makeable, loose_plan, me.expertise, projects, opp.expertise)
-            return "CONNECT {}".format(s.id), loose_plan, "lab_make"
+            s = choose_completion(makeable, loose, me.expertise, projects, opp.expertise)
+            return "CONNECT {}".format(s.id), loose, "lab_make"
 
         if remaining <= 6:
-            return "WAIT", loose_plan, "lab_late_wait"
+            return "WAIT", loose, "lab_late_wait"
 
-        if should_skip_low_value_plan(strict_plan, carried, me.expertise, projects, opp.expertise, remaining):
-            if len(carried) < 3:
-                return goto(SAMP, me), strict_plan, "lab_skip_weak_to_samples"
-            return goto(DIAG, me), strict_plan, "lab_skip_weak_to_diag"
-
-        if strict_plan is not None:
-            return goto(MOLMOD, me), strict_plan, "lab_to_mol"
+        if strict is not None:
+            if sum(strict["need"]) == 0:
+                return "WAIT", strict, "lab_plan_noop"
+            return goto(MOLMOD, me), strict, "lab_to_mol"
 
         if undiagnosed:
-            return goto(DIAG, me), loose_plan, "lab_to_diag"
+            return goto(DIAG, me), loose, "lab_to_diag"
 
-        if len(carried) < 3 and remaining > 22:
-            return goto(SAMP, me), loose_plan, "lab_to_samples"
+        if len(carried) < desired_batch_size(remaining, sum(me.expertise)) and remaining > 24:
+            return goto(SAMP, me), loose, "lab_to_samples"
 
-        return "WAIT", loose_plan, "lab_wait"
+        return "WAIT", loose, "lab_wait"
 
     if me.target == MOLMOD:
         if makeable:
-            mol = choose_molecule(strict_plan, me.storage, avail, me.expertise, opp_need)
+            mol = choose_molecule(strict, me.storage, avail, me.expertise, opp_need)
 
             if (
                 mol is not None
-                and strict_plan is not None
-                and strict_plan["est"] + 2 < remaining
-                and strict_plan["raw"] >= 35
-                and remaining > 35
+                and strict is not None
+                and strict["raw"] >= 45
+                and strict["est"] + 2 < remaining
+                and remaining > 45
             ):
                 clear_block()
-                return "CONNECT {}".format(mol), strict_plan, "mol_extend_batch"
+                return "CONNECT {}".format(mol), strict, "mol_extend"
 
             clear_block()
-            return goto(LAB, me), strict_plan or loose_plan, "mol_bank"
+            return goto(LAB, me), strict or loose, "mol_bank"
 
         if not diagnosed:
             clear_block()
-            return goto(DIAG if undiagnosed else SAMP, me), loose_plan, "mol_no_diag"
+            return goto(DIAG if undiagnosed else SAMP, me), loose, "mol_no_diag"
 
-        if should_skip_low_value_plan(strict_plan, carried, me.expertise, projects, opp.expertise, remaining):
-            clear_block()
-            return goto(DIAG if len(carried) >= 3 else SAMP, me), strict_plan, "mol_skip_low"
-
-        if strict_plan is not None:
-            mol = choose_molecule(strict_plan, me.storage, avail, me.expertise, opp_need)
+        if strict is not None:
+            mol = choose_molecule(strict, me.storage, avail, me.expertise, opp_need)
             if mol is not None:
                 clear_block()
-                return "CONNECT {}".format(mol), strict_plan, "mol_take_strict"
+                return "CONNECT {}".format(mol), strict, "mol_take_strict"
             clear_block()
-            return goto(DIAG, me), strict_plan, "mol_strict_stuck"
+            return goto(DIAG, me), strict, "mol_strict_stuck"
 
-        if loose_plan is not None:
-            count = update_block(loose_plan, me.storage, avail)
-            mol = choose_molecule(loose_plan, me.storage, avail, me.expertise, opp_need)
+        if loose is not None:
+            count = update_block(loose, me.storage, avail)
+            mol = choose_molecule(loose, me.storage, avail, me.expertise, opp_need)
 
             if mol is not None:
-                return "CONNECT {}".format(mol), loose_plan, "mol_take_loose"
+                return "CONNECT {}".format(mol), loose, "mol_take_loose"
 
-            if zero_blocks(loose_plan["req"], me.storage, avail) and count <= 1 and remaining > 90:
-                return "WAIT", loose_plan, "mol_wait_once"
+            if zero_block(loose["req"], me.storage, avail) and count <= 1 and remaining > 85:
+                return "WAIT", loose, "mol_wait_once"
 
-            return goto(DIAG, me), loose_plan, "mol_replan"
+            return goto(DIAG, me), loose, "mol_replan"
 
         clear_block()
-        return goto(DIAG if carried else SAMP, me), loose_plan, "mol_no_plan"
+        return goto(DIAG if carried else SAMP, me), loose, "mol_no_plan"
 
     if me.target == DIAG:
         clear_block()
 
+        # Critical v4 fix: if time is tight and we already have guaranteed points,
+        # bank them. Do not keep diagnosing paperwork into the apocalypse.
+        if makeable and (remaining < 65 or not undiagnosed):
+            return goto(LAB, me), loose, "diag_bank_makeable"
+
+        if strict is not None and remaining < 45 and strict["raw"] >= 25:
+            if sum(strict["need"]) == 0:
+                return goto(LAB, me), strict, "diag_late_lab"
+            return goto(MOLMOD, me), strict, "diag_late_mol"
+
         if undiagnosed:
             s = max(undiagnosed, key=lambda x: (x.rank, x.id))
-            return "CONNECT {}".format(s.id), loose_plan, "diag_diagnose"
+            return "CONNECT {}".format(s.id), loose, "diag_diagnose"
 
         if makeable:
-            return goto(LAB, me), loose_plan, "diag_to_lab"
+            return goto(LAB, me), loose, "diag_to_lab"
 
-        bad = choose_drop_sample(
-            carried, me.expertise, me.storage, avail, projects,
-            remaining, me.target, loose_plan, opp.expertise, opp_need
-        )
-
+        bad = choose_drop(carried, me.expertise, me.storage, avail, projects,
+                          remaining, me.target, loose, opp.expertise, opp_need)
         if bad is not None:
-            ban_sample(bad.id)
-            return "CONNECT {}".format(bad.id), loose_plan, "diag_drop"
+            return "CONNECT {}".format(bad.id), loose, "diag_drop"
 
-        if strict_plan is not None and not should_skip_low_value_plan(
-            strict_plan, carried, me.expertise, projects, opp.expertise, remaining
-        ):
-            return goto(MOLMOD, me), strict_plan, "diag_to_mol_strict"
+        if strict is not None:
+            if sum(strict["need"]) == 0:
+                return goto(LAB, me), strict, "diag_to_lab_zero"
+            return goto(MOLMOD, me), strict, "diag_to_mol"
 
-        if loose_plan is not None:
-            mol = choose_molecule(loose_plan, me.storage, avail, me.expertise, opp_need)
-            if mol is not None and recoverable_loose_plan(loose_plan, me.storage, avail, remaining):
-                return goto(MOLMOD, me), loose_plan, "diag_to_mol_loose"
+        if loose is not None:
+            mol = choose_molecule(loose, me.storage, avail, me.expertise, opp_need)
+            if mol is not None:
+                return goto(MOLMOD, me), loose, "diag_to_mol_loose"
 
-        if len(carried) < 3:
-            s = choose_cloud_sample(
-                cloud, carried, me.expertise, me.storage, avail, projects,
-                remaining, me.target, opp.expertise, opp_need
-            )
+        if len(carried) < desired_batch_size(remaining, sum(me.expertise)):
+            s = choose_cloud(cloud, carried, me.expertise, me.storage, avail,
+                             projects, remaining, me.target, opp.expertise, opp_need)
             if s is not None:
-                return "CONNECT {}".format(s.id), loose_plan, "diag_take_cloud"
+                return "CONNECT {}".format(s.id), loose, "diag_take_cloud"
 
-        # Do not go to Samples while carrying a dead diagnosed sample.
-        if len(carried) < 3 and not diagnosed and remaining > 22:
-            return goto(SAMP, me), loose_plan, "diag_to_samples_empty"
+        if len(carried) == 0 and remaining > 24:
+            return goto(SAMP, me), loose, "diag_to_samples_empty"
 
-        return "WAIT", loose_plan, "diag_wait"
+        return "WAIT", loose, "diag_wait"
 
     if me.target == SAMP:
         clear_block()
 
-        # If we are carrying diagnosed samples, leave. No sample hoarding with
-        # half-finished work in hand.
+        # Do not keep sampling while holding diagnosed work.
         if diagnosed:
-            return goto(DIAG, me), loose_plan, "sample_leave_with_diag"
+            return goto(DIAG, me), loose, "sample_leave_with_diag"
 
-        if len(carried) < 3 and remaining > 22:
-            r = choose_rank(me, opp, projects, len(carried), remaining)
-            return "CONNECT {}".format(r), loose_plan, "sample_take"
+        target_count = desired_batch_size(remaining, sum(me.expertise))
 
-        return goto(DIAG, me), loose_plan, "sample_to_diag"
+        if len(carried) < target_count and remaining > 24:
+            r = choose_rank(me, opp, len(carried), remaining)
+            return "CONNECT {}".format(r), loose, "sample_take"
+
+        return goto(DIAG, me), loose, "sample_to_diag"
 
     clear_block()
 
     if makeable:
-        return goto(LAB, me), loose_plan, "fallback_lab"
-    if strict_plan is not None:
-        return goto(MOLMOD, me), strict_plan, "fallback_mol"
+        return goto(LAB, me), loose, "fallback_lab"
+    if strict is not None:
+        return goto(MOLMOD if sum(strict["need"]) else LAB, me), strict, "fallback_plan"
     if undiagnosed:
-        return goto(DIAG, me), loose_plan, "fallback_diag"
-    return goto(SAMP, me), loose_plan, "fallback_samples"
+        return goto(DIAG, me), loose, "fallback_diag"
+    return goto(SAMP, me), loose, "fallback_samples"
 
 
 project_count = int(input())
@@ -913,12 +769,16 @@ while True:
         ps = "None"
     else:
         ps = "ids={} req={} need={} raw={:.1f} met={:.2f} est={}".format(
-            plan["ids"], plan["req"], need_from_req(plan["req"], me.storage),
-            plan["raw"], plan["metric"], plan["est"]
+            plan["ids"],
+            plan["req"],
+            need(plan["req"], me.storage),
+            plan["raw"],
+            plan["metric"],
+            plan["est"],
         )
 
     print(
-        "T{} {} eta={} score={} opp={} store={} exp={} oppExp={} avail={} carried={} plan={} ban={} block={}x{} reason={} -> {}".format(
+        "T{} {} eta={} score={} opp={} store={} exp={} oppExp={} avail={} carried={} plan={} block={}x{} reason={} -> {}".format(
             turn,
             me.target,
             me.eta,
@@ -930,9 +790,8 @@ while True:
             available,
             summarize(carried),
             ps,
-            {k: v for k, v in ban_until.items() if v > turn},
-            last_block_key,
-            block_count,
+            blocked_key,
+            blocked_count,
             reason,
             action,
         ),

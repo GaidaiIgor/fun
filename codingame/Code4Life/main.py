@@ -7,9 +7,13 @@ def debug(msg):
 
 # --- INITIALIZATION INPUT ---
 project_count = int(input())
+projects = []
 for i in range(project_count):
-    # We will let dynamic rank scaling naturally handle late game for now
-    input()
+    inputs = input().split()
+    projects.append({
+        'A': int(inputs[0]), 'B': int(inputs[1]),
+        'C': int(inputs[2]), 'D': int(inputs[3]), 'E': int(inputs[4])
+    })
 
 # --- GAME LOOP ---
 while True:
@@ -28,7 +32,8 @@ while True:
     }
 
     # 2. READ ENEMY DATA
-    input()
+    enemy_inputs = input().split()
+    # We read but ignore enemy data to maintain focus on our own strict efficiency
 
     # 3. READ AVAILABLE MOLECULES
     inputs = input().split()
@@ -69,48 +74,76 @@ while True:
         if all(my_storage[m] >= s['real_cost'][m] for m in 'ABCDE'):
             ready_samples.append(s)
 
-    # 2. Identify Impossible Samples (Cost > 10 slots even after expertise)
+    # 2. Identify Impossible Samples (Cost > 10 slots)
     impossible_samples = [s for s in diagnosed if sum(s['real_cost'].values()) > 10]
-
-    # 3. Sort remaining viable samples by ease of completion (fewest missing molecules)
     valid_diagnosed = [s for s in diagnosed if s not in impossible_samples]
-    # Tie-breaker: if same missing cost, prioritize higher health points
-    valid_diagnosed.sort(key=lambda s: (sum(max(0, s['real_cost'][m] - my_storage[m]) for m in 'ABCDE'), -s['health']))
+
+    # 3. Science Project Synergy
+    valuable_expertise = set()
+    for p in projects:
+        # Check if this project is still incomplete by us
+        if any(my_expertise[m] < p[m] for m in 'ABCDE'):
+            for m in 'ABCDE':
+                if my_expertise[m] < p[m]:
+                    valuable_expertise.add(m)
+
+
+    def sample_priority(s):
+        # We want to minimize missing cost, but give a "discount" to samples that fulfill projects
+        missing_cost = sum(max(0, s['real_cost'][m] - my_storage[m]) for m in 'ABCDE')
+        bonus = 2 if s['gain'] in valuable_expertise else 0
+        return (missing_cost - bonus, -s['health'])
+
+
+    valid_diagnosed.sort(key=sample_priority)
 
     # 4. Determine Target Sample & Molecule
     target_gather_sample = None
     target_mol = None
 
-    if valid_diagnosed:
-        # Try to find a sample we can perfectly finish right now without getting stuck
+    # Pass 1: Look for a perfect finish
+    for s in valid_diagnosed:
+        missing = {m: max(0, s['real_cost'][m] - my_storage[m]) for m in 'ABCDE'}
+        can_finish = all(available[m] >= missing[m] for m in 'ABCDE')
+        has_space = sum(my_storage.values()) + sum(missing.values()) <= 10
+
+        if can_finish and has_space:
+            target_gather_sample = s
+            for m in 'ABCDE':
+                if missing[m] > 0:
+                    target_mol = m
+                    break
+            break
+
+    # Pass 2: If no perfect finish, scan all valid samples for ANY progress
+    if not target_gather_sample:
         for s in valid_diagnosed:
             missing = {m: max(0, s['real_cost'][m] - my_storage[m]) for m in 'ABCDE'}
-            can_finish = all(available[m] >= missing[m] for m in 'ABCDE')
-            has_space = sum(my_storage.values()) + sum(missing.values()) <= 10
-
-            if can_finish and has_space:
+            # Can we make progress on this sample without overflowing inventory?
+            if any(missing[m] > 0 and available[m] > 0 for m in 'ABCDE') and sum(my_storage.values()) < 10:
                 target_gather_sample = s
+                for m in 'ABCDE':
+                    if missing[m] > 0 and available[m] > 0:
+                        target_mol = m
+                        break
                 break
 
-        # If no perfect finish, lock onto the mathematically easiest sample to complete
-        if not target_gather_sample:
-            target_gather_sample = valid_diagnosed[0]
+    # Anti-Deadlock Recovery
+    if not target_mol and not ready_samples and not impossible_samples and len(my_samples) == 3 and valid_diagnosed:
+        # We are full, but can't gather a single molecule for ANY sample. The enemy is starving us.
+        # Force the hardest sample into the impossible list to dump it to the cloud.
+        hardest = max(valid_diagnosed, key=lambda s: sum(max(0, s['real_cost'][m] - my_storage[m]) for m in 'ABCDE'))
+        impossible_samples.append(hardest)
+        debug(f"Deadlock detected! Forcing dump of sample {hardest['id']}")
 
-        missing = {m: max(0, target_gather_sample['real_cost'][m] - my_storage[m]) for m in 'ABCDE'}
-        for mol in 'ABCDE':
-            if missing[mol] > 0 and available[mol] > 0:
-                if sum(my_storage.values()) < 10:
-                    target_mol = mol
-                    break
-
-    # 5. Dynamic Rank Scaling
+    # 5. Dynamic Rank Scaling (Adjusted for Science Project Rush)
     total_exp = sum(my_expertise.values())
-    if total_exp <= 2:
-        target_rank = 1  # Fast early game points/expertise
-    elif total_exp <= 5:
-        target_rank = 2  # Mid game stability
+    if total_exp < 5:
+        target_rank = 1  # Fast early game points/projects
+    elif total_exp < 10:
+        target_rank = 2  # Mid game scaling
     else:
-        target_rank = 3  # Late game heavy hitters
+        target_rank = 3  # Late game bombs
 
     # --- ACTION DECISION TREE ---
     action = "WAIT"
@@ -123,10 +156,10 @@ while True:
         target_sample = impossible_samples[0]
         if my_target != 'DIAGNOSIS':
             action = "GOTO DIAGNOSIS"
-            debug("Going to dump impossible sample.")
+            debug("Going to dump impossible/deadlocked sample.")
         else:
             action = f"CONNECT {target_sample['id']}"
-            debug(f"Dumping impossible sample {target_sample['id']} to cloud.")
+            debug(f"Dumping sample {target_sample['id']} to cloud.")
 
     elif ready_samples:
         target_sample = ready_samples[0]
@@ -138,7 +171,6 @@ while True:
             debug(f"Crafting sample {target_sample['id']}")
 
     elif undiagnosed:
-        # Batching: stay at SAMPLES until full
         if my_target == 'SAMPLES' and len(my_samples) < 3:
             action = f"CONNECT {target_rank}"
             debug(f"At SAMPLES, batching another Rank {target_rank}.")
@@ -168,7 +200,7 @@ while True:
 
     else:
         action = "WAIT"
-        debug("Stalled out waiting for enemy to release molecules. Waiting.")
+        debug("Idle.")
 
     # Execute action
     print(action)

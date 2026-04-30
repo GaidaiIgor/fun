@@ -8,7 +8,7 @@ def debug(msg):
 # --- INITIALIZATION INPUT ---
 project_count = int(input())
 for i in range(project_count):
-    # Ignoring science projects for Version 1
+    # Ignoring science projects for Version 2
     input()
 
 # --- GAME LOOP ---
@@ -28,7 +28,7 @@ while True:
     }
 
     # 2. READ ENEMY DATA
-    input()  # Skipping enemy data for Version 1
+    input()
 
     # 3. READ AVAILABLE MOLECULES
     inputs = input().split()
@@ -57,42 +57,91 @@ while True:
 
     # --- BOT LOGIC ---
     my_samples = [s for s in samples if s['carried_by'] == 0]
+    undiagnosed = [s for s in my_samples if s['health'] < 0]
+    diagnosed = [s for s in my_samples if s['health'] >= 0]
 
-    # Identify undiagnosed samples (usually represented by negative costs or health)
-    undiagnosed = [s for s in my_samples if s['costs']['A'] < 0 or s['health'] < 0]
-    diagnosed = [s for s in my_samples if s['costs']['A'] >= 0 and s['health'] >= 0]
+    # 1. Simulate allocation and expertise
+    simulated_expertise = my_expertise.copy()
+    allocated_storage = my_storage.copy()
+    missing_per_sample = {}
 
-
-    def get_missing_molecules(sample):
-        """Returns a dict of molecules needed to craft this sample."""
+    for s in diagnosed:
         missing = {}
         for mol in 'ABCDE':
-            needed_total = max(0, sample['costs'][mol] - my_expertise[mol])
-            lack = max(0, needed_total - my_storage[mol])
+            needed = max(0, s['costs'][mol] - simulated_expertise[mol])
+            available_for_s = min(needed, allocated_storage[mol])
+            lack = needed - available_for_s
             if lack > 0:
                 missing[mol] = lack
-        return missing
+            allocated_storage[mol] -= available_for_s
 
+        missing_per_sample[s['id']] = missing
 
-    def get_total_real_cost(sample):
-        """Returns the total number of molecules required after expertise."""
-        return sum(max(0, sample['costs'][mol] - my_expertise[mol]) for mol in 'ABCDE')
+        # Simulate gaining expertise ONLY if this sample is fully ready right now.
+        # This prevents locking ourselves out if a prior sample's molecules are unavailable.
+        if sum(missing.values()) == 0:
+            if s['gain'] in simulated_expertise:
+                simulated_expertise[s['gain']] += 1
 
+    # 2. Identify ready samples
+    ready_samples = [s for s in diagnosed if sum(missing_per_sample[s['id']].values()) == 0]
 
+    # 3. Identify impossible samples (cost > 10)
+    impossible_samples = []
+    for s in diagnosed:
+        real_cost = sum(max(0, s['costs'][mol] - my_expertise[mol]) for mol in 'ABCDE')
+        if real_cost > 10:
+            impossible_samples.append(s)
+
+    # 4. Find target molecule
+    target_mol = None
+    for s in diagnosed:
+        # Ignore impossible samples when gathering
+        if s in impossible_samples:
+            continue
+        missing = missing_per_sample[s['id']]
+        for mol, amount in missing.items():
+            if amount > 0 and available[mol] > 0 and sum(my_storage.values()) < 10:
+                target_mol = mol
+                break
+        if target_mol:
+            break
+
+    # --- ACTION DECISION ---
     action = "WAIT"
 
     if my_eta > 0:
-        # We are currently moving, any command is ignored, so we just wait.
-        debug("Moving, ETA: " + str(my_eta))
         action = "WAIT"
-    else:
-        # Priority 1: Do we have any fully prepared samples to produce?
-        ready_samples = [s for s in diagnosed if sum(get_missing_molecules(s).values()) == 0]
+        debug("Moving, ETA: " + str(my_eta))
 
-        # Priority 2: Do we have impossible samples to drop?
-        impossible_samples = [s for s in diagnosed if get_total_real_cost(s) > 10]
+    elif impossible_samples:
+        target_sample = impossible_samples[0]
+        if my_target != 'DIAGNOSIS':
+            action = "GOTO DIAGNOSIS"
+            debug("Going to diag to drop impossible sample.")
+        else:
+            action = f"CONNECT {target_sample['id']}"
+            debug(f"Dropping impossible sample {target_sample['id']}")
 
-        if ready_samples:
+    elif undiagnosed:
+        # Batch samples! If we are already at SAMPLES, stay and grab up to 3.
+        if my_target == 'SAMPLES' and len(my_samples) < 3:
+            action = "CONNECT 2"
+            debug("At SAMPLES, grabbing another to batch.")
+        else:
+            if my_target != 'DIAGNOSIS':
+                action = "GOTO DIAGNOSIS"
+                debug("Going to diag to diagnose samples.")
+            else:
+                action = f"CONNECT {undiagnosed[0]['id']}"
+                debug(f"Diagnosing sample {undiagnosed[0]['id']}")
+
+    elif ready_samples:
+        # Batch gathering! If we have a ready sample but can still gather for others, stay!
+        if my_target == 'MOLECULES' and target_mol is not None:
+            action = f"CONNECT {target_mol}"
+            debug(f"Sample ready, but staying to batch gather {target_mol}.")
+        else:
             target_sample = ready_samples[0]
             if my_target != 'LABORATORY':
                 action = "GOTO LABORATORY"
@@ -101,65 +150,25 @@ while True:
                 action = f"CONNECT {target_sample['id']}"
                 debug(f"Crafting sample {target_sample['id']}")
 
-        elif impossible_samples:
-            target_sample = impossible_samples[0]
-            if my_target != 'DIAGNOSIS':
-                action = "GOTO DIAGNOSIS"
-                debug("Going to diag to drop impossible sample.")
-            else:
-                action = f"CONNECT {target_sample['id']}"
-                debug(f"Dropping sample {target_sample['id']} to cloud.")
-
-        elif undiagnosed:
-            target_sample = undiagnosed[0]
-            if my_target != 'DIAGNOSIS':
-                action = "GOTO DIAGNOSIS"
-                debug("Going to diag to diagnose sample.")
-            else:
-                action = f"CONNECT {target_sample['id']}"
-                debug(f"Diagnosing sample {target_sample['id']}")
-
-        elif diagnosed and sum(my_storage.values()) < 10:
-            # We need molecules, find what's missing and available
-            target_mol = None
-            for s in diagnosed:
-                missing = get_missing_molecules(s)
-                for mol, amount in missing.items():
-                    if available[mol] > 0:
-                        target_mol = mol
-                        break
-                if target_mol:
-                    break
-
-            if target_mol:
-                if my_target != 'MOLECULES':
-                    action = "GOTO MOLECULES"
-                    debug(f"Going to gather molecule {target_mol}.")
-                else:
-                    action = f"CONNECT {target_mol}"
-                    debug(f"Gathering molecule {target_mol}.")
-            else:
-                # We need molecules, but the ones we need are currently unavailable
-                if len(my_samples) < 3:
-                    if my_target != 'SAMPLES':
-                        action = "GOTO SAMPLES"
-                    else:
-                        action = "CONNECT 2"
-                        debug("Missing molecules unavailable. Getting another rank 2 sample.")
-                else:
-                    action = "WAIT"
-                    debug("Stuck! Waiting for molecules to become available.")
-
-        elif len(my_samples) < 3:
-            if my_target != 'SAMPLES':
-                action = "GOTO SAMPLES"
-                debug("Going to get initial samples.")
-            else:
-                action = "CONNECT 2"
-                debug("Grabbing a rank 2 sample.")
+    elif target_mol is not None:
+        if my_target != 'MOLECULES':
+            action = "GOTO MOLECULES"
+            debug(f"Going to gather molecule {target_mol}.")
         else:
-            action = "WAIT"
-            debug("Idle state reached.")
+            action = f"CONNECT {target_mol}"
+            debug(f"Gathering molecule {target_mol}.")
+
+    elif len(my_samples) < 3:
+        if my_target != 'SAMPLES':
+            action = "GOTO SAMPLES"
+            debug("Going to get new samples.")
+        else:
+            action = "CONNECT 2"
+            debug("Grabbing a rank 2 sample.")
+
+    else:
+        action = "WAIT"
+        debug("Idle - waiting for enemy to release molecules.")
 
     # Execute action
     print(action)

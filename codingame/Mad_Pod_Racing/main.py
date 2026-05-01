@@ -19,8 +19,7 @@ MAX_TURN_DEG = 18
 BOOST_ANGLE_TOL = 1
 CHECKPOINT_BONUS = 20000
 COMMAND_TARGET_DIST = 10000
-PREDICT_TURNS = 5
-OPTIMIZATION_MAX_ITER = 80
+PREDICT_TURNS = 2
 
 
 @dataclass(slots=True)
@@ -73,12 +72,14 @@ class FutureState:
 @dataclass(slots=True)
 class GameState:
     """Stores the current turn state.
+    :var turn_ind: Current turn index.
     :var laps: Number of laps to complete.
     :var checkpoints: Circuit checkpoints.
     :var my_pods: Our pod states.
     :var foe_pods: Opponent pod states.
     :var boosts: Number of unused team boosts.
     """
+    turn_ind: int
     laps: int
     checkpoints: list[NDArray[int]]
     my_pods: list[Pod]
@@ -113,7 +114,7 @@ def read_initial_game_state() -> GameState:
     laps = int(input())
     checkpoint_count = int(input())
     checkpoints = [np.array(tuple(map(int, input().split()))) for _ in range(checkpoint_count)]
-    return GameState(laps, checkpoints, [], [], 1)
+    return GameState(-1, laps, checkpoints, [], [], 1)
 
 
 def update_game_state(prev_game_state: GameState) -> GameState:
@@ -123,7 +124,7 @@ def update_game_state(prev_game_state: GameState) -> GameState:
     """
     our_pods = [read_pod(pod_ind) for pod_ind in range(2)]
     foe_pods = [read_pod(pod_ind) for pod_ind in range(2)]
-    return GameState(prev_game_state.laps, prev_game_state.checkpoints, our_pods, foe_pods, prev_game_state.boosts)
+    return GameState(prev_game_state.turn_ind + 1, prev_game_state.laps, prev_game_state.checkpoints, our_pods, foe_pods, prev_game_state.boosts)
 
 
 def read_pod(pod_ind: int) -> Pod:
@@ -154,6 +155,9 @@ def choose_pod_move(game_state: GameState, pod: Pod) -> tuple[NDArray[int], int 
     :param pod: Pod to command.
     :return: Target coordinates and thrust command.
     """
+    if game_state.turn_ind == 0:
+        return game_state.checkpoints[pod.next_checkpoint_ind], 100
+
     result = optimize_pod_moves(pod, game_state.checkpoints)
     direction = normalize_angle(pod.direction + result.x[0])
     thrust = round(result.x[1])
@@ -247,6 +251,8 @@ def constrain_moves(moves: list[float] | NDArray[float]) -> NDArray[float]:
     moves[0::2] = np.clip(moves[0::2], -MAX_TURN_DEG, MAX_TURN_DEG)
     moves[1::2] = np.clip(moves[1::2], 0, 100)
     return moves
+
+
 def normalize_angle(angle: float | NDArray[float]) -> float | NDArray[float]:
     """Normalizes an angle to [-180, 180) degrees.
     :param angle: Angle in degrees.

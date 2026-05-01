@@ -32,7 +32,7 @@ POD_RADIUS = 90
 DIRECTION_ARROW_LENGTH = 225
 ARROW_WIDTH = 6
 ARROW_HEAD_WIDTH = 60
-CHECKPOINTS = [np.array((5000, 5300)), np.array((11600, 6100)), np.array((9100, 1800))]
+CHECKPOINTS = [np.array((11300, 2800)), np.array((7500, 7000)), np.array((6000, 5300))]
 
 
 @dataclass(slots=True)
@@ -158,9 +158,9 @@ def main():
     laps = 3
     turn = 11
 
-    # show_race(CHECKPOINTS, laps)
+    show_race(CHECKPOINTS, laps)
     # run_optimization(CHECKPOINTS, turn)
-    plot_optimization_landscape_1d(CHECKPOINTS, turn)
+    # plot_optimization_landscape_1d(CHECKPOINTS, turn)
     # plot_optimization_landscape_2d(CHECKPOINTS, turn)
 
 
@@ -229,7 +229,7 @@ def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
     :param turn: Turn at which to run.
     """
     coordinate_ind = 8
-    coords = np.array((10.99, 100, 7.68, 100, 4.84, 100, 2.52, 100, 0.9, 100), dtype=float)
+    coords = np.array((9.32, 99, 6.8, 99.2, 4.28, 99.4, 2.25, 99.5, 0.79, 99.7), dtype=float)
     pod = simulate_single_pod_lap(checkpoints, 1)[turn].pod
     result = bot.optimize_pod_moves(pod, checkpoints)
     coordinate_values = np.linspace(-bot.MAX_TURN_DEG, bot.MAX_TURN_DEG, LANDSCAPE_DIRECTION_STEPS) if coordinate_ind % 2 == 0 \

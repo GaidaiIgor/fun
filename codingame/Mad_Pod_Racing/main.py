@@ -19,7 +19,7 @@ MAX_TURN_DEG = 18
 BOOST_ANGLE_TOL = 1
 CHECKPOINT_BONUS = 20000
 COMMAND_TARGET_DIST = 10000
-PREDICT_TURNS = 4
+PREDICT_TURNS = 5
 OPTIMIZATION_MAX_ITER = 80
 
 
@@ -228,7 +228,7 @@ def predict_next(current: Pod, checkpoints: list[NDArray[int]], direction_delta:
     segment_end = current.position + velocity
     passed_checkpoints = 0
     while passed_checkpoints < len(checkpoints) \
-            and checkpoint_crossed(current.position, segment_end, checkpoints[(current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)]):
+            and linalg.norm(checkpoints[(current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)] - segment_end) <= CHECKPOINT_RADIUS:
         passed_checkpoints += 1
 
     velocity = velocity * DRAG
@@ -245,24 +245,6 @@ def constrain_moves(moves: list[float] | NDArray[float]) -> NDArray[float]:
     moves[0::2] = np.clip(moves[0::2], -MAX_TURN_DEG, MAX_TURN_DEG)
     moves[1::2] = np.clip(moves[1::2], 0, 100)
     return moves
-
-
-def checkpoint_crossed(start: NDArray[float], end: NDArray[float], checkpoint: NDArray[int]) -> bool:
-    """Checks whether a movement segment enters a checkpoint radius.
-    :param start: Movement segment start.
-    :param end: Movement segment end.
-    :param checkpoint: Checkpoint center.
-    :return: Whether the segment intersects the checkpoint.
-    """
-    movement = end - start
-    relative_start = start - checkpoint
-    a = np.dot(movement, movement)
-    if a == 0:
-        return np.dot(relative_start, relative_start) <= CHECKPOINT_RADIUS ** 2
-    closest_delta = relative_start + movement * np.clip(-np.dot(relative_start, movement) / a, 0, 1)
-    return np.dot(closest_delta, closest_delta) <= CHECKPOINT_RADIUS ** 2
-
-
 def normalize_angle(angle: float | NDArray[float]) -> float | NDArray[float]:
     """Normalizes an angle to [-180, 180) degrees.
     :param angle: Angle in degrees.

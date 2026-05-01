@@ -19,7 +19,7 @@ MAX_TURN_DEG = 18
 BOOST_ANGLE_TOL = 1
 CHECKPOINT_BONUS = 20000
 COMMAND_TARGET_DIST = 10000
-PREDICT_TURNS = 2
+PREDICT_TURNS = 4
 OPTIMIZATION_MAX_ITER = 80
 
 
@@ -185,16 +185,17 @@ def optimize_pod_moves(pod: Pod, checkpoints: list[NDArray[int]]) -> OptimizeRes
     :param checkpoints: Circuit checkpoints.
     :return: SciPy optimization result with constrained moves written to x.
     """
-    checkpoint_delta = checkpoints[pod.next_checkpoint_ind] - pod.position
-    checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
-    checkpoint_direction_delta = normalize_angle(checkpoint_direction - pod.direction)
-    direction_delta_guess = np.clip(checkpoint_direction_delta, -MAX_TURN_DEG, MAX_TURN_DEG)
-    thrust_guess = 0 if abs(checkpoint_direction_delta) > 45 else 100
-    initial_moves = np.tile(np.array((direction_delta_guess, thrust_guess)), PREDICT_TURNS)
-    result = optimize.minimize(lambda moves: predict_turns(pod, checkpoints, moves).get_score(checkpoints), initial_moves, method="Nelder-Mead",
+    result = optimize.minimize(lambda moves: predict_turns(pod, checkpoints, moves).get_score(checkpoints), get_optimizer_guess_moves(), method="L-BFGS-B",
                                options={"maxiter": np.iinfo(np.int32).max})
     result.x = constrain_moves(result.x)
     return result
+
+
+def get_optimizer_guess_moves() -> NDArray[float]:
+    """Computes the initial optimizer move guess.
+    :return: Alternating direction delta and thrust values.
+    """
+    return np.tile(np.array((0, 100), dtype=float), PREDICT_TURNS)
 
 
 def predict_turns(current: Pod, checkpoints: list[NDArray[int]], moves: list[float] | NDArray[float]) -> FutureState:

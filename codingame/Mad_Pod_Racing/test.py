@@ -16,6 +16,7 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Circle
 from matplotlib.widgets import Button, Slider
 from mpl_toolkits.mplot3d import Axes3D
+from numpy import linalg
 from numpy.typing import NDArray
 
 import main as bot
@@ -31,11 +32,6 @@ POD_RADIUS = 90
 DIRECTION_ARROW_LENGTH = 225
 ARROW_WIDTH = 6
 ARROW_HEAD_WIDTH = 60
-PREDICTION_LABEL_SIZE = 8
-PREDICTION_LABEL_WIDTH = 720
-PREDICTION_LABEL_HEIGHT = 260
-PREDICTION_LABEL_OFFSETS = ((0, -260), (0, 260), (460, 0), (-460, 0), (460, -260), (-460, -260), (460, 260), (-460, 260), (0, -540), (0, 540),
-                            (780, 0), (-780, 0), (780, -420), (-780, -420), (780, 420), (-780, 420), (0, -820), (0, 820))
 CHECKPOINTS = [np.array((5000, 5300)), np.array((11600, 6100)), np.array((9100, 1800))]
 
 
@@ -162,8 +158,8 @@ def main():
     laps = 3
     turn = 12
 
-    # show_race(CHECKPOINTS, laps)
-    run_optimization(CHECKPOINTS, turn)
+    show_race(CHECKPOINTS, laps)
+    # run_optimization(CHECKPOINTS, turn)
     # plot_optimization_landscape_1d(CHECKPOINTS, turn)
     # plot_optimization_landscape_2d(CHECKPOINTS, turn)
 
@@ -338,41 +334,10 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
     axes.plot(positions[:, 0], positions[:, 1], color="black", linestyle="--", linewidth=1)
     axes.text(0.02, 0.98, f"score={round(bot.predict_turns(snapshot.pod, checkpoints, moves).get_score(checkpoints))}", color="red",
               transform=axes.transAxes, ha="left", va="top")
-    label_boxes = []
-    for prediction_ind, pod in enumerate(predictions):
-        axes.add_patch(Circle(pod.position, POD_RADIUS, fill=False, edgecolor="black", linestyle="--", linewidth=1))
+    for pod in predictions:
+        edgecolor = "red" if any(linalg.norm(checkpoint - pod.position) <= CHECKPOINT_RADIUS for checkpoint in checkpoints) else "black"
+        axes.add_patch(Circle(pod.position, POD_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))
         draw_pod_arrows(axes, pod, 0.5)
-        move_ind = 2 * prediction_ind
-        label_position = get_label_position(pod.position, label_boxes)
-        axes.plot((pod.position[0], label_position[0]), (pod.position[1], label_position[1]), color="0.4", linestyle=":", linewidth=0.7)
-        axes.text(label_position[0], label_position[1],
-                  f"({moves[move_ind]:.3g}, {moves[move_ind + 1]:.3g})", ha="center", va="center", fontsize=PREDICTION_LABEL_SIZE)
-
-
-def get_label_position(position: NDArray[float], label_boxes: list[tuple[float, float, float, float]]) -> tuple[float, float]:
-    """Finds a non-overlapping label position near a point.
-    :param position: Point to label.
-    :param label_boxes: Already occupied label boxes.
-    :return: Label center position.
-    """
-    for offset in PREDICTION_LABEL_OFFSETS:
-        label_position = position[0] + offset[0], position[1] + offset[1]
-        label_box = (label_position[0] - PREDICTION_LABEL_WIDTH / 2, label_position[1] - PREDICTION_LABEL_HEIGHT / 2,
-                     label_position[0] + PREDICTION_LABEL_WIDTH / 2, label_position[1] + PREDICTION_LABEL_HEIGHT / 2)
-        if all(not boxes_overlap(label_box, existing_box) for existing_box in label_boxes):
-            label_boxes.append(label_box)
-            return label_position
-    label_boxes.append(label_box)
-    return label_position
-
-
-def boxes_overlap(first_box: tuple[float, float, float, float], second_box: tuple[float, float, float, float]) -> bool:
-    """Checks whether two boxes overlap.
-    :param first_box: First box as left, top, right, bottom.
-    :param second_box: Second box as left, top, right, bottom.
-    :return: Whether the boxes overlap.
-    """
-    return first_box[0] < second_box[2] and first_box[2] > second_box[0] and first_box[1] < second_box[3] and first_box[3] > second_box[1]
 
 
 def draw_pod_state(axes: Axes, pod: Pod, alpha: float):

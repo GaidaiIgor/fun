@@ -185,8 +185,10 @@ def optimize_pod_moves(pod: Pod, checkpoints: list[NDArray[int]]) -> OptimizeRes
     :param checkpoints: Circuit checkpoints.
     :return: SciPy optimization result with constrained moves written to x.
     """
+    move_bounds = optimize.Bounds(np.tile(np.array((-MAX_TURN_DEG, 0), dtype=float), PREDICT_TURNS),
+                                  np.tile(np.array((MAX_TURN_DEG, 100), dtype=float), PREDICT_TURNS))
     result = optimize.minimize(lambda moves: predict_turns(pod, checkpoints, moves).get_score(checkpoints), get_optimizer_guess_moves(), method="L-BFGS-B",
-                               options={"maxiter": np.iinfo(np.int32).max})
+                               bounds=move_bounds, options={"maxiter": np.iinfo(np.int32).max})
     result.x = constrain_moves(result.x)
     return result
 

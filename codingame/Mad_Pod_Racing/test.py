@@ -156,11 +156,11 @@ class RaceViewer:
 def main():
     """Runs the default test."""
     laps = 3
-    turn = 12
+    turn = 11
 
-    show_race(CHECKPOINTS, laps)
+    # show_race(CHECKPOINTS, laps)
     # run_optimization(CHECKPOINTS, turn)
-    # plot_optimization_landscape_1d(CHECKPOINTS, turn)
+    plot_optimization_landscape_1d(CHECKPOINTS, turn)
     # plot_optimization_landscape_2d(CHECKPOINTS, turn)
 
 
@@ -228,8 +228,8 @@ def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
     :param checkpoints: Circuit checkpoints.
     :param turn: Turn at which to run.
     """
-    coordinate_ind = 6
-    coords = np.array((18, 100, 18, 100, 18, 100, -18, 100), dtype=float)
+    coordinate_ind = 8
+    coords = np.array((10.99, 100, 7.68, 100, 4.84, 100, 2.52, 100, 0.9, 100), dtype=float)
     pod = simulate_single_pod_lap(checkpoints, 1)[turn].pod
     result = bot.optimize_pod_moves(pod, checkpoints)
     coordinate_values = np.linspace(-bot.MAX_TURN_DEG, bot.MAX_TURN_DEG, LANDSCAPE_DIRECTION_STEPS) if coordinate_ind % 2 == 0 \

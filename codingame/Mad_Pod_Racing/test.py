@@ -20,7 +20,7 @@ from numpy import linalg
 from numpy.typing import NDArray
 
 import main as bot
-from main import CHECKPOINT_RADIUS, Pod
+from main import CHECKPOINT_RADIUS, GameState, Pod
 
 
 MAP_WIDTH = 16000
@@ -139,7 +139,7 @@ class RaceViewer:
         setup_axes(self.axes, self.turn_ind, len(self.history))
         draw_checkpoints(self.axes, self.checkpoints)
         draw_history(self.axes, self.history, self.turn_ind)
-        draw_predictions(self.axes, self.history[self.turn_ind], self.checkpoints, self.get_selected_moves())
+        draw_predictions(self.axes, self.history[self.turn_ind], self.checkpoints, self.get_selected_moves(), self.turn_ind == 0)
         self.figure.canvas.draw_idle()
 
     def show(self):
@@ -169,7 +169,7 @@ def show_race(checkpoints: list[NDArray[int]], laps: int):
     :param checkpoints: Circuit checkpoints.
     :param laps: Number of laps to simulate and show.
     """
-    RaceViewer.create(checkpoints, simulate_single_pod_lap(checkpoints, laps)).show()
+    RaceViewer.create(checkpoints, simulate_single_pod(checkpoints, laps)).show()
 
 
 def run_optimization(checkpoints: list[NDArray[int]], turn: int):
@@ -177,7 +177,7 @@ def run_optimization(checkpoints: list[NDArray[int]], turn: int):
     :param turn: Turn for which to run.
     :param checkpoints: Circuit checkpoints.
     """
-    pod = simulate_single_pod_lap(checkpoints, 1)[turn].pod
+    pod = simulate_single_pod(checkpoints, 1)[turn].pod
     guess_moves = bot.get_optimizer_guess_moves()
     result = bot.optimize_pod_moves(pod, checkpoints)
     guess_moves_text = ", ".join(f"{value:.3g}" for value in guess_moves)
@@ -191,7 +191,7 @@ def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
     :param turn: Turn at which to run.
     :param checkpoints: Circuit checkpoints.
     """
-    pod = simulate_single_pod_lap(checkpoints, 1)[turn].pod
+    pod = simulate_single_pod(checkpoints, 1)[turn].pod
     guess_moves = bot.get_optimizer_guess_moves()
     result = bot.optimize_pod_moves(pod, checkpoints)
     direction_deltas = np.linspace(-bot.MAX_TURN_DEG, bot.MAX_TURN_DEG, LANDSCAPE_DIRECTION_STEPS)
@@ -202,7 +202,7 @@ def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
             moves = guess_moves.copy()
             moves[0] = direction_delta
             moves[1] = thrust
-            scores[thrust_ind, direction_ind] = bot.predict_turns(pod, checkpoints, moves).get_score(checkpoints)
+            scores[thrust_ind, direction_ind] = bot.predict_turns(pod, checkpoints, moves)[-1].get_score(checkpoints)
 
     figure = plt.figure(figsize=(10, 7))
     axes = figure.add_subplot(111, projection="3d")
@@ -211,9 +211,9 @@ def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
     figure.colorbar(surface, ax=axes, label="Score", shrink=0.65)
     optimized_marker_moves = guess_moves.copy()
     optimized_marker_moves[:2] = result.x[:2]
-    axes.scatter(guess_moves[0], guess_moves[1], bot.predict_turns(pod, checkpoints, guess_moves).get_score(checkpoints), color="white",
+    axes.scatter(guess_moves[0], guess_moves[1], bot.predict_turns(pod, checkpoints, guess_moves)[-1].get_score(checkpoints), color="white",
                  edgecolor="black", marker="o", s=60, label="Guess")
-    axes.scatter(optimized_marker_moves[0], optimized_marker_moves[1], bot.predict_turns(pod, checkpoints, optimized_marker_moves).get_score(checkpoints),
+    axes.scatter(optimized_marker_moves[0], optimized_marker_moves[1], bot.predict_turns(pod, checkpoints, optimized_marker_moves)[-1].get_score(checkpoints),
                  color="red", edgecolor="black", marker="x", s=80, label="Optimized")
     axes.set_xlabel("Direction delta")
     axes.set_ylabel("Thrust")
@@ -230,7 +230,7 @@ def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
     """
     coordinate_ind = 8
     coords = np.array((9.32, 99, 6.8, 99.2, 4.28, 99.4, 2.25, 99.5, 0.79, 99.7), dtype=float)
-    pod = simulate_single_pod_lap(checkpoints, 1)[turn].pod
+    pod = simulate_single_pod(checkpoints, 1)[turn].pod
     result = bot.optimize_pod_moves(pod, checkpoints)
     coordinate_values = np.linspace(-bot.MAX_TURN_DEG, bot.MAX_TURN_DEG, LANDSCAPE_DIRECTION_STEPS) if coordinate_ind % 2 == 0 \
         else np.linspace(0, 100, LANDSCAPE_THRUST_STEPS)
@@ -238,13 +238,13 @@ def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
     for coordinate_value in coordinate_values:
         moves = coords.copy()
         moves[coordinate_ind] = coordinate_value
-        scores.append(bot.predict_turns(pod, checkpoints, moves).get_score(checkpoints))
+        scores.append(bot.predict_turns(pod, checkpoints, moves)[-1].get_score(checkpoints))
 
     figure, axes = plt.subplots(figsize=(10, 7))
     optimized_marker_moves = coords.copy()
     optimized_marker_moves[coordinate_ind] = result.x[coordinate_ind]
     axes.plot(coordinate_values, scores, color="black", marker="o", markersize=3)
-    axes.scatter(optimized_marker_moves[coordinate_ind], bot.predict_turns(pod, checkpoints, optimized_marker_moves).get_score(checkpoints), color="red",
+    axes.scatter(optimized_marker_moves[coordinate_ind], bot.predict_turns(pod, checkpoints, optimized_marker_moves)[-1].get_score(checkpoints), color="red",
                  marker="x", s=80, label="Optimized")
     axes.set_xlabel(f"move[{coordinate_ind}]")
     axes.set_ylabel("Score")
@@ -253,7 +253,7 @@ def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
     plt.show()
 
 
-def simulate_single_pod_lap(checkpoints: list[NDArray[int]], laps: int) -> list[TurnSnapshot]:
+def simulate_single_pod(checkpoints: list[NDArray[int]], laps: int) -> list[TurnSnapshot]:
     """Simulates one pod completing a race.
     :param checkpoints: Circuit checkpoints.
     :param laps: Number of laps to simulate.
@@ -261,28 +261,18 @@ def simulate_single_pod_lap(checkpoints: list[NDArray[int]], laps: int) -> list[
     """
     pod = Pod(0, checkpoints[0].astype(float), np.array((0, 0), dtype=float), 0, 1)
     passed_checkpoints = 0
+    boosts = 1
     history = []
     while passed_checkpoints < len(checkpoints) * laps and len(history) < MAX_TURNS * laps:
-        result = bot.optimize_pod_moves(pod, checkpoints)
-        history.append(TurnSnapshot(pod, predict_planned_states(pod, checkpoints, result.x), result.x.tolist()))
-        future_state = bot.predict_next(pod, checkpoints, result.x[0], result.x[1])
-        passed_checkpoints += future_state.passed_checkpoints
-        pod = future_state.pod
+        _, thrust, moves = bot.choose_pod_move(GameState(len(history), laps, checkpoints, [pod], [], boosts), pod)
+        future_states = bot.predict_turns(pod, checkpoints, moves, len(history) == 0)
+        history.append(TurnSnapshot(pod, [future_state.pod for future_state in future_states], moves.tolist()))
+        if thrust == "BOOST":
+            boosts -= 1
+        passed_checkpoints += future_states[0].passed_checkpoints
+        pod = future_states[0].pod
     history.append(TurnSnapshot(pod, [], []))
     return history
-
-
-def predict_planned_states(pod: Pod, checkpoints: list[NDArray[int]], moves: list[float] | NDArray[float]) -> list[Pod]:
-    """Predicts future pod states from a planned move sequence.
-    :param pod: Starting pod state.
-    :param checkpoints: Circuit checkpoints.
-    :param moves: Alternating direction delta and thrust values.
-    :return: Predicted pod states.
-    """
-    predictions = []
-    for move_ind in range(0, len(moves), 2):
-        predictions.append(bot.predict_next(predictions[-1] if predictions else pod, checkpoints, moves[move_ind], moves[move_ind + 1]).pod)
-    return predictions
 
 
 def setup_axes(axes: Axes, turn_ind: int, turn_count: int):
@@ -320,24 +310,24 @@ def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int):
         draw_pod_state(axes, snapshot.pod, 1 if state_ind == turn_ind else 0.35)
 
 
-def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float]):
+def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], first_turn: bool):
     """Draws predicted future states for the current turn.
     :param axes: Matplotlib axes.
     :param snapshot: Current turn snapshot.
     :param checkpoints: Circuit checkpoints.
     :param moves: Alternating selected direction delta and thrust values.
+    :param first_turn: Whether selected moves begin on the first turn.
     """
     if not snapshot.moves:
         return
-    predictions = predict_planned_states(snapshot.pod, checkpoints, moves)
-    positions = np.array([snapshot.pod.position] + [pod.position for pod in predictions])
+    future_states = bot.predict_turns(snapshot.pod, checkpoints, moves[:len(snapshot.moves)], first_turn)
+    positions = np.array([snapshot.pod.position] + [future_state.pod.position for future_state in future_states])
     axes.plot(positions[:, 0], positions[:, 1], color="black", linestyle="--", linewidth=1)
-    axes.text(0.02, 0.98, f"score={round(bot.predict_turns(snapshot.pod, checkpoints, moves).get_score(checkpoints))}", color="red",
-              transform=axes.transAxes, ha="left", va="top")
-    for pod in predictions:
-        edgecolor = "red" if any(linalg.norm(checkpoint - pod.position) <= CHECKPOINT_RADIUS for checkpoint in checkpoints) else "black"
-        axes.add_patch(Circle(pod.position, POD_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))
-        draw_pod_arrows(axes, pod, 0.5)
+    axes.text(0.02, 0.98, f"score={round(future_states[-1].get_score(checkpoints))}", color="red", transform=axes.transAxes, ha="left", va="top")
+    for future_state in future_states:
+        edgecolor = "red" if any(linalg.norm(checkpoint - future_state.pod.position) <= CHECKPOINT_RADIUS for checkpoint in checkpoints) else "black"
+        axes.add_patch(Circle(future_state.pod.position, POD_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))
+        draw_pod_arrows(axes, future_state.pod, 0.5)
 
 
 def draw_pod_state(axes: Axes, pod: Pod, alpha: float):

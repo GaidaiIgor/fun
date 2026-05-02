@@ -19,6 +19,7 @@ CHECKPOINT_RADIUS = 600
 BOOST_THRUST = 650
 MAX_TURN_DEG = 18
 SHIELD_COOLDOWN_TURNS = 3
+TARGET_DISTANCE = 10000
 
 # Racer behavior constants
 PREDICT_TURNS = 4
@@ -31,6 +32,7 @@ AGGRO_DISTANCE = 5000
 TRACK_DISTANCE = 1600
 SHIELD_DISTANCE = 1200
 RACER_AVOID_DISTANCE = 1200
+PATROL_THRUST_ANGLE = 45
 
 
 @dataclass(slots=True)
@@ -56,6 +58,14 @@ class BasePod:
         :return: Distance to the next checkpoint of the pod.
         """
         return linalg.norm(checkpoints[self.next_checkpoint_ind] - self.position)
+
+    def get_direction_target(self, direction: float) -> NDArray[int]:
+        """Computes a far target point in a direction.
+        :param direction: Target direction.
+        :return: Target coordinates.
+        """
+        direction_rad = math.radians(direction)
+        return np.rint(self.position + np.array((math.cos(direction_rad), -math.sin(direction_rad))) * TARGET_DISTANCE).astype(int)
 
     def log(self):
         """Prints one pod state."""
@@ -99,9 +109,7 @@ class RacerPod(BasePod):
         for future_state in predict_turns(self, game_state.checkpoints, result.x):
             log(f"pos={future_state.pod.position}; CP={future_state.pod.next_checkpoint_ind}")
 
-        direction_rad = math.radians(direction)
-        target_pos = np.rint(self.position + np.array((math.cos(direction_rad), -math.sin(direction_rad))) * 10000).astype(int)
-        return target_pos, thrust, result.x
+        return self.get_direction_target(direction), thrust, result.x
 
     def optimize_moves(self, checkpoints: list[NDArray[int]]) -> OptimizeResult:
         """Optimizes future moves for one pod.
@@ -135,7 +143,8 @@ class BrutePod(BasePod):
         victim = self.find_victim(game_state)
         if victim is None:
             log(f"Brute: patrol")
-            return self.avoid_racer(game_state, self.get_patrol_target(game_state.checkpoints), 100)
+            target_pos, thrust = self.choose_patrol_command(game_state)
+            return self.avoid_racer(game_state, target_pos, thrust)
 
         log(f"Brute {self.ind}: ram foe {victim.ind}")
         return self.avoid_racer(game_state, np.rint(victim.position + victim.velocity).astype(int), "SHIELD" if self.should_shield(game_state, victim) else 100)
@@ -177,16 +186,118 @@ class BrutePod(BasePod):
         :param end: Segment end.
         :return: Distance from position to the segment.
         """
-        segment = end - start
-        return linalg.norm(position - (start + segment * np.clip(np.dot(position - start, segment) / np.dot(segment, segment), 0, 1)))
+        return linalg.norm(position - BrutePod.get_closest_point_on_segment(position, start, end))
 
-    def get_patrol_target(self, checkpoints: list[NDArray[int]]) -> NDArray[int]:
-        """Chooses the next reverse-order patrol checkpoint.
-        :param checkpoints: Circuit checkpoints.
-        :return: Patrol target checkpoint.
+    @staticmethod
+    def get_closest_point_on_segment(position: NDArray[float], start: NDArray[int], end: NDArray[int]) -> NDArray[float]:
+        """Computes the closest point on a segment.
+        :param position: Position to project.
+        :param start: Segment start.
+        :param end: Segment end.
+        :return: Closest point on the segment.
         """
-        checkpoint_ind = min(range(len(checkpoints)), key=lambda checkpoint_ind: linalg.norm(checkpoints[checkpoint_ind] - self.position))
-        return checkpoints[(checkpoint_ind - 1) % len(checkpoints)]
+        segment = end - start
+        return start + segment * np.clip(np.dot(position - start, segment) / np.dot(segment, segment), 0, 1)
+
+    def choose_patrol_command(self, game_state: GameState) -> tuple[NDArray[int], int]:
+        """Chooses a counterflow patrol command.
+        :param game_state: Current game state.
+        :return: Target coordinates and thrust.
+        """
+        active_segment = self.get_active_segment(game_state.checkpoints)
+        if active_segment is None:
+            return self.get_direction_target(self.direction), 0
+
+        segment_ind, segment_start, segment_end = active_segment
+        if segment_ind is not None and self.should_advance_segment(game_state, segment_ind, segment_start, segment_end):
+            segment_ind = (segment_ind - 1) % len(game_state.checkpoints)
+            segment_start, segment_end = self.get_counterflow_segment(game_state.checkpoints, segment_ind)
+        segment_direction = self.get_segment_direction(segment_start, segment_end)
+        return np.rint(segment_end).astype(int), 0 if abs(normalize_angle(self.direction - segment_direction)) > PATROL_THRUST_ANGLE else 100
+
+    def get_active_segment(self, checkpoints: list[NDArray[int]]) -> tuple[int | None, NDArray[float], NDArray[float]] | None:
+        """Chooses the active patrol segment.
+        :param checkpoints: Circuit checkpoints.
+        :return: Active segment index, start and end, or None when no patrol is needed.
+        """
+        candidates = []
+        for segment_ind in range(len(checkpoints)):
+            segment_start, segment_end = self.get_counterflow_segment(checkpoints, segment_ind)
+            closest_point = self.get_closest_point_on_segment(self.position, segment_start, segment_end)
+            if linalg.norm(self.position - closest_point) <= TRACK_DISTANCE:
+                candidates.append((linalg.norm(segment_end - closest_point), segment_ind, segment_start, segment_end))
+
+        if len(candidates) == len(checkpoints):
+            return None
+        if candidates:
+            _, segment_ind, segment_start, segment_end = max(candidates, key=lambda candidate: candidate[0])
+            return segment_ind, segment_start, segment_end
+
+        return None, self.position, self.get_nearest_track_point(checkpoints)
+
+    def get_nearest_track_point(self, checkpoints: list[NDArray[int]]) -> NDArray[float]:
+        """Finds the nearest point on any track segment.
+        :param checkpoints: Circuit checkpoints.
+        :return: Closest track point.
+        """
+        points = [self.get_closest_point_on_segment(self.position, *self.get_counterflow_segment(checkpoints, segment_ind))
+                  for segment_ind in range(len(checkpoints))]
+        return min(points, key=lambda point: linalg.norm(point - self.position))
+
+    @staticmethod
+    def get_counterflow_segment(checkpoints: list[NDArray[int]], segment_ind: int) -> tuple[NDArray[int], NDArray[int]]:
+        """Gets a counterflow track segment.
+        :param checkpoints: Circuit checkpoints.
+        :param segment_ind: Segment index equal to its end checkpoint.
+        :return: Segment start and end.
+        """
+        return checkpoints[(segment_ind + 1) % len(checkpoints)], checkpoints[segment_ind]
+
+    @staticmethod
+    def get_segment_direction(start: NDArray[float], end: NDArray[float]) -> float:
+        """Computes segment direction.
+        :param start: Segment start.
+        :param end: Segment end.
+        :return: Direction angle.
+        """
+        segment = end - start
+        return -math.degrees(math.atan2(segment[1], segment[0]))
+
+    def should_advance_segment(self, game_state: GameState, segment_ind: int, segment_start: NDArray[float], segment_end: NDArray[float]) -> bool:
+        """Checks whether brute should start turning toward the next segment.
+        :param game_state: Current game state.
+        :param segment_ind: Active segment index.
+        :param segment_start: Active segment start.
+        :param segment_end: Active segment end.
+        :return: Whether to advance to the next segment.
+        """
+        next_segment_start, next_segment_end = self.get_counterflow_segment(game_state.checkpoints, (segment_ind - 1) % len(game_state.checkpoints))
+        turn_count = math.ceil(abs(normalize_angle(self.get_segment_direction(next_segment_start, next_segment_end) - self.direction)) / MAX_TURN_DEG)
+        if turn_count == 0:
+            return self.get_segment_distance(self.position, next_segment_start, next_segment_end) <= TRACK_DISTANCE
+
+        pod = self
+        for turn_ind in range(turn_count):
+            pod = self.predict_segment_following(pod, game_state.checkpoints, segment_start, segment_end, game_state.turn_ind == 0 and turn_ind == 0)
+            if self.get_segment_distance(pod.position, next_segment_start, next_segment_end) <= TRACK_DISTANCE:
+                return True
+        return False
+
+    @staticmethod
+    def predict_segment_following(pod: BasePod, checkpoints: list[NDArray[int]], segment_start: NDArray[float], segment_end: NDArray[float],
+                                  first_turn: bool) -> BasePod:
+        """Predicts one turn of normal segment following.
+        :param pod: Pod to predict.
+        :param checkpoints: Circuit checkpoints.
+        :param segment_start: Active segment start.
+        :param segment_end: Active segment end.
+        :param first_turn: Whether this move ignores the turn angle limit.
+        :return: Predicted pod.
+        """
+        segment_direction = BrutePod.get_segment_direction(segment_start, segment_end)
+        target_direction = BrutePod.get_segment_direction(pod.position, segment_end)
+        thrust = 0 if abs(normalize_angle(pod.direction - segment_direction)) > PATROL_THRUST_ANGLE else 100
+        return predict_next(pod, checkpoints, normalize_angle(target_direction - pod.direction), thrust, first_turn).pod
 
     def should_shield(self, game_state: GameState, victim: BasePod) -> bool:
         """Checks whether the brute should shield before impact.

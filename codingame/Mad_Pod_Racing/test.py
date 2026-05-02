@@ -20,7 +20,7 @@ from numpy import linalg
 from numpy.typing import NDArray
 
 import main as bot
-from main import CHECKPOINT_RADIUS, GameState, Pod
+from main import BasePod, CHECKPOINT_RADIUS, GameState, RacerPod
 
 
 MAP_WIDTH = 16000
@@ -42,8 +42,8 @@ class TurnSnapshot:
     :var predictions: Predicted future pod states from this turn.
     :var moves: Planned direction delta and thrust sequence for this turn.
     """
-    pod: Pod
-    predictions: list[Pod]
+    pod: BasePod
+    predictions: list[BasePod]
     moves: list[float]
 
 
@@ -80,12 +80,14 @@ class RaceViewer:
         :return: Configured race viewer.
         """
         figure, axes = plt.subplots(figsize=(13, 7))
+        figure.canvas.manager.window.showMaximized()
         plt.subplots_adjust(right=0.78, bottom=0.12)
         move_sliders = []
         for move_ind in range(2 * bot.PREDICT_TURNS):
             move_sliders.append(Slider(plt.axes((0.84, 0.86 - 0.08 * move_ind, 0.12, 0.025)),
                                        ("d" if move_ind % 2 == 0 else "t") + str(move_ind // 2),
-                                       -bot.MAX_TURN_DEG if move_ind % 2 == 0 else 0, bot.MAX_TURN_DEG if move_ind % 2 == 0 else 100, valinit=0))
+                                       -180 if move_ind == 0 else -bot.MAX_TURN_DEG if move_ind % 2 == 0 else 0,
+                                       180 if move_ind == 0 else bot.MAX_TURN_DEG if move_ind % 2 == 0 else 100, valinit=0))
         viewer = cls(checkpoints, history, 0, figure, axes,
                      Slider(plt.axes((0.18, 0.06, 0.55, 0.03)), "Turn", 0, len(history) - 1, valinit=0, valstep=1),
                      Button(plt.axes((0.18, 0.01, 0.18, 0.04)), "Previous turn"),
@@ -110,6 +112,9 @@ class RaceViewer:
     def sync_move_sliders(self):
         """Sets move sliders to optimized moves for the displayed turn."""
         self.updating_controls = True
+        self.move_sliders[0].valmin = -180 if self.turn_ind == 0 else -bot.MAX_TURN_DEG
+        self.move_sliders[0].valmax = 180 if self.turn_ind == 0 else bot.MAX_TURN_DEG
+        self.move_sliders[0].ax.set_xlim(self.move_sliders[0].valmin, self.move_sliders[0].valmax)
         for move_ind, slider in enumerate(self.move_sliders):
             slider.set_val(self.history[self.turn_ind].moves[move_ind] if move_ind < len(self.history[self.turn_ind].moves) else 0)
         self.updating_controls = False
@@ -178,8 +183,8 @@ def run_optimization(checkpoints: list[NDArray[int]], turn: int):
     :param checkpoints: Circuit checkpoints.
     """
     pod = simulate_single_pod(checkpoints, 1)[turn].pod
-    guess_moves = bot.get_optimizer_guess_moves()
-    result = bot.optimize_pod_moves(pod, checkpoints)
+    guess_moves = RacerPod.get_optimizer_guess_moves()
+    result = pod.optimize_moves(checkpoints)
     guess_moves_text = ", ".join(f"{value:.3g}" for value in guess_moves)
     optimized_moves_text = ", ".join(f"{value:.3g}" for value in result.x)
     print(f"guess moves=[{guess_moves_text}]")
@@ -192,8 +197,8 @@ def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
     :param checkpoints: Circuit checkpoints.
     """
     pod = simulate_single_pod(checkpoints, 1)[turn].pod
-    guess_moves = bot.get_optimizer_guess_moves()
-    result = bot.optimize_pod_moves(pod, checkpoints)
+    guess_moves = RacerPod.get_optimizer_guess_moves()
+    result = pod.optimize_moves(checkpoints)
     direction_deltas = np.linspace(-bot.MAX_TURN_DEG, bot.MAX_TURN_DEG, LANDSCAPE_DIRECTION_STEPS)
     thrusts = np.linspace(0, 100, LANDSCAPE_THRUST_STEPS)
     scores = np.empty((len(thrusts), len(direction_deltas)))
@@ -205,6 +210,7 @@ def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
             scores[thrust_ind, direction_ind] = bot.predict_turns(pod, checkpoints, moves)[-1].get_score(checkpoints)
 
     figure = plt.figure(figsize=(10, 7))
+    figure.canvas.manager.window.showMaximized()
     axes = figure.add_subplot(111, projection="3d")
     direction_grid, thrust_grid = np.meshgrid(direction_deltas, thrusts)
     surface = axes.plot_surface(direction_grid, thrust_grid, scores, cmap="viridis_r", linewidth=0, antialiased=False, alpha=0.9)
@@ -231,7 +237,7 @@ def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
     coordinate_ind = 8
     coords = np.array((9.32, 99, 6.8, 99.2, 4.28, 99.4, 2.25, 99.5, 0.79, 99.7), dtype=float)
     pod = simulate_single_pod(checkpoints, 1)[turn].pod
-    result = bot.optimize_pod_moves(pod, checkpoints)
+    result = pod.optimize_moves(checkpoints)
     coordinate_values = np.linspace(-bot.MAX_TURN_DEG, bot.MAX_TURN_DEG, LANDSCAPE_DIRECTION_STEPS) if coordinate_ind % 2 == 0 \
         else np.linspace(0, 100, LANDSCAPE_THRUST_STEPS)
     scores = []
@@ -241,6 +247,7 @@ def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
         scores.append(bot.predict_turns(pod, checkpoints, moves)[-1].get_score(checkpoints))
 
     figure, axes = plt.subplots(figsize=(10, 7))
+    figure.canvas.manager.window.showMaximized()
     optimized_marker_moves = coords.copy()
     optimized_marker_moves[coordinate_ind] = result.x[coordinate_ind]
     axes.plot(coordinate_values, scores, color="black", marker="o", markersize=3)
@@ -259,12 +266,12 @@ def simulate_single_pod(checkpoints: list[NDArray[int]], laps: int) -> list[Turn
     :param laps: Number of laps to simulate.
     :return: Simulated turn snapshots.
     """
-    pod = Pod(0, checkpoints[0].astype(float), np.array((0, 0), dtype=float), 0, 1)
+    pod = RacerPod(0, checkpoints[0].astype(float), np.array((0, 0), dtype=float), 0, 1)
     passed_checkpoints = 0
     boosts = 1
     history = []
     while passed_checkpoints < len(checkpoints) * laps and len(history) < MAX_TURNS * laps:
-        _, thrust, moves = bot.choose_pod_move(GameState(len(history), laps, checkpoints, [pod], [], boosts), pod)
+        _, thrust, moves = pod.choose_move(GameState(len(history), laps, checkpoints, [pod], [], boosts))
         future_states = bot.predict_turns(pod, checkpoints, moves, len(history) == 0)
         history.append(TurnSnapshot(pod, [future_state.pod for future_state in future_states], moves.tolist()))
         if thrust == "BOOST":
@@ -330,7 +337,7 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
         draw_pod_arrows(axes, future_state.pod, 0.5)
 
 
-def draw_pod_state(axes: Axes, pod: Pod, alpha: float):
+def draw_pod_state(axes: Axes, pod: BasePod, alpha: float):
     """Draws a pod position and direction.
     :param axes: Matplotlib axes.
     :param pod: Pod state.
@@ -340,7 +347,7 @@ def draw_pod_state(axes: Axes, pod: Pod, alpha: float):
     draw_pod_arrows(axes, pod, alpha)
 
 
-def draw_pod_arrows(axes: Axes, pod: Pod, alpha: float):
+def draw_pod_arrows(axes: Axes, pod: BasePod, alpha: float):
     """Draws direction arrow for one pod.
     :param axes: Matplotlib axes.
     :param pod: Pod state.

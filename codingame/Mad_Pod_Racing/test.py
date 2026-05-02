@@ -1,4 +1,4 @@
-"""Simulates Mad Pod Racing outside the Codingame server."""
+"""Simulates and visualizes Mad Pod Racing behavior outside the Codingame server."""
 
 from __future__ import annotations
 
@@ -37,10 +37,8 @@ CHECKPOINTS = [np.array((11300, 2800)), np.array((7500, 7000)), np.array((6000, 
 
 @dataclass(slots=True)
 class TurnSnapshot:
-    """Stores one simulated turn.
-    :var pod: Pod state at the beginning of the turn.
-    :var predictions: Predicted future pod states from this turn.
-    :var moves: Planned direction delta and thrust sequence for this turn.
+    """Stores the state available at the beginning of one simulated turn.
+    predictions are the future pods produced from the optimized move vector for this turn, and moves is that direction delta and thrust sequence.
     """
     pod: BasePod
     predictions: list[BasePod]
@@ -49,17 +47,9 @@ class TurnSnapshot:
 
 @dataclass(slots=True)
 class RaceViewer:
-    """Displays a simulated race history.
-    :var checkpoints: Circuit checkpoints.
-    :var history: Simulated turn snapshots.
-    :var turn_ind: Currently displayed turn index.
-    :var figure: Matplotlib figure.
-    :var axes: Map axes.
-    :var slider: Turn slider.
-    :var previous_button: Previous turn button.
-    :var next_button: Next turn button.
-    :var move_sliders: Move control sliders for the current turn prediction.
-    :var updating_controls: Whether move controls are being reset from the current turn.
+    """Owns the matplotlib race viewer state.
+    The viewer keeps the immutable checkpoints, simulated history, current turn selection, navigation controls and editable move sliders.
+    Rendering combines the actual simulated past with predictions recomputed from the current slider values.
     """
     checkpoints: list[NDArray[int]]
     history: list[TurnSnapshot]
@@ -74,11 +64,7 @@ class RaceViewer:
 
     @classmethod
     def create(cls, checkpoints: list[NDArray[int]], history: list[TurnSnapshot]) -> RaceViewer:
-        """Creates an interactive race viewer.
-        :param checkpoints: Circuit checkpoints.
-        :param history: Simulated turn snapshots.
-        :return: Configured race viewer.
-        """
+        """Builds the figure, map axes, turn controls, move sliders and callbacks for an interactive race viewer."""
         figure, axes = plt.subplots(figsize=(13, 7))
         figure.canvas.manager.window.showMaximized()
         plt.subplots_adjust(right=0.78, bottom=0.12)
@@ -102,15 +88,15 @@ class RaceViewer:
         return viewer
 
     def set_turn(self, value: float):
-        """Sets the displayed turn.
-        :param value: Slider value.
-        """
+        """Moves the viewer to a history index, resets move sliders to that turn optimized moves and redraws."""
         self.turn_ind = int(value)
         self.sync_move_sliders()
         self.render()
 
     def sync_move_sliders(self):
-        """Sets move sliders to optimized moves for the displayed turn."""
+        """Copies optimized moves from the selected snapshot into the sliders.
+        The first direction slider allows a full turn only on turn 0; all other direction sliders use the normal turn cap.
+        """
         self.updating_controls = True
         self.move_sliders[0].valmin = -180 if self.turn_ind == 0 else -bot.MAX_TURN_DEG
         self.move_sliders[0].valmax = 180 if self.turn_ind == 0 else bot.MAX_TURN_DEG
@@ -120,26 +106,20 @@ class RaceViewer:
         self.updating_controls = False
 
     def set_move(self, value: float):
-        """Updates predictions after a move control changes.
-        :param value: Slider value.
-        """
+        """Redraws predictions after a user edits a move slider, unless sliders are currently being synchronized."""
         if not self.updating_controls:
             self.render()
 
     def previous_turn(self, event: object):
-        """Moves one turn backward.
-        :param event: Matplotlib callback event.
-        """
+        """Moves the selected turn one step backward through the history."""
         self.slider.set_val(max(0, self.turn_ind - 1))
 
     def next_turn(self, event: object):
-        """Moves one turn forward.
-        :param event: Matplotlib callback event.
-        """
+        """Moves the selected turn one step forward through the history."""
         self.slider.set_val(min(len(self.history) - 1, self.turn_ind + 1))
 
     def render(self):
-        """Draws the current turn."""
+        """Clears the map and redraws checkpoints, simulated history and the editable prediction path."""
         self.axes.clear()
         setup_axes(self.axes, self.turn_ind, len(self.history))
         draw_checkpoints(self.axes, self.checkpoints)
@@ -148,18 +128,16 @@ class RaceViewer:
         self.figure.canvas.draw_idle()
 
     def show(self):
-        """Shows the race viewer."""
+        """Starts the matplotlib event loop for the configured viewer."""
         plt.show()
 
     def get_selected_moves(self) -> list[float]:
-        """Reads selected moves from move controls.
-        :return: Alternating direction delta and thrust values.
-        """
+        """Returns slider values as an alternating direction delta and thrust sequence."""
         return [slider.val for slider in self.move_sliders]
 
 
 def main():
-    """Runs the default test."""
+    """Selects which local simulator or diagnostic view to run, with inactive tools left commented for quick switching."""
     laps = 3
     turn = 11
 
@@ -170,18 +148,12 @@ def main():
 
 
 def show_race(checkpoints: list[NDArray[int]], laps: int):
-    """Shows one simulated pod race.
-    :param checkpoints: Circuit checkpoints.
-    :param laps: Number of laps to simulate and show.
-    """
+    """Simulates a racer-only run for the requested number of laps and opens the interactive viewer."""
     RaceViewer.create(checkpoints, simulate_single_pod(checkpoints, laps)).show()
 
 
 def run_optimization(checkpoints: list[NDArray[int]], turn: int):
-    """Runs an optimizer check from turn 14 of the current simulation.
-    :param turn: Turn for which to run.
-    :param checkpoints: Circuit checkpoints.
-    """
+    """Recreates the pod at a simulated turn and prints optimizer seed and result without opening a plot."""
     pod = simulate_single_pod(checkpoints, 1)[turn].pod
     guess_moves = RacerPod.get_optimizer_guess_moves()
     result = pod.optimize_moves(checkpoints)
@@ -192,9 +164,8 @@ def run_optimization(checkpoints: list[NDArray[int]], turn: int):
 
 
 def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
-    """Plots the first-move optimization landscape from turn 14 of the current simulation in 3D.
-    :param turn: Turn at which to run.
-    :param checkpoints: Circuit checkpoints.
+    """Plots a score surface over the first direction delta and thrust coordinates for a simulated turn.
+    All later move coordinates stay at the optimizer seed. White marks the seed and red marks the optimized first move at its actual score height.
     """
     pod = simulate_single_pod(checkpoints, 1)[turn].pod
     guess_moves = RacerPod.get_optimizer_guess_moves()
@@ -230,9 +201,8 @@ def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
 
 
 def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
-    """Plots the optimization landscape against one move coordinate.
-    :param checkpoints: Circuit checkpoints.
-    :param turn: Turn at which to run.
+    """Plots a one-coordinate score slice through an explicit move vector.
+    coordinate_ind selects which coordinate is swept across its allowed range. Every other coordinate stays at the value from coords.
     """
     coordinate_ind = 8
     coords = np.array((9.32, 99, 6.8, 99.2, 4.28, 99.4, 2.25, 99.5, 0.79, 99.7), dtype=float)
@@ -261,10 +231,8 @@ def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
 
 
 def simulate_single_pod(checkpoints: list[NDArray[int]], laps: int) -> list[TurnSnapshot]:
-    """Simulates one pod completing a race.
-    :param checkpoints: Circuit checkpoints.
-    :param laps: Number of laps to simulate.
-    :return: Simulated turn snapshots.
+    """Runs a racer-only race by calling the production racer logic and prediction model each turn.
+    The returned history stores start-of-turn snapshots until the requested number of laps is completed or the turn cap is reached.
     """
     pod = RacerPod(0, checkpoints[0].astype(float), np.array((0, 0), dtype=float), 0, 1)
     passed_checkpoints = 0
@@ -283,11 +251,7 @@ def simulate_single_pod(checkpoints: list[NDArray[int]], laps: int) -> list[Turn
 
 
 def setup_axes(axes: Axes, turn_ind: int, turn_count: int):
-    """Sets map axes appearance.
-    :param axes: Matplotlib axes.
-    :param turn_ind: Current turn index.
-    :param turn_count: Total turn count.
-    """
+    """Configures the map axes to match Codingame coordinates, including y increasing downward."""
     axes.set_xlim(0, MAP_WIDTH)
     axes.set_ylim(MAP_HEIGHT, 0)
     axes.set_aspect("equal", adjustable="box")
@@ -296,21 +260,14 @@ def setup_axes(axes: Axes, turn_ind: int, turn_count: int):
 
 
 def draw_checkpoints(axes: Axes, checkpoints: list[NDArray[int]]):
-    """Draws checkpoint circles.
-    :param axes: Matplotlib axes.
-    :param checkpoints: Circuit checkpoints.
-    """
+    """Draws indexed checkpoint circles at their race coordinates."""
     for checkpoint_ind, checkpoint in enumerate(checkpoints):
         axes.add_patch(Circle(checkpoint, CHECKPOINT_RADIUS, fill=False, edgecolor="black", linewidth=1.5))
         axes.text(checkpoint[0], checkpoint[1], str(checkpoint_ind), ha="center", va="center")
 
 
 def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int):
-    """Draws all pod states up to the current turn.
-    :param axes: Matplotlib axes.
-    :param history: Simulated turn snapshots.
-    :param turn_ind: Current turn index.
-    """
+    """Draws the simulated trajectory through the selected turn and fades older pod states."""
     positions = np.array([snapshot.pod.position for snapshot in history[:turn_ind + 1]])
     axes.plot(positions[:, 0], positions[:, 1], color="black", linewidth=1)
     for state_ind, snapshot in enumerate(history[:turn_ind + 1]):
@@ -318,12 +275,8 @@ def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int):
 
 
 def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], first_turn: bool):
-    """Draws predicted future states for the current turn.
-    :param axes: Matplotlib axes.
-    :param snapshot: Current turn snapshot.
-    :param checkpoints: Circuit checkpoints.
-    :param moves: Alternating selected direction delta and thrust values.
-    :param first_turn: Whether selected moves begin on the first turn.
+    """Draws the dashed future path from the selected turn using the current slider moves.
+    Predicted positions inside any checkpoint get red outlines, and the final projected score is shown in the map corner.
     """
     if not snapshot.moves:
         return
@@ -338,42 +291,24 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
 
 
 def draw_pod_state(axes: Axes, pod: BasePod, alpha: float):
-    """Draws a pod position and direction.
-    :param axes: Matplotlib axes.
-    :param pod: Pod state.
-    :param alpha: Drawing opacity.
-    """
+    """Draws the pod center and its facing direction at a chosen opacity."""
     axes.add_patch(Circle(pod.position, POD_RADIUS, color="black", alpha=alpha))
     draw_pod_arrows(axes, pod, alpha)
 
 
 def draw_pod_arrows(axes: Axes, pod: BasePod, alpha: float):
-    """Draws direction arrow for one pod.
-    :param axes: Matplotlib axes.
-    :param pod: Pod state.
-    :param alpha: Drawing opacity.
-    """
+    """Draws the red facing-direction arrow for one pod without drawing velocity."""
     draw_arrow(axes, pod.position, get_direction_vector(pod.direction, DIRECTION_ARROW_LENGTH), "red", alpha)
 
 
 def draw_arrow(axes: Axes, position: NDArray[float], vector: NDArray[float] | tuple[float, float], color: str, alpha: float):
-    """Draws one vector arrow.
-    :param axes: Matplotlib axes.
-    :param position: Arrow start position.
-    :param vector: Arrow vector.
-    :param color: Arrow color.
-    :param alpha: Drawing opacity.
-    """
+    """Draws one fixed-style matplotlib arrow from a start position along a vector."""
     axes.arrow(position[0], position[1], vector[0], vector[1], color=color, alpha=alpha, width=ARROW_WIDTH, head_width=ARROW_HEAD_WIDTH,
                length_includes_head=True)
 
 
 def get_direction_vector(direction: float, length: float) -> tuple[float, float]:
-    """Computes a direction vector.
-    :param direction: Pod direction angle.
-    :param length: Vector length.
-    :return: Direction vector.
-    """
+    """Converts a bot direction angle and visual length into a screen-space vector."""
     return math.cos(math.radians(direction)) * length, -math.sin(math.radians(direction)) * length
 
 

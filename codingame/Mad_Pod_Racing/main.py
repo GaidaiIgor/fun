@@ -19,7 +19,6 @@ CHECKPOINT_RADIUS = 600
 COLLISION_RADIUS = 800
 BOOST_THRUST = 650
 MAX_TURN_DEG = 18
-SHIELD_COOLDOWN_TURNS = 3
 TARGET_DISTANCE = 10000
 
 # Racer behavior constants
@@ -29,7 +28,6 @@ BOOST_ANGLE_TOL = 1
 BOOST_MIN_DIST = 5000
 
 # Brute behavior constants
-SHIELD_DISTANCE = 1200
 MAX_DIRECTION_ANGLE = 45
 MAX_POSITION_ANGLE = 60
 MAX_THRUST_ANGLE = 45
@@ -41,14 +39,13 @@ AMBUSH_COAST_TURN_LIMIT = 30
 class BasePod:
     """Stores server-visible pod state shared by racers, brutes and opponents.
     Direction is the bot angle in degrees from the positive x-axis, with positive angles pointing toward decreasing screen y.
-    next_checkpoint_ind is the checkpoint the pod must enter next, and shield_cooldown is only meaningful for our pods.
+    next_checkpoint_ind is the checkpoint the pod must enter next.
     """
     ind: int
     position: NDArray[float]
     velocity: NDArray[float]
     direction: float
     next_checkpoint_ind: int
-    shield_cooldown: int = 0
 
     def get_next_checkpoint_distance(self, checkpoints: list[NDArray[int]]) -> float:
         """Returns Euclidean distance from the pod center to the checkpoint indexed by next_checkpoint_ind."""
@@ -122,12 +119,13 @@ class RacerPod(BasePod):
 class BrutePod(BasePod):
     """Represents our disruptive pod, which charges head-on targets and otherwise waits near the next enemy segment."""
 
-    def choose_command(self, game_state: GameState) -> tuple[NDArray[int], int | str]:
+    def choose_command(self, game_state: GameState, racer_command: tuple[NDArray[int], int | str]) -> tuple[NDArray[int], int | str]:
         """Charges a valid head-on target, routing around the racer when needed, or moves into ambush position."""
         victim = self.find_valid_target(game_state)
         if victim is not None:
             log(f"Brute: charging foe {victim.ind}")
-            return self.get_charge_target(game_state, victim), "SHIELD" if self.should_shield(victim) else 100
+            charge_target = self.avoid_racer(game_state, victim, racer_command)
+            return charge_target, "SHIELD" if self.does_next_motion_collide(game_state, (charge_target, "SHIELD"), victim) else 100
         return self.choose_ambush_command(game_state)
 
     def find_valid_target(self, game_state: GameState) -> BasePod | None:
@@ -140,28 +138,39 @@ class BrutePod(BasePod):
         return abs(normalize_angle(foe_pod.direction - self.direction)) >= 180 - MAX_DIRECTION_ANGLE and \
             abs(normalize_angle(self.direction - self.get_segment_direction(self.position, foe_pod.position))) <= MAX_POSITION_ANGLE
 
-    def get_charge_target(self, game_state: GameState, victim: BasePod) -> NDArray[int]:
-        """Returns the closest far target line that points toward the victim while avoiding the racer collision circle."""
-        racer = next(pod for pod in game_state.my_pods if isinstance(pod, RacerPod))
+    def avoid_racer(self, game_state: GameState, victim: BasePod, racer_command: tuple[NDArray[int], int | str]) -> NDArray[int]:
+        """Returns the closest far target line that points toward the victim while avoiding the racer next-turn motion corridor."""
         direct_direction = self.get_segment_direction(self.position, victim.position)
         for direction_offset in range(181):
-            candidates = [self.get_direction_target(normalize_angle(direct_direction + direction_offset)),
-                          self.get_direction_target(normalize_angle(direct_direction - direction_offset))]
+            directions = [direct_direction + direction_offset, direct_direction - direction_offset]
+            candidates = [self.get_direction_target(normalize_angle(direction)) for direction in directions]
             candidates = [candidate for candidate in candidates
-                          if not self.does_segment_cross_circle(self.position, candidate, racer.position, COLLISION_RADIUS)]
+                          if not self.does_next_motion_collide(game_state, (candidate, 100), game_state.my_pods[0], racer_command)]
             if candidates:
                 return min(candidates, key=lambda candidate: linalg.norm(candidate - victim.position))
-        raise AssertionError("No charge direction found")
+        log("Brute: no racer-safe charge direction found")
+        return np.rint(victim.position).astype(int)
 
-    def does_segment_cross_circle(self, start: NDArray[float], end: NDArray[float], center: NDArray[float], radius: float) -> bool:
-        """Checks whether the closest point of a finite segment to a circle center is inside the circle radius."""
-        return linalg.norm(self.get_closest_point_on_segment(center, start, end) - center) <= radius
+    def does_next_motion_collide(self, game_state: GameState, my_command: tuple[NDArray[int], int | str], pod: BasePod,
+                                 pod_command: tuple[NDArray[int], int | str] | None = None) -> bool:
+        """Checks whether the brute planned next-turn segment comes within collision distance of another pod next-turn segment.
+        The racer uses its planned command; opponents are predicted as if they keep direction and use thrust 100.
+        """
+        if pod_command is None:
+            pod_end = predict_next(pod, game_state.checkpoints, 0, 100).pod.position
+        else:
+            pod_end = predict_next_2(pod, game_state.checkpoints, pod_command[0], pod_command[1], game_state.turn_ind == 0).pod.position
+        my_end = predict_next_2(self, game_state.checkpoints, my_command[0], my_command[1], game_state.turn_ind == 0).pod.position
+        return self.get_min_approach_distance(self.position, my_end, pod.position, pod_end) <= COLLISION_RADIUS
 
-    @staticmethod
-    def get_closest_point_on_segment(position: NDArray[float], start: NDArray[float], end: NDArray[float]) -> NDArray[float]:
-        """Projects a position onto the line from start to end and clamps the projection back onto the finite segment."""
-        segment = end - start
-        return start + segment * np.clip(np.dot(position - start, segment) / np.dot(segment, segment), 0, 1)
+    def get_min_approach_distance(self, start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) -> float:
+        """Returns the closest synchronized distance between two points moving linearly from start to end over one turn."""
+        relative_position = start_1 - start_2
+        relative_velocity = end_1 - start_1 - end_2 + start_2
+        if not np.any(relative_velocity):
+            return linalg.norm(relative_position)
+        closest_time = np.clip(-np.dot(relative_position, relative_velocity) / np.dot(relative_velocity, relative_velocity), 0, 1)
+        return linalg.norm(relative_position + relative_velocity * closest_time)
 
     def choose_ambush_command(self, game_state: GameState) -> tuple[NDArray[int], int | str]:
         """Moves toward the end of the first opponent next segment, or coasts while rotating when arrival is already imminent."""
@@ -197,12 +206,6 @@ class BrutePod(BasePod):
         """Returns the bot direction angle of the vector from start to end."""
         segment = end - start
         return -math.degrees(math.atan2(segment[1], segment[0]))
-
-    def should_shield(self, victim: BasePod) -> bool:
-        """Checks whether the predicted next-turn brute-victim distance is close enough to spend a shield."""
-        next_distance = linalg.norm(victim.position + victim.velocity - self.position - self.velocity)
-        return self.shield_cooldown == 0 and next_distance <= SHIELD_DISTANCE
-
 
 @dataclass(slots=True)
 class FutureState:
@@ -259,33 +262,29 @@ def read_initial_game_state() -> GameState:
 
 
 def update_game_state(prev_game_state: GameState) -> GameState:
-    """Reads all server pod lines for the next turn while preserving race constants, boost count and shield cooldowns."""
+    """Reads all server pod lines for the next turn while preserving race constants and boost count."""
     if prev_game_state.turn_ind == -1:
         our_pods = [read_pod(0, RacerPod), read_pod(1, BrutePod)]
         foe_pods = [read_pod(pod_ind, BasePod) for pod_ind in range(2)]
     else:
-        our_pods = [read_pod(0, RacerPod, max(0, prev_game_state.my_pods[0].shield_cooldown - 1)),
-                    read_pod(1, BrutePod, max(0, prev_game_state.my_pods[1].shield_cooldown - 1))]
+        our_pods = [read_pod(0, RacerPod), read_pod(1, BrutePod)]
         foe_pods = [read_pod(pod_ind, BasePod) for pod_ind in range(2)]
     return GameState(prev_game_state.turn_ind + 1, prev_game_state.laps, prev_game_state.checkpoints, our_pods, foe_pods, prev_game_state.boosts)
 
 
-def read_pod(pod_ind: int, pod_type: type[BasePod], shield_cooldown: int = 0) -> BasePod:
+def read_pod(pod_ind: int, pod_type: type[BasePod]) -> BasePod:
     """Parses one six-integer server pod line and converts the server angle convention into the bot convention."""
     x, y, vx, vy, angle, next_checkpoint_ind = map(int, input().split())
-    return pod_type(pod_ind, np.array((x, y), dtype=float), np.array((vx, vy), dtype=float), normalize_angle(-angle), next_checkpoint_ind, shield_cooldown)
+    return pod_type(pod_ind, np.array((x, y), dtype=float), np.array((vx, vy), dtype=float), normalize_angle(-angle), next_checkpoint_ind)
 
 
 def choose_move(game_state: GameState) -> list[tuple[NDArray[int], int | str]]:
-    """Chooses both pod commands and applies command side effects to shared boosts and pod shield cooldowns."""
-    commands = []
-    for pod in game_state.my_pods:
-        target_pos, thrust = pod.choose_command(game_state)
-        commands.append((target_pos, thrust))
+    """Chooses both pod commands and applies command side effects to shared boosts."""
+    commands = [game_state.my_pods[0].choose_move(game_state)[:2]]
+    commands.append(game_state.my_pods[1].choose_command(game_state, commands[0]))
+    for _, thrust in commands:
         if thrust == "BOOST":
             game_state.boosts -= 1
-        if thrust == "SHIELD":
-            pod.shield_cooldown = SHIELD_COOLDOWN_TURNS
     return commands
 
 
@@ -305,19 +304,20 @@ def predict_turns(current: BasePod, checkpoints: list[NDArray[int]], moves: list
 def predict_next_2(current: BasePod, checkpoints: list[NDArray[int]], target_pos: NDArray[int], thrust: float | str, first_turn: bool = False) \
     -> FutureState:
     """Predicts one turn from a command target point instead of an explicit direction delta.
-    SHIELD is modeled as zero thrust because acceleration is skipped.
+    Command thrust strings are passed through to predict_next so move constraint logic can preserve them.
     """
     target_delta = target_pos - current.position
     target_direction = -math.degrees(math.atan2(target_delta[1], target_delta[0]))
-    return predict_next(current, checkpoints, normalize_angle(target_direction - current.direction), 0 if thrust == "SHIELD" else thrust, first_turn)
+    return predict_next(current, checkpoints, normalize_angle(target_direction - current.direction), thrust, first_turn)
 
 
-def predict_next(current: BasePod, checkpoints: list[NDArray[int]], direction_delta: float, thrust: float, first_turn: bool = False) -> FutureState:
+def predict_next(current: BasePod, checkpoints: list[NDArray[int]], direction_delta: float, thrust: float | str, first_turn: bool = False) -> FutureState:
     """Predicts one turn without collisions using the Codingame movement order.
     The move is constrained, direction is updated, acceleration is added to velocity, position advances, checkpoints are counted at
-    the final position, and drag is applied to velocity. Predicted position and velocity remain floats.
+    the final position, and drag is applied to velocity. BOOST is modeled as 650 acceleration, and SHIELD as zero acceleration.
     """
     direction_delta, thrust = constrain_moves([direction_delta, thrust], first_turn)
+    thrust = BOOST_THRUST if thrust == "BOOST" else 0 if thrust == "SHIELD" else thrust
     next_direction = normalize_angle(current.direction + direction_delta)
     next_direction_rad = math.radians(next_direction)
     acceleration = np.array((math.cos(next_direction_rad), -math.sin(next_direction_rad))) * thrust
@@ -330,20 +330,23 @@ def predict_next(current: BasePod, checkpoints: list[NDArray[int]], direction_de
 
     velocity = velocity * DRAG
     next_checkpoint_ind = (current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)
-    pod = type(current)(current.ind, segment_end, velocity, next_direction, next_checkpoint_ind, current.shield_cooldown)
+    pod = type(current)(current.ind, segment_end, velocity, next_direction, next_checkpoint_ind)
     return FutureState([direction_delta, thrust], pod, passed_checkpoints)
 
 
-def constrain_moves(moves: list[float] | NDArray[float], first_turn: bool = False) -> NDArray[float]:
+def constrain_moves(moves: list[float | str] | NDArray[float], first_turn: bool = False) -> NDArray[float] | list[float | str]:
     """Clips a move vector to model limits.
     The first direction delta can be any normalized angle on the first turn. All other direction deltas are clipped to +/-18 degrees,
-    and all thrust coordinates are clipped to the base thrust range from 0 to 100.
+    base thrust coordinates are clipped to 0..100, and command thrust strings are preserved for predict_next to interpret.
     """
-    moves = np.array(moves).copy()
+    moves = list(moves)
     moves[0] = normalize_angle(moves[0]) if first_turn else np.clip(moves[0], -MAX_TURN_DEG, MAX_TURN_DEG)
-    moves[2::2] = np.clip(moves[2::2], -MAX_TURN_DEG, MAX_TURN_DEG)
-    moves[1::2] = np.clip(moves[1::2], 0, 100)
-    return moves
+    for move_ind in range(2, len(moves), 2):
+        moves[move_ind] = np.clip(moves[move_ind], -MAX_TURN_DEG, MAX_TURN_DEG)
+    for move_ind in range(1, len(moves), 2):
+        if moves[move_ind] != "BOOST" and moves[move_ind] != "SHIELD":
+            moves[move_ind] = np.clip(moves[move_ind], 0, 100)
+    return moves if any(isinstance(move, str) for move in moves) else np.array(moves, dtype=float)
 
 
 def normalize_angle(angle: float | NDArray[float]) -> float | NDArray[float]:

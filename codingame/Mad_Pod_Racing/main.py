@@ -16,6 +16,7 @@ from scipy.optimize import OptimizeResult
 # Base game constants
 DRAG = 0.85
 CHECKPOINT_RADIUS = 600
+COLLISION_RADIUS = 800
 BOOST_THRUST = 650
 MAX_TURN_DEG = 18
 SHIELD_COOLDOWN_TURNS = 3
@@ -28,11 +29,12 @@ BOOST_ANGLE_TOL = 1
 BOOST_MIN_DIST = 5000
 
 # Brute behavior constants
-AGGRO_DISTANCE = 5000
-TRACK_DISTANCE = 1600
 SHIELD_DISTANCE = 1200
-RACER_AVOID_DISTANCE = 1200
+MAX_DIRECTION_ANGLE = 45
+MAX_POSITION_ANGLE = 60
 MAX_THRUST_ANGLE = 45
+AMBUSH_READY_DISTANCE = 700
+AMBUSH_COAST_TURN_LIMIT = 30
 
 
 @dataclass(slots=True)
@@ -118,78 +120,77 @@ class RacerPod(BasePod):
 
 @dataclass(slots=True)
 class BrutePod(BasePod):
-    """Represents our disruptive pod, which rams useful victims or patrols the track counterflow."""
+    """Represents our disruptive pod, which charges head-on targets and otherwise waits near the next enemy segment."""
 
     def choose_command(self, game_state: GameState) -> tuple[NDArray[int], int | str]:
-        """Chooses the brute action for this turn and runs the result through racer avoidance."""
-        victim = self.find_victim(game_state)
-        if victim is None:
-            log(f"Brute: patrol")
-            target_pos, thrust = self.choose_patrol_command(game_state.checkpoints)
-            return self.avoid_racer(game_state, target_pos, thrust)
+        """Charges a valid head-on target, routing around the racer when needed, or moves into ambush position."""
+        victim = self.find_valid_target(game_state)
+        if victim is not None:
+            log(f"Brute: charging foe {victim.ind}")
+            return self.get_charge_target(game_state, victim), "SHIELD" if self.should_shield(victim) else 100
+        return self.choose_ambush_command(game_state)
 
-        log(f"Brute {self.ind}: ram foe {victim.ind}")
-        return self.avoid_racer(game_state, np.rint(victim.position + victim.velocity).astype(int), "SHIELD" if self.should_shield(game_state, victim) else 100)
+    def find_valid_target(self, game_state: GameState) -> BasePod | None:
+        """Finds the closest opponent that is roughly opposite-facing and roughly in front of the brute."""
+        return min((foe_pod for foe_pod in game_state.foe_pods if self.is_valid_target(foe_pod)),
+                   key=lambda foe_pod: linalg.norm(foe_pod.position - self.position), default=None)
 
-    def find_victim(self, game_state: GameState) -> BasePod | None:
-        """Finds the nearest opponent that satisfies the victim heuristic, or returns None when no target is worth attacking."""
-        victims = [foe_pod for foe_pod in game_state.foe_pods if self.is_victim(foe_pod, game_state.checkpoints)]
-        return min(victims, key=lambda foe_pod: linalg.norm(foe_pod.position - self.position), default=None)
+    def is_valid_target(self, foe_pod: BasePod) -> bool:
+        """Checks whether an opponent is moving against the brute and positioned near the brute facing direction."""
+        return abs(normalize_angle(foe_pod.direction - self.direction)) >= 180 - MAX_DIRECTION_ANGLE and \
+            abs(normalize_angle(self.direction - self.get_segment_direction(self.position, foe_pod.position))) <= MAX_POSITION_ANGLE
 
-    def is_victim(self, foe_pod: BasePod, checkpoints: list[NDArray[int]]) -> bool:
-        """Checks whether an opponent is close to the track, within aggro range, and moving toward the brute.
-        Moving toward the brute is detected by a positive dot product between foe velocity and the vector from foe to brute.
-        """
-        track_distance = self.get_track_distance(foe_pod.position, checkpoints)
-        pod_distance = linalg.norm(foe_pod.position - self.position)
-        approach_speed = np.dot(foe_pod.velocity, self.position - foe_pod.position)
-        return track_distance <= TRACK_DISTANCE and pod_distance <= AGGRO_DISTANCE and approach_speed > 0
+    def get_charge_target(self, game_state: GameState, victim: BasePod) -> NDArray[int]:
+        """Returns the closest far target line that points toward the victim while avoiding the racer collision circle."""
+        racer = next(pod for pod in game_state.my_pods if isinstance(pod, RacerPod))
+        direct_direction = self.get_segment_direction(self.position, victim.position)
+        for direction_offset in range(181):
+            candidates = [self.get_direction_target(normalize_angle(direct_direction + direction_offset)),
+                          self.get_direction_target(normalize_angle(direct_direction - direction_offset))]
+            candidates = [candidate for candidate in candidates
+                          if not self.does_segment_cross_circle(self.position, candidate, racer.position, COLLISION_RADIUS)]
+            if candidates:
+                return min(candidates, key=lambda candidate: linalg.norm(candidate - victim.position))
+        raise AssertionError("No charge direction found")
 
-    @staticmethod
-    def get_track_distance(position: NDArray[float], checkpoints: list[NDArray[int]]) -> float:
-        """Returns the shortest distance from a position to any finite segment joining consecutive checkpoint centers."""
-        return min(BrutePod.get_segment_distance(position, checkpoints[checkpoint_ind], checkpoints[(checkpoint_ind + 1) % len(checkpoints)])
-                   for checkpoint_ind in range(len(checkpoints)))
-
-    @staticmethod
-    def get_segment_distance(position: NDArray[float], start: NDArray[int], end: NDArray[int]) -> float:
-        """Returns distance from a position to the finite segment from start to end."""
-        return linalg.norm(position - BrutePod.get_closest_point_on_segment(position, start, end))
-
-    def choose_patrol_command(self, checkpoints: list[NDArray[int]]) -> tuple[NDArray[int], int]:
-        """Chooses a simple counterflow patrol command.
-        The brute aims at the end of the active segment.
-        If it is facing more than PATROL_THRUST_ANGLE away from the segment direction, it turns without thrust.
-        """
-        segment_start, segment_end = self.get_active_segment(checkpoints)
-        segment_direction = self.get_segment_direction(segment_start, segment_end)
-        return np.rint(segment_end).astype(int), 0 if abs(normalize_angle(self.direction - segment_direction)) > MAX_THRUST_ANGLE else 100
-
-    def get_active_segment(self, checkpoints: list[NDArray[int]]) -> tuple[NDArray[float], NDArray[float]]:
-        """Chooses the counterflow segment the brute should currently follow.
-        Each checkpoint edge is treated as a reverse-direction patrol segment. Segments whose closest point is within TRACK_DISTANCE
-        are candidates. If any candidates exist, the active segment is the candidate with the largest remaining distance to its end.
-        If no track segment is close, the active segment is a temporary route from the brute position to the nearest point on the track.
-        The returned tuple is segment start and segment end.
-        """
-        segments = []
-        for segment_ind in range(len(checkpoints)):
-            segment_start = checkpoints[(segment_ind + 1) % len(checkpoints)]
-            segment_end = checkpoints[segment_ind]
-            closest_point = self.get_closest_point_on_segment(self.position, segment_start, segment_end)
-            segments.append((segment_start, segment_end, closest_point, linalg.norm(self.position - closest_point),
-                             linalg.norm(segment_end - closest_point)))
-
-        candidates = [segment for segment in segments if segment[3] <= TRACK_DISTANCE]
-        if candidates:
-            return max(candidates, key=lambda segment: segment[4])[:2]
-        return self.position, min(segments, key=lambda segment: segment[3])[2]
+    def does_segment_cross_circle(self, start: NDArray[float], end: NDArray[float], center: NDArray[float], radius: float) -> bool:
+        """Checks whether the closest point of a finite segment to a circle center is inside the circle radius."""
+        return linalg.norm(self.get_closest_point_on_segment(center, start, end) - center) <= radius
 
     @staticmethod
-    def get_closest_point_on_segment(position: NDArray[float], start: NDArray[int], end: NDArray[int]) -> NDArray[float]:
+    def get_closest_point_on_segment(position: NDArray[float], start: NDArray[float], end: NDArray[float]) -> NDArray[float]:
         """Projects a position onto the line from start to end and clamps the projection back onto the finite segment."""
         segment = end - start
         return start + segment * np.clip(np.dot(position - start, segment) / np.dot(segment, segment), 0, 1)
+
+    def choose_ambush_command(self, game_state: GameState) -> tuple[NDArray[int], int | str]:
+        """Moves toward the end of the first opponent next segment, or coasts while rotating when arrival is already imminent."""
+        segment_start, segment_end = self.get_ambush_segment(game_state)
+        ambush_direction = normalize_angle(self.get_segment_direction(segment_start, segment_end) - 180)
+        if linalg.norm(self.position - segment_end) <= AMBUSH_READY_DISTANCE:
+            log("Brute: ambush wait")
+            return self.get_direction_target(ambush_direction), 0
+        if self.get_coast_turns_to_target(segment_end) <= math.ceil(abs(normalize_angle(ambush_direction - self.direction)) / MAX_TURN_DEG):
+            log("Brute: ambush coast")
+            return self.get_direction_target(ambush_direction), 0
+        log("Brute: ambush move")
+        return np.rint(segment_end).astype(int), self.get_target_thrust(segment_end)
+
+    def get_ambush_segment(self, game_state: GameState) -> tuple[NDArray[int], NDArray[int]]:
+        """Returns the segment after the first opponent active segment, with its end used as the ambush area."""
+        return game_state.checkpoints[game_state.foe_pods[0].next_checkpoint_ind], \
+            game_state.checkpoints[(game_state.foe_pods[0].next_checkpoint_ind + 1) % len(game_state.checkpoints)]
+
+    def get_coast_turns_to_target(self, target_pos: NDArray[int]) -> int:
+        """Estimates how many turns coasting without thrust needs to bring the brute inside the ambush area."""
+        turn_inds = np.arange(1, AMBUSH_COAST_TURN_LIMIT + 1)
+        reached_turns = np.flatnonzero(linalg.norm(self.position + self.velocity * ((1 - DRAG ** turn_inds) / (1 - DRAG))[:, None] - target_pos, axis=1)
+                                       <= AMBUSH_READY_DISTANCE)
+        return reached_turns[0] + 1 if len(reached_turns) else AMBUSH_COAST_TURN_LIMIT + 1
+
+    def get_target_thrust(self, target_pos: NDArray[float]) -> int:
+        """Returns full thrust only when the brute is already facing close enough to a target point."""
+        return 0 if abs(normalize_angle(self.direction - self.get_segment_direction(self.position, target_pos))) > MAX_THRUST_ANGLE else 100
 
     @staticmethod
     def get_segment_direction(start: NDArray[float], end: NDArray[float]) -> float:
@@ -197,18 +198,7 @@ class BrutePod(BasePod):
         segment = end - start
         return -math.degrees(math.atan2(segment[1], segment[0]))
 
-    def avoid_racer(self, game_state: GameState, target_pos: NDArray[int], thrust: int | str) -> tuple[NDArray[int], int | str]:
-        """Keeps the planned brute command unless its predicted next position gets too close to the racer."""
-        racer = next(pod for pod in game_state.my_pods if isinstance(pod, RacerPod))
-        next_distance = linalg.norm(predict_next_2(self, game_state.checkpoints, target_pos, thrust, game_state.turn_ind == 0).pod.position
-                                    - racer.position - racer.velocity)
-        if next_distance >= RACER_AVOID_DISTANCE:
-            return target_pos, thrust
-
-        log(f"Brute {self.ind}: avoid racer")
-        return np.rint(self.position * 2 - racer.position).astype(int), 100
-
-    def should_shield(self, game_state: GameState, victim: BasePod) -> bool:
+    def should_shield(self, victim: BasePod) -> bool:
         """Checks whether the predicted next-turn brute-victim distance is close enough to spend a shield."""
         next_distance = linalg.norm(victim.position + victim.velocity - self.position - self.velocity)
         return self.shield_cooldown == 0 and next_distance <= SHIELD_DISTANCE
@@ -272,10 +262,11 @@ def update_game_state(prev_game_state: GameState) -> GameState:
     """Reads all server pod lines for the next turn while preserving race constants, boost count and shield cooldowns."""
     if prev_game_state.turn_ind == -1:
         our_pods = [read_pod(0, RacerPod), read_pod(1, BrutePod)]
+        foe_pods = [read_pod(pod_ind, BasePod) for pod_ind in range(2)]
     else:
         our_pods = [read_pod(0, RacerPod, max(0, prev_game_state.my_pods[0].shield_cooldown - 1)),
                     read_pod(1, BrutePod, max(0, prev_game_state.my_pods[1].shield_cooldown - 1))]
-    foe_pods = [read_pod(pod_ind, BasePod) for pod_ind in range(2)]
+        foe_pods = [read_pod(pod_ind, BasePod) for pod_ind in range(2)]
     return GameState(prev_game_state.turn_ind + 1, prev_game_state.laps, prev_game_state.checkpoints, our_pods, foe_pods, prev_game_state.boosts)
 
 

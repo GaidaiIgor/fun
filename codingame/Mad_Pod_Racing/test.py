@@ -42,6 +42,11 @@ COLLISION_COLOR = "black"
 
 
 @dataclass(slots=True)
+class EnemyRacerPod(RacerPod):
+    """Represents an enemy pod that uses the racer program in local simulations."""
+
+
+@dataclass(slots=True)
 class TurnSnapshot:
     """Stores the state available at the beginning of one simulated turn.
     predictions are the future pods produced from the optimized move vector for this turn, and moves is that direction delta and thrust sequence.
@@ -50,8 +55,8 @@ class TurnSnapshot:
     pod: BasePod
     predictions: list[BasePod]
     moves: list[float]
-    target_pos: NDArray[int] | None = None
-    thrust: int | str | None = None
+    target_pos: NDArray[float] | None = None
+    thrust: float | str | None = None
 
 
 @dataclass(slots=True)
@@ -142,8 +147,7 @@ class RaceViewer:
             draw_history(self.axes, history, min(self.turn_ind, len(history) - 1), color, self.show_collision_radius)
         if self.collision_pos is not None and self.turn_ind == len(self.history) - 1:
             self.axes.scatter(self.collision_pos[0], self.collision_pos[1], color=COLLISION_COLOR, marker="x", s=220, linewidths=3)
-        draw_predictions(self.axes, self.history[self.turn_ind], self.checkpoints, self.get_selected_moves(), self.turn_ind == 0, self.color,
-                         self.show_collision_radius)
+        draw_predictions(self.axes, self.history[self.turn_ind], self.checkpoints, self.get_selected_moves(), self.turn_ind == 0, self.color)
         self.figure.canvas.draw_idle()
 
     def show(self):
@@ -161,7 +165,8 @@ def main():
     turn = 11
 
     # show_race(CHECKPOINTS, laps)
-    show_brute_collision()
+    # show_brute_collision()
+    show_three_pods()
     # run_optimization(CHECKPOINTS, turn)
     # plot_optimization_landscape_1d(CHECKPOINTS, turn)
     # plot_optimization_landscape_2d(CHECKPOINTS, turn)
@@ -177,8 +182,19 @@ def show_race(checkpoints: list[NDArray[int]], laps: int):
 def show_brute_collision():
     """Simulates a brute chasing one racer-logic enemy until their next-turn motion first collides, then opens the interactive viewer."""
     track_direction = BrutePod.get_segment_direction(CHECKPOINTS[0], CHECKPOINTS[1])
-    show_simulation(CHECKPOINTS, 1, [BrutePod(1, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), track_direction, 1),
-                                    RacerPod(0, ((CHECKPOINTS[0] + CHECKPOINTS[1]) / 2).astype(float), np.array((0, 0), dtype=float), track_direction, 1)], 0)
+    brute = BrutePod(1, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), track_direction, 1)
+    enemy = EnemyRacerPod(0, ((CHECKPOINTS[0] + CHECKPOINTS[1]) / 2).astype(float), np.array((0, 0), dtype=float), track_direction, 1)
+    show_simulation(CHECKPOINTS, 1, [brute, enemy], 0)
+
+
+def show_three_pods():
+    """Simulates our racer, brute and one enemy racer from the requested three-pod initial state."""
+    racer_direction = BrutePod.get_segment_direction(CHECKPOINTS[2], CHECKPOINTS[0])
+    brute_direction = BrutePod.get_segment_direction(CHECKPOINTS[0], CHECKPOINTS[2])
+    racer = RacerPod(0, ((CHECKPOINTS[2] + CHECKPOINTS[0]) / 2).astype(float), np.array((0, 0), dtype=float), racer_direction, 0)
+    brute = BrutePod(1, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), brute_direction, 0)
+    enemy = EnemyRacerPod(0, CHECKPOINTS[2].astype(float), np.array((0, 0), dtype=float), racer_direction, 0)
+    show_simulation(CHECKPOINTS, 1, [racer, brute, enemy], 0)
 
 
 def show_simulation(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod], boosts: int):
@@ -193,11 +209,11 @@ def simulate_pods(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod
     Each pod chooses commands through its own program. All pods advance through the same prediction model and the first collision stops the simulation.
     """
     histories = [[] for _ in pods]
-    colors = [BRUTE_COLOR if isinstance(pod, BrutePod) else RACER_COLOR if len(pods) == 1 else ENEMY_COLOR for pod in pods]
+    colors = [BRUTE_COLOR if isinstance(pod, BrutePod) else ENEMY_COLOR if isinstance(pod, EnemyRacerPod) else RACER_COLOR for pod in pods]
     for turn_ind in range(MAX_TURNS * laps):
         commands = []
         for pod_ind, pod in enumerate(pods):
-            target_pos, thrust, moves = choose_pod_command(pod, pods, turn_ind, laps, checkpoints, boosts)
+            target_pos, thrust, moves = choose_pod_command(pod, pods, commands, turn_ind, laps, checkpoints, boosts)
             future_states = bot.predict_turns(pod, checkpoints, moves, turn_ind == 0) if len(moves) else []
             histories[pod_ind].append(TurnSnapshot(pod, [future_state.pod for future_state in future_states], moves.tolist(), target_pos, thrust))
             if thrust == "BOOST":
@@ -215,12 +231,18 @@ def simulate_pods(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod
     return histories, colors, None
 
 
-def choose_pod_command(pod: BasePod, pods: list[BasePod], turn_ind: int, laps: int, checkpoints: list[NDArray[int]], boosts: int) \
-    -> tuple[NDArray[int], int | str, NDArray[float]]:
+def choose_pod_command(pod: BasePod, pods: list[BasePod], commands: list[tuple[NDArray[float], float | str]], turn_ind: int, laps: int,
+                       checkpoints: list[NDArray[int]], boosts: int) \
+    -> tuple[NDArray[float], float | str, NDArray[float]]:
     """Chooses one command for a simulated pod through that pod program."""
     if isinstance(pod, RacerPod):
         return pod.choose_move(GameState(turn_ind, laps, checkpoints, [pod], [], boosts))
-    target_pos, thrust = pod.choose_command(GameState(turn_ind, laps, checkpoints, [pod], [other_pod for other_pod in pods if other_pod is not pod], 0))
+    racer_ind = next((other_ind for other_ind, other_pod in enumerate(pods[:len(commands)])
+                      if isinstance(other_pod, RacerPod) and not isinstance(other_pod, EnemyRacerPod)), None)
+    my_pods = [pod] if racer_ind is None else [pods[racer_ind], pod]
+    foe_pods = [other_pod for other_pod in pods if isinstance(other_pod, EnemyRacerPod)]
+    target_pos, thrust = pod.choose_command(GameState(turn_ind, laps, checkpoints, my_pods, foe_pods, 0),
+                                            None if racer_ind is None else commands[racer_ind])
     return target_pos, thrust, np.array((), dtype=float)
 
 
@@ -356,11 +378,12 @@ def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int, color: 
         draw_pod_state(axes, snapshot.pod, 1 if state_ind == turn_ind else 0.35, color, show_collision_radius and state_ind == turn_ind,
                        state_ind > 0 and history[state_ind - 1].thrust == "SHIELD")
     if isinstance(history[turn_ind].pod, BrutePod) and history[turn_ind].target_pos is not None:
+        axes.plot((history[turn_ind].pod.position[0], history[turn_ind].target_pos[0]),
+                  (history[turn_ind].pod.position[1], history[turn_ind].target_pos[1]), color=color, linestyle=":", linewidth=1.5)
         axes.scatter(history[turn_ind].target_pos[0], history[turn_ind].target_pos[1], color=color, marker="+", s=180, linewidths=2.5)
 
 
-def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], first_turn: bool, color: str,
-                     show_collision_radius: bool):
+def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], first_turn: bool, color: str):
     """Draws the dashed future path from the selected turn using the current slider moves.
     Predicted positions inside any checkpoint get red outlines, and the final projected score is shown in the map corner.
     """
@@ -373,8 +396,6 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
     for future_state in future_states:
         edgecolor = "red" if any(linalg.norm(checkpoint - future_state.pod.position) <= OPTIMIZER_CHECKPOINT_RADIUS for checkpoint in checkpoints) else color
         axes.add_patch(Circle(future_state.pod.position, POD_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))
-        if show_collision_radius:
-            axes.add_patch(Circle(future_state.pod.position, POD_COLLISION_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))
         draw_pod_arrows(axes, future_state.pod, 0.5, color)
 
 

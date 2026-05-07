@@ -280,8 +280,7 @@ def read_pod(pod_ind: int, pod_type: type[BasePod]) -> BasePod:
 
 def choose_move(game_state: GameState) -> list[tuple[NDArray[int], int | str]]:
     """Chooses both pod commands and applies command side effects to shared boosts."""
-    commands = [game_state.my_pods[0].choose_move(game_state)[:2]]
-    commands.append(game_state.my_pods[1].choose_command(game_state, commands[0]))
+    commands = [game_state.my_pods[0].choose_move(game_state)[:2], game_state.my_pods[1].choose_command(game_state, commands[0])]
     for _, thrust in commands:
         if thrust == "BOOST":
             game_state.boosts -= 1
@@ -314,7 +313,7 @@ def predict_next_2(current: BasePod, checkpoints: list[NDArray[int]], target_pos
 def predict_next(current: BasePod, checkpoints: list[NDArray[int]], direction_delta: float, thrust: float | str, first_turn: bool = False) -> FutureState:
     """Predicts one turn without collisions using the Codingame movement order.
     The move is constrained, direction is updated, acceleration is added to velocity, position advances, checkpoints are counted at
-    the final position, and drag is applied to velocity. BOOST is modeled as 650 acceleration, and SHIELD as zero acceleration.
+    the final position, and drag is applied to velocity. BOOST is 650 acceleration, and SHIELD is 0 acceleration.
     """
     direction_delta, thrust = constrain_moves([direction_delta, thrust], first_turn)
     thrust = BOOST_THRUST if thrust == "BOOST" else 0 if thrust == "SHIELD" else thrust
@@ -334,19 +333,18 @@ def predict_next(current: BasePod, checkpoints: list[NDArray[int]], direction_de
     return FutureState([direction_delta, thrust], pod, passed_checkpoints)
 
 
-def constrain_moves(moves: list[float | str] | NDArray[float], first_turn: bool = False) -> NDArray[float] | list[float | str]:
+def constrain_moves(moves: list[float | str] | NDArray[float], first_turn: bool = False) -> list[float | str] | NDArray[float]:
     """Clips a move vector to model limits.
     The first direction delta can be any normalized angle on the first turn. All other direction deltas are clipped to +/-18 degrees,
     base thrust coordinates are clipped to 0..100, and command thrust strings are preserved for predict_next to interpret.
     """
-    moves = list(moves)
     moves[0] = normalize_angle(moves[0]) if first_turn else np.clip(moves[0], -MAX_TURN_DEG, MAX_TURN_DEG)
+    for move_ind in range(1, len(moves), 2):
+        if not isinstance(moves[move_ind], str):
+            moves[move_ind] = np.clip(moves[move_ind], 0, 100)
     for move_ind in range(2, len(moves), 2):
         moves[move_ind] = np.clip(moves[move_ind], -MAX_TURN_DEG, MAX_TURN_DEG)
-    for move_ind in range(1, len(moves), 2):
-        if moves[move_ind] != "BOOST" and moves[move_ind] != "SHIELD":
-            moves[move_ind] = np.clip(moves[move_ind], 0, 100)
-    return moves if any(isinstance(move, str) for move in moves) else np.array(moves, dtype=float)
+    return moves
 
 
 def normalize_angle(angle: float | NDArray[float]) -> float | NDArray[float]:

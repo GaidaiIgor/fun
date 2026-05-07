@@ -33,6 +33,8 @@ BOOST_MIN_DIST = 5000
 MAX_CHARGE_ANGLE = 45
 AHEAD_DIST = 2000
 
+# Debug
+DEBUG = True
 
 @dataclass(slots=True)
 class BasePod:
@@ -123,7 +125,7 @@ class RacerPod(BasePod):
 class BrutePod(BasePod):
     """Represents our disruptive pod, which actively moves toward the lead enemy or a point in front of it."""
 
-    def choose_command(self, game_state: GameState, racer_command: tuple[NDArray[int], int | str]) -> tuple[NDArray[int], int | str]:
+    def choose_command(self, game_state: GameState, racer_command: tuple[NDArray[int], int | str] | None = None) -> tuple[NDArray[int], int | str]:
         """Chooses a brute command against the first enemy pod, using SHIELD when next-turn motion predicts impact."""
         enemy = self.get_lead_enemy(game_state)
         target_pos = self.choose_target(game_state, enemy, racer_command)
@@ -134,7 +136,7 @@ class BrutePod(BasePod):
         """Returns the opponent pod with the greatest observed race progress."""
         return max(game_state.foe_pods, key=lambda pod: pod.get_race_progress(game_state.checkpoints))
 
-    def choose_target(self, game_state: GameState, enemy: BasePod, racer_command: tuple[NDArray[int], int | str]) -> NDArray[int]:
+    def choose_target(self, game_state: GameState, enemy: BasePod, racer_command: tuple[NDArray[int], int | str] | None) -> NDArray[int]:
         """Chooses the main target segment from the brute to the enemy or to an ahead point, then applies racer avoidance."""
         if abs(normalize_angle(self.get_segment_direction(self.position, enemy.position) - enemy.direction)) <= MAX_CHARGE_ANGLE:
             log(f"Brute: direct foe {enemy.ind}")
@@ -144,7 +146,7 @@ class BrutePod(BasePod):
             enemy_direction = math.radians(enemy.direction)
             target_pos = np.rint(enemy.position + np.array((math.cos(enemy_direction), -math.sin(enemy_direction))) * AHEAD_DIST).astype(int)
 
-        return self.avoid_racer(game_state, target_pos, racer_command)
+        return target_pos if racer_command is None else self.avoid_racer(game_state, target_pos, racer_command)
 
     def avoid_racer(self, game_state: GameState, target_pos: NDArray[int], racer_command: tuple[NDArray[int], int | str]) -> NDArray[int]:
         """Returns the closest far target line toward target_pos that avoids the racer next-turn motion corridor."""
@@ -342,7 +344,8 @@ def normalize_angle(angle: float | NDArray[float]) -> float | NDArray[float]:
 
 def log(msg: str):
     """Writes a debug line to stderr so stdout stays reserved for game commands."""
-    print(msg, file=sys.stderr)
+    if DEBUG:
+        print(msg, file=sys.stderr)
 
 
 if __name__ == "__main__":

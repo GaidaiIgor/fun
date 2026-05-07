@@ -19,37 +19,41 @@ CHECKPOINT_RADIUS = 600
 COLLISION_RADIUS = 800
 BOOST_THRUST = 650
 MAX_TURN_DEG = 18
+
+# Common behavior constants
 TARGET_DISTANCE = 10000
+CHECKPOINT_BONUS = 20000
 
 # Racer behavior constants
 PREDICT_TURNS = 4
-CHECKPOINT_BONUS = 20000
 BOOST_ANGLE_TOL = 1
 BOOST_MIN_DIST = 5000
 
 # Brute behavior constants
-MAX_DIRECTION_ANGLE = 45
-MAX_POSITION_ANGLE = 60
-MAX_THRUST_ANGLE = 45
-AMBUSH_READY_DISTANCE = 700
-AMBUSH_COAST_TURN_LIMIT = 30
+MAX_CHARGE_ANGLE = 45
+AHEAD_DIST = 2000
 
 
 @dataclass(slots=True)
 class BasePod:
     """Stores server-visible pod state shared by racers, brutes and opponents.
     Direction is the bot angle in degrees from the positive x-axis, with positive angles pointing toward decreasing screen y.
-    next_checkpoint_ind is the checkpoint the pod must enter next.
+    next_checkpoint_ind is the checkpoint the pod must enter next, and checkpoint_passes counts passed checkpoints observed across turns.
     """
     ind: int
     position: NDArray[float]
     velocity: NDArray[float]
     direction: float
     next_checkpoint_ind: int
+    passed_checkpoints: int = 0
 
     def get_next_checkpoint_distance(self, checkpoints: list[NDArray[int]]) -> float:
         """Returns Euclidean distance from the pod center to the checkpoint indexed by next_checkpoint_ind."""
         return linalg.norm(checkpoints[self.next_checkpoint_ind] - self.position)
+
+    def get_race_progress(self, checkpoints: list[NDArray[int]]) -> float:
+        """Returns a monotonic progress estimate from passed checkpoint count and distance left to the next checkpoint."""
+        return self.passed_checkpoints * CHECKPOINT_BONUS - self.get_next_checkpoint_distance(checkpoints)
 
     def get_direction_target(self, direction: float) -> NDArray[int]:
         """Converts a bot direction angle into a far integer point that Codingame accepts as a command target."""
@@ -59,7 +63,7 @@ class BasePod:
     def log(self):
         """Prints index, position, velocity, direction and next checkpoint for debugging."""
         log(f"{self.ind}: pos=({self.position[0]}, {self.position[1]}); vel=({self.velocity[0]}, {self.velocity[1]}); "
-            f"dir={self.direction:g}; CP ind={self.next_checkpoint_ind}")
+            f"dir={self.direction:g}; CP ind={self.next_checkpoint_ind}; CP passed={self.passed_checkpoints}")
 
 
 @dataclass(slots=True)
@@ -117,39 +121,43 @@ class RacerPod(BasePod):
 
 @dataclass(slots=True)
 class BrutePod(BasePod):
-    """Represents our disruptive pod, which charges head-on targets and otherwise waits near the next enemy segment."""
+    """Represents our disruptive pod, which actively moves toward the lead enemy or a point in front of it."""
 
     def choose_command(self, game_state: GameState, racer_command: tuple[NDArray[int], int | str]) -> tuple[NDArray[int], int | str]:
-        """Charges a valid head-on target, routing around the racer when needed, or moves into ambush position."""
-        victim = self.find_valid_target(game_state)
-        if victim is not None:
-            log(f"Brute: charging foe {victim.ind}")
-            charge_target = self.avoid_racer(game_state, victim, racer_command)
-            return charge_target, "SHIELD" if self.does_next_motion_collide(game_state, (charge_target, "SHIELD"), victim) else 100
-        return self.choose_ambush_command(game_state)
+        """Chooses a brute command against the first enemy pod, using SHIELD when next-turn motion predicts impact."""
+        enemy = self.get_lead_enemy(game_state)
+        target_pos = self.choose_target(game_state, enemy, racer_command)
+        return target_pos, "SHIELD" if self.does_next_motion_collide(game_state, (target_pos, "SHIELD"), enemy) else 100
 
-    def find_valid_target(self, game_state: GameState) -> BasePod | None:
-        """Finds the closest opponent that is roughly opposite-facing and roughly in front of the brute."""
-        return min((foe_pod for foe_pod in game_state.foe_pods if self.is_valid_target(foe_pod)),
-                   key=lambda foe_pod: linalg.norm(foe_pod.position - self.position), default=None)
+    @staticmethod
+    def get_lead_enemy(game_state: GameState) -> BasePod:
+        """Returns the opponent pod with the greatest observed race progress."""
+        return max(game_state.foe_pods, key=lambda pod: pod.get_race_progress(game_state.checkpoints))
 
-    def is_valid_target(self, foe_pod: BasePod) -> bool:
-        """Checks whether an opponent is moving against the brute and positioned near the brute facing direction."""
-        return abs(normalize_angle(foe_pod.direction - self.direction)) >= 180 - MAX_DIRECTION_ANGLE and \
-            abs(normalize_angle(self.direction - self.get_segment_direction(self.position, foe_pod.position))) <= MAX_POSITION_ANGLE
+    def choose_target(self, game_state: GameState, enemy: BasePod, racer_command: tuple[NDArray[int], int | str]) -> NDArray[int]:
+        """Chooses the main target segment from the brute to the enemy or to an ahead point, then applies racer avoidance."""
+        if abs(normalize_angle(self.get_segment_direction(self.position, enemy.position) - enemy.direction)) <= MAX_CHARGE_ANGLE:
+            log(f"Brute: direct foe {enemy.ind}")
+            target_pos = np.rint(enemy.position).astype(int)
+        else:
+            log(f"Brute: ahead foe {enemy.ind}")
+            enemy_direction = math.radians(enemy.direction)
+            target_pos = np.rint(enemy.position + np.array((math.cos(enemy_direction), -math.sin(enemy_direction))) * AHEAD_DIST).astype(int)
 
-    def avoid_racer(self, game_state: GameState, victim: BasePod, racer_command: tuple[NDArray[int], int | str]) -> NDArray[int]:
-        """Returns the closest far target line that points toward the victim while avoiding the racer next-turn motion corridor."""
-        direct_direction = self.get_segment_direction(self.position, victim.position)
+        return self.avoid_racer(game_state, target_pos, racer_command)
+
+    def avoid_racer(self, game_state: GameState, target_pos: NDArray[int], racer_command: tuple[NDArray[int], int | str]) -> NDArray[int]:
+        """Returns the closest far target line toward target_pos that avoids the racer next-turn motion corridor."""
+        direct_direction = self.get_segment_direction(self.position, target_pos)
         for direction_offset in range(181):
-            directions = [direct_direction + direction_offset, direct_direction - direction_offset]
+            directions = [direct_direction] if direction_offset == 0 else [direct_direction + direction_offset, direct_direction - direction_offset]
             candidates = [self.get_direction_target(normalize_angle(direction)) for direction in directions]
             candidates = [candidate for candidate in candidates
                           if not self.does_next_motion_collide(game_state, (candidate, 100), game_state.my_pods[0], racer_command)]
             if candidates:
-                return min(candidates, key=lambda candidate: linalg.norm(candidate - victim.position))
-        log("Brute: no racer-safe charge direction found")
-        return np.rint(victim.position).astype(int)
+                return min(candidates, key=lambda candidate: linalg.norm(candidate - target_pos))
+        log("Brute: no racer-safe direction found")
+        return np.rint(target_pos).astype(int)
 
     def does_next_motion_collide(self, game_state: GameState, my_command: tuple[NDArray[int], int | str], pod: BasePod,
                                  pod_command: tuple[NDArray[int], int | str] | None = None) -> bool:
@@ -163,7 +171,8 @@ class BrutePod(BasePod):
         my_end = predict_next_2(self, game_state.checkpoints, my_command[0], my_command[1], game_state.turn_ind == 0).pod.position
         return self.get_min_approach_distance(self.position, my_end, pod.position, pod_end) <= COLLISION_RADIUS
 
-    def get_min_approach_distance(self, start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) -> float:
+    @staticmethod
+    def get_min_approach_distance(start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) -> float:
         """Returns the closest synchronized distance between two points moving linearly from start to end over one turn."""
         relative_position = start_1 - start_2
         relative_velocity = end_1 - start_1 - end_2 + start_2
@@ -172,40 +181,12 @@ class BrutePod(BasePod):
         closest_time = np.clip(-np.dot(relative_position, relative_velocity) / np.dot(relative_velocity, relative_velocity), 0, 1)
         return linalg.norm(relative_position + relative_velocity * closest_time)
 
-    def choose_ambush_command(self, game_state: GameState) -> tuple[NDArray[int], int | str]:
-        """Moves toward the end of the first opponent next segment, or coasts while rotating when arrival is already imminent."""
-        segment_start, segment_end = self.get_ambush_segment(game_state)
-        ambush_direction = normalize_angle(self.get_segment_direction(segment_start, segment_end) - 180)
-        if linalg.norm(self.position - segment_end) <= AMBUSH_READY_DISTANCE:
-            log("Brute: ambush wait")
-            return self.get_direction_target(ambush_direction), 0
-        if self.get_coast_turns_to_target(segment_end) <= math.ceil(abs(normalize_angle(ambush_direction - self.direction)) / MAX_TURN_DEG):
-            log("Brute: ambush coast")
-            return self.get_direction_target(ambush_direction), 0
-        log("Brute: ambush move")
-        return np.rint(segment_end).astype(int), self.get_target_thrust(segment_end)
-
-    def get_ambush_segment(self, game_state: GameState) -> tuple[NDArray[int], NDArray[int]]:
-        """Returns the segment after the first opponent active segment, with its end used as the ambush area."""
-        return game_state.checkpoints[game_state.foe_pods[0].next_checkpoint_ind], \
-            game_state.checkpoints[(game_state.foe_pods[0].next_checkpoint_ind + 1) % len(game_state.checkpoints)]
-
-    def get_coast_turns_to_target(self, target_pos: NDArray[int]) -> int:
-        """Estimates how many turns coasting without thrust needs to bring the brute inside the ambush area."""
-        turn_inds = np.arange(1, AMBUSH_COAST_TURN_LIMIT + 1)
-        reached_turns = np.flatnonzero(linalg.norm(self.position + self.velocity * ((1 - DRAG ** turn_inds) / (1 - DRAG))[:, None] - target_pos, axis=1)
-                                       <= AMBUSH_READY_DISTANCE)
-        return reached_turns[0] + 1 if len(reached_turns) else AMBUSH_COAST_TURN_LIMIT + 1
-
-    def get_target_thrust(self, target_pos: NDArray[float]) -> int:
-        """Returns full thrust only when the brute is already facing close enough to a target point."""
-        return 0 if abs(normalize_angle(self.direction - self.get_segment_direction(self.position, target_pos))) > MAX_THRUST_ANGLE else 100
-
     @staticmethod
     def get_segment_direction(start: NDArray[float], end: NDArray[float]) -> float:
         """Returns the bot direction angle of the vector from start to end."""
         segment = end - start
         return -math.degrees(math.atan2(segment[1], segment[0]))
+
 
 @dataclass(slots=True)
 class FutureState:
@@ -264,23 +245,30 @@ def read_initial_game_state() -> GameState:
 def update_game_state(prev_game_state: GameState) -> GameState:
     """Reads all server pod lines for the next turn while preserving race constants and boost count."""
     if prev_game_state.turn_ind == -1:
-        our_pods = [read_pod(0, RacerPod), read_pod(1, BrutePod)]
-        foe_pods = [read_pod(pod_ind, BasePod) for pod_ind in range(2)]
+        our_pods = [read_pod(0, RacerPod, prev_game_state), read_pod(1, BrutePod, prev_game_state)]
+        foe_pods = [read_pod(pod_ind, BasePod, prev_game_state) for pod_ind in range(2)]
     else:
-        our_pods = [read_pod(0, RacerPod), read_pod(1, BrutePod)]
-        foe_pods = [read_pod(pod_ind, BasePod) for pod_ind in range(2)]
+        our_pods = [read_pod(0, RacerPod, prev_game_state), read_pod(1, BrutePod, prev_game_state)]
+        foe_pods = [read_pod(pod_ind, BasePod, prev_game_state) for pod_ind in range(2)]
     return GameState(prev_game_state.turn_ind + 1, prev_game_state.laps, prev_game_state.checkpoints, our_pods, foe_pods, prev_game_state.boosts)
 
 
-def read_pod(pod_ind: int, pod_type: type[BasePod]) -> BasePod:
+def read_pod(pod_ind: int, pod_type: type[BasePod], prev_game_state: GameState) -> BasePod:
     """Parses one six-integer server pod line and converts the server angle convention into the bot convention."""
     x, y, vx, vy, angle, next_checkpoint_ind = map(int, input().split())
-    return pod_type(pod_ind, np.array((x, y), dtype=float), np.array((vx, vy), dtype=float), normalize_angle(-angle), next_checkpoint_ind)
+    if prev_game_state.turn_ind == -1:
+        checkpoint_passes = 0
+    else:
+        prev_pods = prev_game_state.my_pods if pod_type is not BasePod else prev_game_state.foe_pods
+        passed_checkpoints = (next_checkpoint_ind - prev_pods[pod_ind].next_checkpoint_ind) % len(prev_game_state.checkpoints)
+        checkpoint_passes = prev_pods[pod_ind].passed_checkpoints + passed_checkpoints
+    return pod_type(pod_ind, np.array((x, y), dtype=float), np.array((vx, vy), dtype=float), normalize_angle(-angle), next_checkpoint_ind, checkpoint_passes)
 
 
 def choose_move(game_state: GameState) -> list[tuple[NDArray[int], int | str]]:
     """Chooses both pod commands and applies command side effects to shared boosts."""
-    commands = [game_state.my_pods[0].choose_move(game_state)[:2], game_state.my_pods[1].choose_command(game_state, commands[0])]
+    commands = [game_state.my_pods[0].choose_move(game_state)[:2]]
+    commands.append(game_state.my_pods[1].choose_command(game_state, commands[0]))
     for _, thrust in commands:
         if thrust == "BOOST":
             game_state.boosts -= 1
@@ -329,7 +317,7 @@ def predict_next(current: BasePod, checkpoints: list[NDArray[int]], direction_de
 
     velocity = velocity * DRAG
     next_checkpoint_ind = (current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)
-    pod = type(current)(current.ind, segment_end, velocity, next_direction, next_checkpoint_ind)
+    pod = type(current)(current.ind, segment_end, velocity, next_direction, next_checkpoint_ind, current.passed_checkpoints + passed_checkpoints)
     return FutureState([direction_delta, thrust], pod, passed_checkpoints)
 
 

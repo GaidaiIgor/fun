@@ -21,6 +21,7 @@ BOOST_THRUST = 650
 MAX_TURN_DEG = 18
 
 # Common behavior constants
+OPTIMIZER_CHECKPOINT_RADIUS = 590
 TARGET_DISTANCE = 10000
 CHECKPOINT_BONUS = 20000
 
@@ -284,7 +285,7 @@ def predict_turns(current: BasePod, checkpoints: list[NDArray[int]], moves: list
     future_states = []
     for move_ind in range(0, len(moves), 2):
         next_state = predict_next(future_states[-1].pod if future_states else current, checkpoints, moves[move_ind], moves[move_ind + 1],
-                                  first_turn and move_ind == 0)
+                                  first_turn and move_ind == 0, OPTIMIZER_CHECKPOINT_RADIUS)
         future_states.append(FutureState((future_states[-1].moves if future_states else []) + next_state.moves, next_state.pod,
                                          (future_states[-1].passed_checkpoints if future_states else 0) + next_state.passed_checkpoints))
     return future_states
@@ -300,7 +301,8 @@ def predict_next_2(current: BasePod, checkpoints: list[NDArray[int]], target_pos
     return predict_next(current, checkpoints, normalize_angle(target_direction - current.direction), thrust, first_turn)
 
 
-def predict_next(current: BasePod, checkpoints: list[NDArray[int]], direction_delta: float, thrust: float | str, first_turn: bool = False) -> FutureState:
+def predict_next(current: BasePod, checkpoints: list[NDArray[int]], direction_delta: float, thrust: float | str, first_turn: bool = False,
+                 checkpoint_radius: int = CHECKPOINT_RADIUS) -> FutureState:
     """Predicts one turn without collisions using the Codingame movement order.
     The move is constrained, direction is updated, acceleration is added to velocity, position advances, checkpoints are counted at
     the final position, and drag is applied to velocity. BOOST is 650 acceleration, and SHIELD is 0 acceleration.
@@ -314,7 +316,7 @@ def predict_next(current: BasePod, checkpoints: list[NDArray[int]], direction_de
     segment_end = current.position + velocity
     passed_checkpoints = 0
     while passed_checkpoints < len(checkpoints) \
-            and linalg.norm(checkpoints[(current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)] - segment_end) <= CHECKPOINT_RADIUS:
+            and linalg.norm(checkpoints[(current.next_checkpoint_ind + passed_checkpoints) % len(checkpoints)] - segment_end) <= checkpoint_radius:
         passed_checkpoints += 1
 
     velocity = velocity * DRAG

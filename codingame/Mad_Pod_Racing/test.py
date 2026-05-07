@@ -20,7 +20,7 @@ from numpy import linalg
 from numpy.typing import NDArray
 
 import main as bot
-from main import BasePod, BrutePod, CHECKPOINT_RADIUS, COLLISION_RADIUS, GameState, RacerPod
+from main import BasePod, BrutePod, CHECKPOINT_RADIUS, COLLISION_RADIUS, GameState, OPTIMIZER_CHECKPOINT_RADIUS, RacerPod
 
 bot.DEBUG = False
 
@@ -365,7 +365,7 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
     axes.plot(positions[:, 0], positions[:, 1], color=color, linestyle="--", linewidth=1)
     axes.text(0.02, 0.98, f"score={round(future_states[-1].get_score(checkpoints))}", color="red", transform=axes.transAxes, ha="left", va="top")
     for future_state in future_states:
-        edgecolor = "red" if any(linalg.norm(checkpoint - future_state.pod.position) <= CHECKPOINT_RADIUS for checkpoint in checkpoints) else color
+        edgecolor = "red" if any(linalg.norm(checkpoint - future_state.pod.position) <= OPTIMIZER_CHECKPOINT_RADIUS for checkpoint in checkpoints) else color
         axes.add_patch(Circle(future_state.pod.position, POD_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))
         if show_collision_radius:
             axes.add_patch(Circle(future_state.pod.position, POD_COLLISION_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))

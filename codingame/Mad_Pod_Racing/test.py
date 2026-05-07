@@ -45,10 +45,13 @@ COLLISION_COLOR = "black"
 class TurnSnapshot:
     """Stores the state available at the beginning of one simulated turn.
     predictions are the future pods produced from the optimized move vector for this turn, and moves is that direction delta and thrust sequence.
+    target_pos is the command target chosen by that pod for this turn when the turn has a command.
     """
     pod: BasePod
     predictions: list[BasePod]
     moves: list[float]
+    target_pos: NDArray[int] | None = None
+    thrust: int | str | None = None
 
 
 @dataclass(slots=True)
@@ -157,8 +160,8 @@ def main():
     laps = 3
     turn = 11
 
-    show_race(CHECKPOINTS, laps)
-    # show_brute_collision()
+    # show_race(CHECKPOINTS, laps)
+    show_brute_collision()
     # run_optimization(CHECKPOINTS, turn)
     # plot_optimization_landscape_1d(CHECKPOINTS, turn)
     # plot_optimization_landscape_2d(CHECKPOINTS, turn)
@@ -196,7 +199,7 @@ def simulate_pods(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod
         for pod_ind, pod in enumerate(pods):
             target_pos, thrust, moves = choose_pod_command(pod, pods, turn_ind, laps, checkpoints, boosts)
             future_states = bot.predict_turns(pod, checkpoints, moves, turn_ind == 0) if len(moves) else []
-            histories[pod_ind].append(TurnSnapshot(pod, [future_state.pod for future_state in future_states], moves.tolist()))
+            histories[pod_ind].append(TurnSnapshot(pod, [future_state.pod for future_state in future_states], moves.tolist(), target_pos, thrust))
             if thrust == "BOOST":
                 boosts -= 1
             commands.append((target_pos, thrust))
@@ -350,7 +353,10 @@ def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int, color: 
     positions = np.array([snapshot.pod.position for snapshot in history[:turn_ind + 1]])
     axes.plot(positions[:, 0], positions[:, 1], color=color, linewidth=1)
     for state_ind, snapshot in enumerate(history[:turn_ind + 1]):
-        draw_pod_state(axes, snapshot.pod, 1 if state_ind == turn_ind else 0.35, color, show_collision_radius)
+        draw_pod_state(axes, snapshot.pod, 1 if state_ind == turn_ind else 0.35, color, show_collision_radius and state_ind == turn_ind,
+                       state_ind > 0 and history[state_ind - 1].thrust == "SHIELD")
+    if isinstance(history[turn_ind].pod, BrutePod) and history[turn_ind].target_pos is not None:
+        axes.scatter(history[turn_ind].target_pos[0], history[turn_ind].target_pos[1], color=color, marker="+", s=180, linewidths=2.5)
 
 
 def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], first_turn: bool, color: str,
@@ -372,11 +378,11 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
         draw_pod_arrows(axes, future_state.pod, 0.5, color)
 
 
-def draw_pod_state(axes: Axes, pod: BasePod, alpha: float, color: str, show_collision_radius: bool):
+def draw_pod_state(axes: Axes, pod: BasePod, alpha: float, color: str, show_collision_radius: bool, shield: bool):
     """Draws the pod center, collision radius and facing direction at a chosen opacity."""
     axes.add_patch(Circle(pod.position, POD_RADIUS, color=color, alpha=alpha))
     if show_collision_radius:
-        axes.add_patch(Circle(pod.position, POD_COLLISION_RADIUS, fill=False, edgecolor=color, linestyle="--", linewidth=1, alpha=alpha))
+        axes.add_patch(Circle(pod.position, POD_COLLISION_RADIUS, fill=False, edgecolor=color, linestyle="-" if shield else "--", linewidth=1, alpha=alpha))
     draw_pod_arrows(axes, pod, alpha, color)
 
 

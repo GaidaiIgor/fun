@@ -26,7 +26,7 @@ TARGET_DISTANCE = 10000
 CHECKPOINT_BONUS = 20000
 
 # Racer behavior constants
-PREDICT_TURNS = 4
+PREDICT_TURNS = 2
 BOOST_ANGLE_TOL = 1
 BOOST_MIN_DIST = 5000
 
@@ -139,7 +139,7 @@ class BrutePod(BasePod):
 
     def choose_target(self, game_state: GameState, enemy: BasePod, racer_command: tuple[NDArray[int], int | str] | None) -> NDArray[int]:
         """Chooses the main target segment from the brute to the enemy or to an ahead point, then applies racer avoidance."""
-        if abs(normalize_angle(self.get_segment_direction(self.position, enemy.position) - enemy.direction)) <= MAX_CHARGE_ANGLE:
+        if abs(normalize_angle(self.get_segment_direction(enemy.position, self.position) - enemy.direction)) <= MAX_CHARGE_ANGLE:
             log(f"Brute: direct foe {enemy.ind}")
             target_pos = np.rint(enemy.position).astype(int)
         else:

@@ -26,14 +26,15 @@ TARGET_DISTANCE = 10000
 CHECKPOINT_BONUS = 20000
 
 # Racer behavior constants
-PREDICT_TURNS = 2
+PREDICT_TURNS = 1
 BOOST_ANGLE_TOL = 1
 BOOST_MIN_DIST = 5000
 
 # Brute behavior constants
 MAX_CHARGE_ANGLE = 45
-AHEAD_DIST = 2000
-RACER_AVOID_RADIUS = 850
+SHORT_AHEAD_DIST = 1000
+LONG_AHEAD_DIST = 2000
+RACER_AVOID_RADIUS = 1200
 
 # Debug
 DEBUG = True
@@ -140,15 +141,18 @@ class BrutePod(BasePod):
 
     def choose_target(self, game_state: GameState, enemy: BasePod, racer_command: tuple[NDArray[float], float | str] | None) -> NDArray[float]:
         """Chooses the main target segment from the brute to the enemy or to an ahead point, then applies racer avoidance."""
+        target_pos = self.choose_base_target(enemy)
+        return target_pos if racer_command is None else self.avoid_racer(game_state, target_pos, racer_command)
+
+    def choose_base_target(self, enemy: BasePod) -> NDArray[float]:
+        """Chooses the brute target before racer avoidance: a point ahead of the enemy in the enemy direction."""
+        enemy_direction = math.radians(enemy.direction)
         if abs(normalize_angle(self.get_segment_direction(enemy.position, self.position) - enemy.direction)) <= MAX_CHARGE_ANGLE:
             log(f"Brute: direct foe {enemy.ind}")
-            target_pos = enemy.position
+            return enemy.position + np.array((math.cos(enemy_direction), -math.sin(enemy_direction))) * SHORT_AHEAD_DIST
         else:
             log(f"Brute: ahead foe {enemy.ind}")
-            enemy_direction = math.radians(enemy.direction)
-            target_pos = enemy.position + np.array((math.cos(enemy_direction), -math.sin(enemy_direction))) * AHEAD_DIST
-
-        return target_pos if racer_command is None else self.avoid_racer(game_state, target_pos, racer_command)
+            return enemy.position + np.array((math.cos(enemy_direction), -math.sin(enemy_direction))) * LONG_AHEAD_DIST
 
     def avoid_racer(self, game_state: GameState, target_pos: NDArray[float], racer_command: tuple[NDArray[float], float | str]) -> NDArray[float]:
         """Returns the closest far target whose command segment avoids the racer next-turn segment."""
@@ -159,12 +163,13 @@ class BrutePod(BasePod):
             candidates = []
             for direction in directions:
                 candidate = self.get_direction_target(normalize_angle(direction))
-                if self.get_segments_distance(self.position, candidate, game_state.my_pods[0].position, racer_end) > RACER_AVOID_RADIUS:
+                distance = self.get_segments_distance(self.position, candidate, game_state.my_pods[0].position, racer_end)
+                if distance > RACER_AVOID_RADIUS:
                     candidates.append(candidate)
             if candidates:
                 return min(candidates, key=lambda candidate: linalg.norm(candidate - target_pos))
         log("Brute: no racer-safe direction found")
-        return target_pos
+        return self.get_direction_target(self.get_segment_direction(racer_end, self.position))
 
     @staticmethod
     def get_segments_distance(start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) -> float:

@@ -14,7 +14,7 @@ import numpy as np
 from matplotlib.backend_bases import KeyEvent
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Polygon, Wedge
 from matplotlib.widgets import Button, Slider
 from mpl_toolkits.mplot3d import Axes3D
 from numpy import linalg
@@ -75,6 +75,7 @@ class RaceViewer:
     collision_pos: NDArray[float] | None
     show_collision_radius: bool
     show_predicted_collision_radius: bool
+    show_racer_avoidance_area: bool
     show_closest_brute_approach: bool
     turn_ind: int
     figure: Figure
@@ -88,7 +89,7 @@ class RaceViewer:
     @classmethod
     def create(cls, checkpoints: list[NDArray[int]], history: list[TurnSnapshot], color: str, extra_histories: list[tuple[list[TurnSnapshot], str]],
                collision_pos: NDArray[float] | None, show_collision_radius: bool, show_predicted_collision_radius: bool = False,
-               show_closest_brute_approach: bool = False) -> RaceViewer:
+               show_racer_avoidance_area: bool = False, show_closest_brute_approach: bool = False) -> RaceViewer:
         """Builds the figure, map axes, turn controls, move sliders and callbacks for an interactive race viewer."""
         figure, axes = plt.subplots(figsize=(13, 7))
         figure.canvas.manager.window.showMaximized()
@@ -100,7 +101,7 @@ class RaceViewer:
                                        -180 if move_ind == 0 else -bot.MAX_TURN_DEG if move_ind % 2 == 0 else 0,
                                        180 if move_ind == 0 else bot.MAX_TURN_DEG if move_ind % 2 == 0 else 100, valinit=0))
         viewer = cls(checkpoints, history, color, extra_histories, collision_pos, show_collision_radius, show_predicted_collision_radius,
-                     show_closest_brute_approach, 0, figure, axes,
+                     show_racer_avoidance_area, show_closest_brute_approach, 0, figure, axes,
                      Slider(plt.axes((0.18, 0.06, 0.55, 0.03)), "Turn", 0, len(history) - 1, valinit=0, valstep=1),
                      Button(plt.axes((0.18, 0.01, 0.18, 0.04)), "Previous turn"),
                      Button(plt.axes((0.55, 0.01, 0.18, 0.04)), "Next turn"), move_sliders, False)
@@ -163,7 +164,7 @@ class RaceViewer:
         if self.collision_pos is not None and self.turn_ind == len(self.history) - 1:
             self.axes.scatter(self.collision_pos[0], self.collision_pos[1], color=COLLISION_COLOR, marker="x", s=220, linewidths=3)
         draw_predictions(self.axes, self.history[self.turn_ind], self.checkpoints, self.get_selected_moves(), self.turn_ind == 0, self.color,
-                         self.show_predicted_collision_radius)
+                         self.show_predicted_collision_radius, self.show_racer_avoidance_area)
         if self.show_closest_brute_approach:
             draw_closest_brute_approach(self.axes, self.history, self.extra_histories, self.turn_ind, self.get_selected_moves(), self.checkpoints,
                                         self.show_predicted_collision_radius)
@@ -213,15 +214,15 @@ def show_three_pods():
     racer = RacerPod(0, ((CHECKPOINTS[2] + CHECKPOINTS[0]) / 2).astype(float), np.array((0, 0), dtype=float), racer_direction, 0)
     brute = BrutePod(1, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), brute_direction, 0)
     enemy = EnemyRacerPod(0, CHECKPOINTS[2].astype(float), np.array((0, 0), dtype=float), racer_direction, 0)
-    show_simulation(CHECKPOINTS, 1, [racer, brute, enemy], 0, True, True)
+    show_simulation(CHECKPOINTS, 1, [racer, brute, enemy], 0, True, True, True)
 
 
 def show_simulation(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod], boosts: int, show_predicted_collision_radius: bool = False,
-                    show_closest_brute_approach: bool = False):
+                    show_racer_avoidance_area: bool = False, show_closest_brute_approach: bool = False):
     """Runs the shared simulator for the supplied initial pods and opens the shared interactive viewer."""
     histories, colors, collision_pos = simulate_pods(checkpoints, laps, pods, boosts)
     RaceViewer.create(checkpoints, histories[0], colors[0], list(zip(histories[1:], colors[1:])), collision_pos, len(pods) > 1,
-                      show_predicted_collision_radius, show_closest_brute_approach).show()
+                      show_predicted_collision_radius, show_racer_avoidance_area, show_closest_brute_approach).show()
 
 
 def simulate_pods(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod], boosts: int = 1) \
@@ -410,7 +411,7 @@ def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int, color: 
 
 
 def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], first_turn: bool, color: str,
-                     show_collision_radius: bool):
+                     show_collision_radius: bool, show_racer_avoidance_area: bool):
     """Draws the dashed future path from the selected turn using the current slider moves.
     Predicted positions inside any checkpoint get red outlines, and the final projected score is shown in the map corner.
     """
@@ -420,6 +421,8 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
     positions = np.array([snapshot.pod.position] + [future_state.pod.position for future_state in future_states])
     axes.plot(positions[:, 0], positions[:, 1], color=color, linestyle="--", linewidth=1)
     axes.text(0.02, 0.98, f"score={round(future_states[-1].get_score(checkpoints))}", color="red", transform=axes.transAxes, ha="left", va="top")
+    if show_racer_avoidance_area and isinstance(snapshot.pod, RacerPod):
+        draw_racer_avoidance_area(axes, snapshot.pod.position, future_states[0].pod.position, color)
     for future_state in future_states:
         edgecolor = "red" if any(linalg.norm(checkpoint - future_state.pod.position) <= OPTIMIZER_CHECKPOINT_RADIUS for checkpoint in checkpoints) else color
         axes.add_patch(Circle(future_state.pod.position, POD_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))
@@ -428,16 +431,34 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
         draw_pod_arrows(axes, future_state.pod, 0.5, color)
 
 
+def draw_racer_avoidance_area(axes: Axes, start: NDArray[float], target: NDArray[float], color: str):
+    """:param axes: map axes receiving the ray avoidance patch
+    :param start: start of the racer ray
+    :param target: point that defines the racer ray direction
+    :param color: display color for the avoidance area
+    """
+    ray = target - start
+    ray_unit = ray / linalg.norm(ray)
+    perpendicular = np.array((-ray_unit[1], ray_unit[0]))
+    ray_end = start + ray_unit * (MAP_WIDTH + MAP_HEIGHT)
+    ray_angle = math.degrees(math.atan2(ray_unit[1], ray_unit[0]))
+    area_points = np.array((start + perpendicular * bot.RACER_AVOID_RADIUS, ray_end + perpendicular * bot.RACER_AVOID_RADIUS,
+                            ray_end - perpendicular * bot.RACER_AVOID_RADIUS, start - perpendicular * bot.RACER_AVOID_RADIUS))
+    axes.add_patch(Polygon(area_points, closed=True, facecolor=color, edgecolor=color, alpha=0.08, linewidth=1, zorder=0.1))
+    axes.add_patch(Wedge(start, bot.RACER_AVOID_RADIUS, ray_angle + 90, ray_angle + 270, facecolor=color, edgecolor=color, alpha=0.08,
+                         linewidth=1, zorder=0.1))
+
+
 def draw_closest_brute_approach(axes: Axes, history: list[TurnSnapshot], extra_histories: list[tuple[list[TurnSnapshot], str]], turn_ind: int,
                                 moves: list[float], checkpoints: list[NDArray[int]], show_collision_radius: bool):
-    """Draws a predicted-style brute marker at the closest point from its command segment to the racer next-turn segment."""
+    """Draws a predicted-style brute marker at the closest point from its command ray to the racer next-turn ray."""
     if not history[turn_ind].moves:
         return
     future_states = bot.predict_turns(history[turn_ind].pod, checkpoints, moves[:len(history[turn_ind].moves)], turn_ind == 0)
     for extra_history, color in extra_histories:
         snapshot = extra_history[min(turn_ind, len(extra_history) - 1)]
         if isinstance(snapshot.pod, BrutePod) and snapshot.target_pos is not None:
-            position = get_closest_segment_points(snapshot.pod.position, snapshot.target_pos, history[turn_ind].pod.position, future_states[0].pod.position)[0]
+            position = get_closest_ray_points(snapshot.pod.position, snapshot.target_pos, history[turn_ind].pod.position, future_states[0].pod.position)[0]
             pod = type(snapshot.pod)(snapshot.pod.ind, position, snapshot.pod.velocity, snapshot.pod.direction, snapshot.pod.next_checkpoint_ind,
                                      snapshot.pod.passed_checkpoints)
             axes.add_patch(Circle(pod.position, POD_RADIUS, fill=False, edgecolor=color, linestyle="--", linewidth=1))
@@ -446,29 +467,28 @@ def draw_closest_brute_approach(axes: Axes, history: list[TurnSnapshot], extra_h
             draw_pod_arrows(axes, pod, 0.5, color)
 
 
-def get_closest_segment_points(start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) \
+def get_closest_ray_points(start_1: NDArray[float], target_1: NDArray[float], start_2: NDArray[float], target_2: NDArray[float]) \
     -> tuple[NDArray[float], NDArray[float]]:
-    """Returns the pair of closest points on two finite line segments."""
-    segment_1 = end_1 - start_1
-    segment_2 = end_2 - start_2
-    denominator = segment_1[0] * segment_2[1] - segment_1[1] * segment_2[0]
+    """Returns the pair of closest points on two rays, where target points define ray directions."""
+    ray_1 = target_1 - start_1
+    ray_2 = target_2 - start_2
+    denominator = ray_1[0] * ray_2[1] - ray_1[1] * ray_2[0]
     if denominator:
         start_delta = start_2 - start_1
-        segment_1_pos = (start_delta[0] * segment_2[1] - start_delta[1] * segment_2[0]) / denominator
-        segment_2_pos = (start_delta[0] * segment_1[1] - start_delta[1] * segment_1[0]) / denominator
-        if 0 <= segment_1_pos <= 1 and 0 <= segment_2_pos <= 1:
-            return start_1 + segment_1 * segment_1_pos, start_2 + segment_2 * segment_2_pos
-    candidates = [(start_1, get_closest_point_on_segment(start_1, start_2, end_2)), (end_1, get_closest_point_on_segment(end_1, start_2, end_2)),
-                  (get_closest_point_on_segment(start_2, start_1, end_1), start_2), (get_closest_point_on_segment(end_2, start_1, end_1), end_2)]
+        ray_1_pos = (start_delta[0] * ray_2[1] - start_delta[1] * ray_2[0]) / denominator
+        ray_2_pos = (start_delta[0] * ray_1[1] - start_delta[1] * ray_1[0]) / denominator
+        if 0 <= ray_1_pos and 0 <= ray_2_pos:
+            return start_1 + ray_1 * ray_1_pos, start_2 + ray_2 * ray_2_pos
+    candidates = [(start_1, get_closest_point_on_ray(start_1, start_2, target_2)), (get_closest_point_on_ray(start_2, start_1, target_1), start_2)]
     return min(candidates, key=lambda point: linalg.norm(point[0] - point[1]))
 
 
-def get_closest_point_on_segment(point: NDArray[float], start: NDArray[float], end: NDArray[float]) -> NDArray[float]:
-    """Returns the nearest point on a finite line segment to point."""
-    segment = end - start
-    if not np.any(segment):
+def get_closest_point_on_ray(point: NDArray[float], start: NDArray[float], target: NDArray[float]) -> NDArray[float]:
+    """Returns the nearest point on a ray to point, where target defines the ray direction."""
+    ray = target - start
+    if not np.any(ray):
         return start
-    return start + segment * np.clip(np.dot(point - start, segment) / np.dot(segment, segment), 0, 1)
+    return start + ray * max(0, np.dot(point - start, ray) / np.dot(ray, ray))
 
 
 def draw_pod_state(axes: Axes, pod: BasePod, alpha: float, color: str, show_collision_radius: bool, shield: bool):

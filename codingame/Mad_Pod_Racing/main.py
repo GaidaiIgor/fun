@@ -35,6 +35,7 @@ MAX_CHARGE_ANGLE = 45
 SHORT_AHEAD_DIST = 1000
 LONG_AHEAD_DIST = 2000
 RACER_AVOID_RADIUS = 1000
+RACER_AVOID_LENGTH = 3000
 
 # Debug
 DEBUG = True
@@ -155,15 +156,21 @@ class BrutePod(BasePod):
             return enemy.position + np.array((math.cos(enemy_direction), -math.sin(enemy_direction))) * LONG_AHEAD_DIST
 
     def avoid_racer(self, game_state: GameState, target_pos: NDArray[float], racer_command: tuple[NDArray[float], float | str]) -> NDArray[float]:
-        """Returns the closest far target whose command ray avoids the racer next-turn ray."""
+        """:param game_state: current full game state
+        :param target_pos: brute target before racer avoidance
+        :param racer_command: racer command planned for this turn
+        :return: closest far target whose limited command segment avoids the racer limited next-turn segment
+        """
         direct_direction = self.get_segment_direction(self.position, target_pos)
         racer_end = predict_next_2(game_state.my_pods[0], game_state.checkpoints, racer_command[0], racer_command[1], game_state.turn_ind == 0).pod.position
+        racer_segment_end = self.get_avoidance_segment_end(game_state.my_pods[0].position, racer_end)
         for direction_offset in range(181):
             directions = [direct_direction] if direction_offset == 0 else [direct_direction + direction_offset, direct_direction - direction_offset]
             candidates = []
             for direction in directions:
                 candidate = self.get_direction_target(normalize_angle(direction))
-                distance = self.get_rays_distance(self.position, candidate, game_state.my_pods[0].position, racer_end)
+                distance = self.get_segments_distance(self.position, self.get_avoidance_segment_end(self.position, candidate),
+                                                      game_state.my_pods[0].position, racer_segment_end)
                 if distance > RACER_AVOID_RADIUS:
                     candidates.append(candidate)
             if candidates:
@@ -171,30 +178,50 @@ class BrutePod(BasePod):
         log("Brute: no racer-safe direction found")
         racer_direction = self.get_segment_direction(game_state.my_pods[0].position, racer_end)
         candidates = [self.get_direction_target(normalize_angle(racer_direction + 90)), self.get_direction_target(normalize_angle(racer_direction - 90))]
-        return max(candidates, key=lambda candidate: self.get_rays_distance(self.position, candidate, game_state.my_pods[0].position, racer_end))
+        return max(candidates, key=lambda candidate: self.get_segments_distance(self.position, self.get_avoidance_segment_end(self.position, candidate),
+                                                                               game_state.my_pods[0].position, racer_segment_end))
 
     @staticmethod
-    def get_rays_distance(start_1: NDArray[float], target_1: NDArray[float], start_2: NDArray[float], target_2: NDArray[float]) -> float:
-        """Returns the shortest geometric distance between two rays, where target points define ray directions."""
-        ray_1 = target_1 - start_1
-        ray_2 = target_2 - start_2
-        denominator = ray_1[0] * ray_2[1] - ray_1[1] * ray_2[0]
+    def get_avoidance_segment_end(start: NDArray[float], target: NDArray[float]) -> NDArray[float]:
+        """:param start: segment start point
+        :param target: point defining the segment direction
+        :return: segment end point RACER_AVOID_LENGTH units from start
+        """
+        segment = target - start
+        return start + segment / linalg.norm(segment) * RACER_AVOID_LENGTH
+
+    @staticmethod
+    def get_segments_distance(start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) -> float:
+        """:param start_1: start point of the first finite segment
+        :param end_1: end point of the first finite segment
+        :param start_2: start point of the second finite segment
+        :param end_2: end point of the second finite segment
+        :return: shortest geometric distance between the two finite segments
+        """
+        segment_1 = end_1 - start_1
+        segment_2 = end_2 - start_2
+        denominator = segment_1[0] * segment_2[1] - segment_1[1] * segment_2[0]
         if denominator:
             start_delta = start_2 - start_1
-            ray_1_pos = (start_delta[0] * ray_2[1] - start_delta[1] * ray_2[0]) / denominator
-            ray_2_pos = (start_delta[0] * ray_1[1] - start_delta[1] * ray_1[0]) / denominator
-            if 0 <= ray_1_pos and 0 <= ray_2_pos:
+            segment_1_pos = (start_delta[0] * segment_2[1] - start_delta[1] * segment_2[0]) / denominator
+            segment_2_pos = (start_delta[0] * segment_1[1] - start_delta[1] * segment_1[0]) / denominator
+            if 0 <= segment_1_pos <= 1 and 0 <= segment_2_pos <= 1:
                 return 0
-        return min(BrutePod.get_point_ray_distance(start_1, start_2, target_2), BrutePod.get_point_ray_distance(start_2, start_1, target_1))
+        return min(BrutePod.get_point_segment_distance(start_1, start_2, end_2), BrutePod.get_point_segment_distance(end_1, start_2, end_2),
+                   BrutePod.get_point_segment_distance(start_2, start_1, end_1), BrutePod.get_point_segment_distance(end_2, start_1, end_1))
 
     @staticmethod
-    def get_point_ray_distance(point: NDArray[float], start: NDArray[float], target: NDArray[float]) -> float:
-        """Returns the shortest geometric distance between a point and a ray, where target defines ray direction."""
-        ray = target - start
-        if not np.any(ray):
+    def get_point_segment_distance(point: NDArray[float], start: NDArray[float], end: NDArray[float]) -> float:
+        """:param point: point to measure from
+        :param start: segment start point
+        :param end: segment end point
+        :return: shortest geometric distance from point to the finite segment
+        """
+        segment = end - start
+        if not np.any(segment):
             return linalg.norm(point - start)
-        ray_pos = max(0, np.dot(point - start, ray) / np.dot(ray, ray))
-        return linalg.norm(start + ray * ray_pos - point)
+        segment_pos = np.clip(np.dot(point - start, segment) / np.dot(segment, segment), 0, 1)
+        return linalg.norm(start + segment * segment_pos - point)
 
     def does_next_motion_collide(self, game_state: GameState, my_command: tuple[NDArray[float], float | str], pod: BasePod,
                                  pod_command: tuple[NDArray[float], float | str] | None = None) -> bool:

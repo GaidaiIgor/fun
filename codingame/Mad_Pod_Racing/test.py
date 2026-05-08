@@ -432,33 +432,43 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
 
 
 def draw_racer_avoidance_area(axes: Axes, start: NDArray[float], target: NDArray[float], color: str):
-    """:param axes: map axes receiving the ray avoidance patch
-    :param start: start of the racer ray
-    :param target: point that defines the racer ray direction
+    """:param axes: map axes receiving the segment avoidance patch
+    :param start: start of the racer segment
+    :param target: point that defines the racer segment direction
     :param color: display color for the avoidance area
     """
-    ray = target - start
-    ray_unit = ray / linalg.norm(ray)
-    perpendicular = np.array((-ray_unit[1], ray_unit[0]))
-    ray_end = start + ray_unit * (MAP_WIDTH + MAP_HEIGHT)
-    ray_angle = math.degrees(math.atan2(ray_unit[1], ray_unit[0]))
-    area_points = np.array((start + perpendicular * bot.RACER_AVOID_RADIUS, ray_end + perpendicular * bot.RACER_AVOID_RADIUS,
-                            ray_end - perpendicular * bot.RACER_AVOID_RADIUS, start - perpendicular * bot.RACER_AVOID_RADIUS))
+    segment_end = BrutePod.get_avoidance_segment_end(start, target)
+    segment_unit = (segment_end - start) / bot.RACER_AVOID_LENGTH
+    perpendicular = np.array((-segment_unit[1], segment_unit[0]))
+    segment_angle = math.degrees(math.atan2(segment_unit[1], segment_unit[0]))
+    area_points = np.array((start + perpendicular * bot.RACER_AVOID_RADIUS, segment_end + perpendicular * bot.RACER_AVOID_RADIUS,
+                            segment_end - perpendicular * bot.RACER_AVOID_RADIUS, start - perpendicular * bot.RACER_AVOID_RADIUS))
     axes.add_patch(Polygon(area_points, closed=True, facecolor=color, edgecolor=color, alpha=0.08, linewidth=1, zorder=0.1))
-    axes.add_patch(Wedge(start, bot.RACER_AVOID_RADIUS, ray_angle + 90, ray_angle + 270, facecolor=color, edgecolor=color, alpha=0.08,
+    axes.add_patch(Wedge(start, bot.RACER_AVOID_RADIUS, segment_angle + 90, segment_angle + 270, facecolor=color, edgecolor=color, alpha=0.08,
+                         linewidth=1, zorder=0.1))
+    axes.add_patch(Wedge(segment_end, bot.RACER_AVOID_RADIUS, segment_angle - 90, segment_angle + 90, facecolor=color, edgecolor=color, alpha=0.08,
                          linewidth=1, zorder=0.1))
 
 
 def draw_closest_brute_approach(axes: Axes, history: list[TurnSnapshot], extra_histories: list[tuple[list[TurnSnapshot], str]], turn_ind: int,
                                 moves: list[float], checkpoints: list[NDArray[int]], show_collision_radius: bool):
-    """Draws a predicted-style brute marker at the closest point from its command ray to the racer next-turn ray."""
+    """:param axes: map axes receiving the closest-approach marker
+    :param history: primary pod history
+    :param extra_histories: other pod histories with display colors
+    :param turn_ind: selected turn index
+    :param moves: selected primary pod move vector
+    :param checkpoints: checkpoint coordinates
+    :param show_collision_radius: whether to draw the marker collision radius
+    """
     if not history[turn_ind].moves:
         return
     future_states = bot.predict_turns(history[turn_ind].pod, checkpoints, moves[:len(history[turn_ind].moves)], turn_ind == 0)
     for extra_history, color in extra_histories:
         snapshot = extra_history[min(turn_ind, len(extra_history) - 1)]
         if isinstance(snapshot.pod, BrutePod) and snapshot.target_pos is not None:
-            position = get_closest_ray_points(snapshot.pod.position, snapshot.target_pos, history[turn_ind].pod.position, future_states[0].pod.position)[0]
+            brute_segment_end = BrutePod.get_avoidance_segment_end(snapshot.pod.position, snapshot.target_pos)
+            racer_segment_end = BrutePod.get_avoidance_segment_end(history[turn_ind].pod.position, future_states[0].pod.position)
+            position = get_closest_segment_points(snapshot.pod.position, brute_segment_end, history[turn_ind].pod.position, racer_segment_end)[0]
             pod = type(snapshot.pod)(snapshot.pod.ind, position, snapshot.pod.velocity, snapshot.pod.direction, snapshot.pod.next_checkpoint_ind,
                                      snapshot.pod.passed_checkpoints)
             axes.add_patch(Circle(pod.position, POD_RADIUS, fill=False, edgecolor=color, linestyle="--", linewidth=1))
@@ -467,28 +477,38 @@ def draw_closest_brute_approach(axes: Axes, history: list[TurnSnapshot], extra_h
             draw_pod_arrows(axes, pod, 0.5, color)
 
 
-def get_closest_ray_points(start_1: NDArray[float], target_1: NDArray[float], start_2: NDArray[float], target_2: NDArray[float]) \
+def get_closest_segment_points(start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) \
     -> tuple[NDArray[float], NDArray[float]]:
-    """Returns the pair of closest points on two rays, where target points define ray directions."""
-    ray_1 = target_1 - start_1
-    ray_2 = target_2 - start_2
-    denominator = ray_1[0] * ray_2[1] - ray_1[1] * ray_2[0]
+    """:param start_1: start point of the first segment
+    :param end_1: end point of the first segment
+    :param start_2: start point of the second segment
+    :param end_2: end point of the second segment
+    :return: pair of closest points on the two finite line segments
+    """
+    segment_1 = end_1 - start_1
+    segment_2 = end_2 - start_2
+    denominator = segment_1[0] * segment_2[1] - segment_1[1] * segment_2[0]
     if denominator:
         start_delta = start_2 - start_1
-        ray_1_pos = (start_delta[0] * ray_2[1] - start_delta[1] * ray_2[0]) / denominator
-        ray_2_pos = (start_delta[0] * ray_1[1] - start_delta[1] * ray_1[0]) / denominator
-        if 0 <= ray_1_pos and 0 <= ray_2_pos:
-            return start_1 + ray_1 * ray_1_pos, start_2 + ray_2 * ray_2_pos
-    candidates = [(start_1, get_closest_point_on_ray(start_1, start_2, target_2)), (get_closest_point_on_ray(start_2, start_1, target_1), start_2)]
+        segment_1_pos = (start_delta[0] * segment_2[1] - start_delta[1] * segment_2[0]) / denominator
+        segment_2_pos = (start_delta[0] * segment_1[1] - start_delta[1] * segment_1[0]) / denominator
+        if 0 <= segment_1_pos <= 1 and 0 <= segment_2_pos <= 1:
+            return start_1 + segment_1 * segment_1_pos, start_2 + segment_2 * segment_2_pos
+    candidates = [(start_1, get_closest_point_on_segment(start_1, start_2, end_2)), (end_1, get_closest_point_on_segment(end_1, start_2, end_2)),
+                  (get_closest_point_on_segment(start_2, start_1, end_1), start_2), (get_closest_point_on_segment(end_2, start_1, end_1), end_2)]
     return min(candidates, key=lambda point: linalg.norm(point[0] - point[1]))
 
 
-def get_closest_point_on_ray(point: NDArray[float], start: NDArray[float], target: NDArray[float]) -> NDArray[float]:
-    """Returns the nearest point on a ray to point, where target defines the ray direction."""
-    ray = target - start
-    if not np.any(ray):
+def get_closest_point_on_segment(point: NDArray[float], start: NDArray[float], end: NDArray[float]) -> NDArray[float]:
+    """:param point: point to project onto the segment
+    :param start: segment start point
+    :param end: segment end point
+    :return: nearest point on the finite line segment
+    """
+    segment = end - start
+    if not np.any(segment):
         return start
-    return start + ray * max(0, np.dot(point - start, ray) / np.dot(ray, ray))
+    return start + segment * np.clip(np.dot(point - start, segment) / np.dot(segment, segment), 0, 1)
 
 
 def draw_pod_state(axes: Axes, pod: BasePod, alpha: float, color: str, show_collision_radius: bool, shield: bool):

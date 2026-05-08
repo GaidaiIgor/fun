@@ -21,7 +21,7 @@ from numpy import linalg
 from numpy.typing import NDArray
 
 import main as bot
-from main import BasePod, BrutePod, CHECKPOINT_RADIUS, COLLISION_RADIUS, GameState, OPTIMIZER_CHECKPOINT_RADIUS, RacerPod
+from main import BasePod, BrutePod, CHECKPOINT_RADIUS, COLLISION_RADIUS, GameState, OPTIMIZER_CHECKPOINT_RADIUS, RacerPod, get_segment_direction
 
 bot.DEBUG = False
 
@@ -51,13 +51,13 @@ class EnemyRacerPod(RacerPod):
 class TurnSnapshot:
     """Stores the state available at the beginning of one simulated turn.
     predictions are the future pods produced from the optimized move vector for this turn, and moves is that direction delta and thrust sequence.
-    target_pos is the command target chosen by that pod for this turn when the turn has a command.
+    target_direction is the command direction chosen by that pod for this turn when the turn has a command.
     base_target_pos is the target chosen before racer avoidance.
     """
     pod: BasePod
     predictions: list[BasePod]
     moves: list[float]
-    target_pos: NDArray[float] | None = None
+    target_direction: float | None = None
     base_target_pos: NDArray[float] | None = None
     thrust: float | str | None = None
 
@@ -194,14 +194,14 @@ def main():
 
 def show_race(checkpoints: list[NDArray[int]], laps: int):
     """Simulates the normal racer-only view from the brute-scenario enemy start and opens the interactive viewer."""
-    track_direction = BrutePod.get_segment_direction(checkpoints[0], checkpoints[1])
+    track_direction = get_segment_direction(checkpoints[0], checkpoints[1])
     pod = RacerPod(0, ((checkpoints[0] + checkpoints[1]) / 2).astype(float), np.array((0, 0), dtype=float), track_direction, 1)
     show_simulation(checkpoints, laps, [pod], 0)
 
 
 def show_brute_collision():
     """Simulates a brute chasing one racer-logic enemy until their next-turn motion first collides, then opens the interactive viewer."""
-    track_direction = BrutePod.get_segment_direction(CHECKPOINTS[0], CHECKPOINTS[1])
+    track_direction = get_segment_direction(CHECKPOINTS[0], CHECKPOINTS[1])
     brute = BrutePod(1, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), track_direction, 1)
     enemy = EnemyRacerPod(0, ((CHECKPOINTS[0] + CHECKPOINTS[1]) / 2).astype(float), np.array((0, 0), dtype=float), track_direction, 1)
     show_simulation(CHECKPOINTS, 1, [brute, enemy], 0)
@@ -209,8 +209,8 @@ def show_brute_collision():
 
 def show_three_pods():
     """Simulates our racer, brute and one enemy racer from the requested three-pod initial state."""
-    racer_direction = BrutePod.get_segment_direction(CHECKPOINTS[2], CHECKPOINTS[0])
-    brute_direction = BrutePod.get_segment_direction(CHECKPOINTS[0], CHECKPOINTS[2])
+    racer_direction = get_segment_direction(CHECKPOINTS[2], CHECKPOINTS[0])
+    brute_direction = get_segment_direction(CHECKPOINTS[0], CHECKPOINTS[2])
     racer = RacerPod(0, ((CHECKPOINTS[2] + CHECKPOINTS[0]) / 2).astype(float), np.array((0, 0), dtype=float), racer_direction, 0)
     brute = BrutePod(1, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), brute_direction, 0)
     enemy = EnemyRacerPod(0, CHECKPOINTS[2].astype(float), np.array((0, 0), dtype=float), racer_direction, 0)
@@ -235,14 +235,15 @@ def simulate_pods(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod
     for turn_ind in range(MAX_TURNS * laps):
         commands = []
         for pod_ind, pod in enumerate(pods):
-            target_pos, thrust, moves, base_target_pos = choose_pod_command(pod, pods, commands, turn_ind, laps, checkpoints, boosts)
+            target_direction, thrust, moves, base_target_pos = choose_pod_command(pod, pods, commands, turn_ind, laps, checkpoints, boosts)
             future_states = bot.predict_turns(pod, checkpoints, moves, turn_ind == 0) if len(moves) else []
-            histories[pod_ind].append(TurnSnapshot(pod, [future_state.pod for future_state in future_states], moves.tolist(), target_pos,
+            histories[pod_ind].append(TurnSnapshot(pod, [future_state.pod for future_state in future_states], moves.tolist(), target_direction,
                                                    base_target_pos, thrust))
             if thrust == "BOOST":
                 boosts -= 1
-            commands.append((target_pos, thrust))
-        next_pods = [bot.predict_next_2(pod, checkpoints, command[0], command[1], turn_ind == 0).pod for pod, command in zip(pods, commands)]
+            commands.append((target_direction, thrust))
+        next_pods = [bot.predict_next(pod, checkpoints, bot.normalize_angle(command[0] - pod.direction), command[1], turn_ind == 0).pod
+                     for pod, command in zip(pods, commands)]
         collision_pos = get_first_collision_pos(pods, next_pods)
         if collision_pos is not None or any(pod.passed_checkpoints >= len(checkpoints) * laps for pod in next_pods if isinstance(pod, RacerPod)):
             for pod_ind, pod in enumerate(next_pods):
@@ -254,20 +255,20 @@ def simulate_pods(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod
     return histories, colors, None
 
 
-def choose_pod_command(pod: BasePod, pods: list[BasePod], commands: list[tuple[NDArray[float], float | str]], turn_ind: int, laps: int,
+def choose_pod_command(pod: BasePod, pods: list[BasePod], commands: list[tuple[float, float | str]], turn_ind: int, laps: int,
                        checkpoints: list[NDArray[int]], boosts: int) \
-    -> tuple[NDArray[float], float | str, NDArray[float], NDArray[float] | None]:
+    -> tuple[float, float | str, NDArray[float], NDArray[float] | None]:
     """Chooses one command for a simulated pod through that pod program."""
     if isinstance(pod, RacerPod):
-        target_pos, thrust, moves = pod.choose_move(GameState(turn_ind, laps, checkpoints, [pod], [], boosts))
-        return target_pos, thrust, moves, None
+        direction, thrust, moves = pod.choose_move(GameState(turn_ind, laps, checkpoints, [pod], [], boosts))
+        return direction, thrust, moves, None
     racer_ind = next((other_ind for other_ind, other_pod in enumerate(pods[:len(commands)])
                       if isinstance(other_pod, RacerPod) and not isinstance(other_pod, EnemyRacerPod)), None)
     my_pods = [pod] if racer_ind is None else [pods[racer_ind], pod]
     foe_pods = [other_pod for other_pod in pods if isinstance(other_pod, EnemyRacerPod)]
     game_state = GameState(turn_ind, laps, checkpoints, my_pods, foe_pods, 0)
-    target_pos, thrust = pod.choose_command(game_state, None if racer_ind is None else commands[racer_ind])
-    return target_pos, thrust, np.array((), dtype=float), pod.choose_base_command(game_state, pod.get_lead_enemy(game_state))[0]
+    direction, thrust = pod.choose_command(game_state, None if racer_ind is None else commands[racer_ind])
+    return direction, thrust, np.array((), dtype=float), pod.choose_base_command(game_state, pod.get_lead_enemy(game_state))[0]
 
 
 def get_first_collision_pos(pods: list[BasePod], next_pods: list[BasePod]) -> NDArray[float] | None:
@@ -401,13 +402,19 @@ def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int, color: 
     for state_ind, snapshot in enumerate(history[:turn_ind + 1]):
         draw_pod_state(axes, snapshot.pod, 1 if state_ind == turn_ind else 0.35, color, show_collision_radius and state_ind == turn_ind,
                        state_ind > 0 and history[state_ind - 1].thrust == "SHIELD")
-    if isinstance(history[turn_ind].pod, BrutePod) and history[turn_ind].target_pos is not None:
+    if isinstance(history[turn_ind].pod, BrutePod) and history[turn_ind].target_direction is not None:
         if history[turn_ind].base_target_pos is not None:
             axes.plot((history[turn_ind].pod.position[0], history[turn_ind].base_target_pos[0]),
                       (history[turn_ind].pod.position[1], history[turn_ind].base_target_pos[1]), color=color, linestyle=":", linewidth=1.5)
             axes.scatter(history[turn_ind].base_target_pos[0], history[turn_ind].base_target_pos[1], color=color, marker="x", s=180, linewidths=2.5)
-        axes.plot((history[turn_ind].pod.position[0], history[turn_ind].target_pos[0]),
-                  (history[turn_ind].pod.position[1], history[turn_ind].target_pos[1]), color=color, linestyle=":", linewidth=1.5, alpha=0.55)
+        draw_direction_line(axes, history[turn_ind].pod, history[turn_ind].target_direction, color, 0.55)
+
+
+def draw_direction_line(axes: Axes, pod: BasePod, direction: float, color: str, alpha: float):
+    """Draws a dotted visualization ray from a pod along one command direction."""
+    vector = np.array(get_direction_vector(direction, bot.TARGET_DISTANCE))
+    axes.plot((pod.position[0], pod.position[0] + vector[0]), (pod.position[1], pod.position[1] + vector[1]), color=color, linestyle=":",
+              linewidth=1.5, alpha=alpha)
 
 
 def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], first_turn: bool, color: str,
@@ -422,7 +429,8 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
     axes.plot(positions[:, 0], positions[:, 1], color=color, linestyle="--", linewidth=1)
     axes.text(0.02, 0.98, f"score={round(future_states[-1].get_score(checkpoints))}", color="red", transform=axes.transAxes, ha="left", va="top")
     if show_racer_avoidance_area and isinstance(snapshot.pod, RacerPod):
-        draw_racer_avoidance_area(axes, snapshot.pod.position, future_states[0].pod.position, color)
+        direction_delta = bot.constrain_moves([moves[0], 100], first_turn)[0]
+        draw_racer_avoidance_area(axes, snapshot.pod, bot.normalize_angle(snapshot.pod.direction + direction_delta), first_turn, color)
     for future_state in future_states:
         edgecolor = "red" if any(linalg.norm(checkpoint - future_state.pod.position) <= OPTIMIZER_CHECKPOINT_RADIUS for checkpoint in checkpoints) else color
         axes.add_patch(Circle(future_state.pod.position, POD_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))
@@ -431,16 +439,16 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
         draw_pod_arrows(axes, future_state.pod, 0.5, color)
 
 
-def draw_racer_avoidance_area(axes: Axes, start: NDArray[float], target: NDArray[float], color: str):
-    """Draws the finite capsule-shaped avoidance area around the racer segment from start toward target."""
-    segment_end = BrutePod.get_avoidance_segment_end(start, target)
-    segment_unit = (segment_end - start) / bot.RACER_AVOID_LENGTH
+def draw_racer_avoidance_area(axes: Axes, pod: BasePod, direction: float, first_turn: bool, color: str):
+    """Draws the capsule-shaped avoidance area around the racer predicted avoidance segment."""
+    segment_end = bot.predict_turns(pod, None, BrutePod.predict_moves(pod, direction), first_turn)[-1].pod.position
+    segment_unit = (segment_end - pod.position) / linalg.norm(segment_end - pod.position)
     perpendicular = np.array((-segment_unit[1], segment_unit[0]))
     segment_angle = math.degrees(math.atan2(segment_unit[1], segment_unit[0]))
-    area_points = np.array((start + perpendicular * bot.RACER_AVOID_RADIUS, segment_end + perpendicular * bot.RACER_AVOID_RADIUS,
-                            segment_end - perpendicular * bot.RACER_AVOID_RADIUS, start - perpendicular * bot.RACER_AVOID_RADIUS))
+    area_points = np.array((pod.position + perpendicular * bot.RACER_AVOID_RADIUS, segment_end + perpendicular * bot.RACER_AVOID_RADIUS,
+                            segment_end - perpendicular * bot.RACER_AVOID_RADIUS, pod.position - perpendicular * bot.RACER_AVOID_RADIUS))
     axes.add_patch(Polygon(area_points, closed=True, facecolor=color, edgecolor=color, alpha=0.08, linewidth=1, zorder=0.1))
-    axes.add_patch(Wedge(start, bot.RACER_AVOID_RADIUS, segment_angle + 90, segment_angle + 270, facecolor=color, edgecolor=color, alpha=0.08,
+    axes.add_patch(Wedge(pod.position, bot.RACER_AVOID_RADIUS, segment_angle + 90, segment_angle + 270, facecolor=color, edgecolor=color, alpha=0.08,
                          linewidth=1, zorder=0.1))
     axes.add_patch(Wedge(segment_end, bot.RACER_AVOID_RADIUS, segment_angle - 90, segment_angle + 90, facecolor=color, edgecolor=color, alpha=0.08,
                          linewidth=1, zorder=0.1))
@@ -448,47 +456,31 @@ def draw_racer_avoidance_area(axes: Axes, start: NDArray[float], target: NDArray
 
 def draw_closest_brute_approach(axes: Axes, history: list[TurnSnapshot], extra_histories: list[tuple[list[TurnSnapshot], str]], turn_ind: int,
                                 moves: list[float], checkpoints: list[NDArray[int]], show_collision_radius: bool):
-    """Draws a predicted-style brute marker at the closest point from its avoidance segment to the racer next-turn segment."""
+    """Draws a predicted-style brute marker at synchronized closest approach to the racer predicted segment."""
     if not history[turn_ind].moves:
         return
-    future_states = bot.predict_turns(history[turn_ind].pod, checkpoints, moves[:len(history[turn_ind].moves)], turn_ind == 0)
+    direction_delta = bot.constrain_moves([moves[0], 100], turn_ind == 0)[0]
+    racer_direction = bot.normalize_angle(history[turn_ind].pod.direction + direction_delta)
     for extra_history, color in extra_histories:
         snapshot = extra_history[min(turn_ind, len(extra_history) - 1)]
-        if isinstance(snapshot.pod, BrutePod) and snapshot.target_pos is not None:
-            brute_segment_end = BrutePod.get_avoidance_segment_end(snapshot.pod.position, snapshot.target_pos)
-            racer_segment_end = BrutePod.get_avoidance_segment_end(history[turn_ind].pod.position, future_states[0].pod.position)
-            position = get_closest_segment_points(snapshot.pod.position, brute_segment_end, history[turn_ind].pod.position, racer_segment_end)[0]
+        if isinstance(snapshot.pod, BrutePod) and snapshot.target_direction is not None:
+            brute_moves = BrutePod.predict_moves(snapshot.pod, snapshot.target_direction)
+            racer_moves = BrutePod.predict_moves(history[turn_ind].pod, racer_direction)
+            brute_segment_end = bot.predict_turns(snapshot.pod, None, brute_moves, turn_ind == 0)[-1].pod.position
+            racer_segment_end = bot.predict_turns(history[turn_ind].pod, None, racer_moves, turn_ind == 0)[-1].pod.position
+            relative_position = snapshot.pod.position - history[turn_ind].pod.position
+            relative_velocity = brute_segment_end - snapshot.pod.position - racer_segment_end + history[turn_ind].pod.position
+            if not np.any(relative_velocity):
+                closest_time = 0
+            else:
+                closest_time = np.clip(-np.dot(relative_position, relative_velocity) / np.dot(relative_velocity, relative_velocity), 0, 1)
+            position = snapshot.pod.position + (brute_segment_end - snapshot.pod.position) * closest_time
             pod = type(snapshot.pod)(snapshot.pod.ind, position, snapshot.pod.velocity, snapshot.pod.direction, snapshot.pod.next_checkpoint_ind,
                                      snapshot.pod.passed_checkpoints)
             axes.add_patch(Circle(pod.position, POD_RADIUS, fill=False, edgecolor=color, linestyle="--", linewidth=1))
             if show_collision_radius:
                 axes.add_patch(Circle(pod.position, POD_COLLISION_RADIUS, fill=False, edgecolor=color, linestyle="--", linewidth=1, alpha=0.45))
             draw_pod_arrows(axes, pod, 0.5, color)
-
-
-def get_closest_segment_points(start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) \
-    -> tuple[NDArray[float], NDArray[float]]:
-    """Returns the pair of closest points on two finite line segments."""
-    segment_1 = end_1 - start_1
-    segment_2 = end_2 - start_2
-    denominator = segment_1[0] * segment_2[1] - segment_1[1] * segment_2[0]
-    if denominator:
-        start_delta = start_2 - start_1
-        segment_1_pos = (start_delta[0] * segment_2[1] - start_delta[1] * segment_2[0]) / denominator
-        segment_2_pos = (start_delta[0] * segment_1[1] - start_delta[1] * segment_1[0]) / denominator
-        if 0 <= segment_1_pos <= 1 and 0 <= segment_2_pos <= 1:
-            return start_1 + segment_1 * segment_1_pos, start_2 + segment_2 * segment_2_pos
-    candidates = [(start_1, get_closest_point_on_segment(start_1, start_2, end_2)), (end_1, get_closest_point_on_segment(end_1, start_2, end_2)),
-                  (get_closest_point_on_segment(start_2, start_1, end_1), start_2), (get_closest_point_on_segment(end_2, start_1, end_1), end_2)]
-    return min(candidates, key=lambda point: linalg.norm(point[0] - point[1]))
-
-
-def get_closest_point_on_segment(point: NDArray[float], start: NDArray[float], end: NDArray[float]) -> NDArray[float]:
-    """Returns the nearest point on a finite line segment to point."""
-    segment = end - start
-    if not np.any(segment):
-        return start
-    return start + segment * np.clip(np.dot(point - start, segment) / np.dot(segment, segment), 0, 1)
 
 
 def draw_pod_state(axes: Axes, pod: BasePod, alpha: float, color: str, show_collision_radius: bool, shield: bool):

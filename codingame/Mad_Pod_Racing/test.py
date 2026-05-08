@@ -267,7 +267,7 @@ def choose_pod_command(pod: BasePod, pods: list[BasePod], commands: list[tuple[N
     foe_pods = [other_pod for other_pod in pods if isinstance(other_pod, EnemyRacerPod)]
     game_state = GameState(turn_ind, laps, checkpoints, my_pods, foe_pods, 0)
     target_pos, thrust = pod.choose_command(game_state, None if racer_ind is None else commands[racer_ind])
-    return target_pos, thrust, np.array((), dtype=float), pod.choose_base_target(pod.get_lead_enemy(game_state))
+    return target_pos, thrust, np.array((), dtype=float), pod.choose_base_command(game_state, pod.get_lead_enemy(game_state))[0]
 
 
 def get_first_collision_pos(pods: list[BasePod], next_pods: list[BasePod]) -> NDArray[float] | None:
@@ -432,11 +432,7 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
 
 
 def draw_racer_avoidance_area(axes: Axes, start: NDArray[float], target: NDArray[float], color: str):
-    """:param axes: map axes receiving the segment avoidance patch
-    :param start: start of the racer segment
-    :param target: point that defines the racer segment direction
-    :param color: display color for the avoidance area
-    """
+    """Draws the finite capsule-shaped avoidance area around the racer segment from start toward target."""
     segment_end = BrutePod.get_avoidance_segment_end(start, target)
     segment_unit = (segment_end - start) / bot.RACER_AVOID_LENGTH
     perpendicular = np.array((-segment_unit[1], segment_unit[0]))
@@ -452,14 +448,7 @@ def draw_racer_avoidance_area(axes: Axes, start: NDArray[float], target: NDArray
 
 def draw_closest_brute_approach(axes: Axes, history: list[TurnSnapshot], extra_histories: list[tuple[list[TurnSnapshot], str]], turn_ind: int,
                                 moves: list[float], checkpoints: list[NDArray[int]], show_collision_radius: bool):
-    """:param axes: map axes receiving the closest-approach marker
-    :param history: primary pod history
-    :param extra_histories: other pod histories with display colors
-    :param turn_ind: selected turn index
-    :param moves: selected primary pod move vector
-    :param checkpoints: checkpoint coordinates
-    :param show_collision_radius: whether to draw the marker collision radius
-    """
+    """Draws a predicted-style brute marker at the closest point from its avoidance segment to the racer next-turn segment."""
     if not history[turn_ind].moves:
         return
     future_states = bot.predict_turns(history[turn_ind].pod, checkpoints, moves[:len(history[turn_ind].moves)], turn_ind == 0)
@@ -479,12 +468,7 @@ def draw_closest_brute_approach(axes: Axes, history: list[TurnSnapshot], extra_h
 
 def get_closest_segment_points(start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) \
     -> tuple[NDArray[float], NDArray[float]]:
-    """:param start_1: start point of the first segment
-    :param end_1: end point of the first segment
-    :param start_2: start point of the second segment
-    :param end_2: end point of the second segment
-    :return: pair of closest points on the two finite line segments
-    """
+    """Returns the pair of closest points on two finite line segments."""
     segment_1 = end_1 - start_1
     segment_2 = end_2 - start_2
     denominator = segment_1[0] * segment_2[1] - segment_1[1] * segment_2[0]
@@ -500,11 +484,7 @@ def get_closest_segment_points(start_1: NDArray[float], end_1: NDArray[float], s
 
 
 def get_closest_point_on_segment(point: NDArray[float], start: NDArray[float], end: NDArray[float]) -> NDArray[float]:
-    """:param point: point to project onto the segment
-    :param start: segment start point
-    :param end: segment end point
-    :return: nearest point on the finite line segment
-    """
+    """Returns the nearest point on a finite line segment to point."""
     segment = end - start
     if not np.any(segment):
         return start

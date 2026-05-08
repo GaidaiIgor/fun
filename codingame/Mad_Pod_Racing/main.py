@@ -148,7 +148,7 @@ class BrutePod(BasePod):
             log(f"Brute: attack foe {enemy.ind}")
             return self.get_attack_target(enemy), 100
         log(f"Brute: segment end foe {enemy.ind}")
-        return self.choose_segment_end_command(game_state, enemy)
+        return self.choose_ambush_command(game_state, enemy)
 
     def is_attackable(self, enemy: BasePod) -> bool:
         """Checks whether enemy is in front of the brute and moving approximately opposite to it."""
@@ -161,14 +161,17 @@ class BrutePod(BasePod):
         enemy_direction_vector = np.array((math.cos(enemy_direction), -math.sin(enemy_direction)))
         return enemy.position + enemy_direction_vector * np.dot(self.position - enemy.position, enemy_direction_vector) * ATTACK_DIST_FRAC
 
-    def choose_segment_end_command(self, game_state: GameState, enemy: BasePod) -> tuple[NDArray[float], float]:
+    def choose_ambush_command(self, game_state: GameState, enemy: BasePod) -> tuple[NDArray[float], float]:
         """Chooses a fallback command toward the end of enemy next active segment, or coasts while turning back along it."""
         segment_start = game_state.checkpoints[enemy.next_checkpoint_ind]
         segment_end = game_state.checkpoints[(enemy.next_checkpoint_ind + 1) % len(game_state.checkpoints)]
         segment_back_direction = self.get_segment_direction(segment_end, segment_start)
+        if linalg.norm(self.position - segment_end) <= PARKING_DIST:
+            log(f"Brute: parked foe {enemy.ind}")
+            return self.position, 0
         if self.should_coast_to_turn(segment_end, segment_back_direction):
             log(f"Brute: coast segment end foe {enemy.ind}")
-            return self.get_direction_target(segment_back_direction), 0
+            return self.position, 0
         return segment_end, 100
 
     def should_coast_to_turn(self, target_pos: NDArray[float], target_direction: float) -> bool:

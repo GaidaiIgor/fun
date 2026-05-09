@@ -150,15 +150,19 @@ class BrutePod(BasePod):
         return self.choose_ambush_command(game_state, enemy)
 
     def is_attackable(self, enemy: BasePod) -> bool:
-        """Checks current attack angles and rejects enemies whose predicted attack angles break during the brute horizon."""
+        """Checks current attack angles and keeps predicting until either impact is found or future attack angles break."""
         if not self.has_attack_angles(enemy):
             return False
         brute = self
         foe = enemy
         for _ in range(BRUTE_PREDICT_TURNS):
             next_direction = get_segment_direction(brute.position, brute.get_attack_target(foe))
-            brute = predict_next(brute, None, normalize_angle(next_direction - brute.direction), 100).pod
-            foe = predict_next(foe, None, 0, 100).pod
+            next_brute = predict_next(brute, None, normalize_angle(next_direction - brute.direction), 100).pod
+            next_foe = predict_next(foe, None, 0, 100).pod
+            if self.get_min_approach_distance(brute.position, next_brute.position, foe.position, next_foe.position) <= COLLISION_RADIUS:
+                return True
+            brute = next_brute
+            foe = next_foe
             if not brute.has_attack_angles(foe):
                 return False
         return True

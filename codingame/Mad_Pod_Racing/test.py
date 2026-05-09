@@ -76,6 +76,8 @@ class RaceViewer:
     show_predicted_collision_radius: bool
     show_racer_avoidance_area: bool
     show_closest_brute_approach: bool
+    show_past_trajectories: bool
+    show_brute_predictions: bool
     turn_ind: int
     figure: Figure
     axes: Axes
@@ -88,7 +90,8 @@ class RaceViewer:
     @classmethod
     def create(cls, checkpoints: list[NDArray[int]], history: list[TurnSnapshot], color: str, extra_histories: list[tuple[list[TurnSnapshot], str]],
                collision_pos: NDArray[float] | None, show_collision_radius: bool, show_predicted_collision_radius: bool = False,
-               show_racer_avoidance_area: bool = False, show_closest_brute_approach: bool = False) -> RaceViewer:
+               show_racer_avoidance_area: bool = False, show_closest_brute_approach: bool = False, show_past_trajectories: bool = True,
+               show_brute_predictions: bool = False) -> RaceViewer:
         """Builds the figure, map axes, turn controls, move sliders and callbacks for an interactive race viewer."""
         figure, axes = plt.subplots(figsize=(13, 7))
         figure.canvas.manager.window.showMaximized()
@@ -100,7 +103,7 @@ class RaceViewer:
                                        -bot.MAX_TURN_DEG if move_ind % 2 == 0 else 0,
                                        bot.MAX_TURN_DEG if move_ind % 2 == 0 else 100, valinit=0))
         viewer = cls(checkpoints, history, color, extra_histories, collision_pos, show_collision_radius, show_predicted_collision_radius,
-                     show_racer_avoidance_area, show_closest_brute_approach, 0, figure, axes,
+                     show_racer_avoidance_area, show_closest_brute_approach, show_past_trajectories, show_brute_predictions, 0, figure, axes,
                      Slider(plt.axes((0.18, 0.06, 0.55, 0.03)), "Turn", 0, len(history) - 1, valinit=0, valstep=1),
                      Button(plt.axes((0.18, 0.01, 0.18, 0.04)), "Previous turn"),
                      Button(plt.axes((0.55, 0.01, 0.18, 0.04)), "Next turn"), move_sliders, False)
@@ -157,13 +160,15 @@ class RaceViewer:
         self.axes.clear()
         setup_axes(self.axes, self.turn_ind, len(self.history))
         draw_checkpoints(self.axes, self.checkpoints)
-        draw_history(self.axes, self.history, self.turn_ind, self.color, self.show_collision_radius)
+        draw_history(self.axes, self.history, self.turn_ind, self.color, self.show_collision_radius, self.show_past_trajectories)
         for history, color in self.extra_histories:
-            draw_history(self.axes, history, min(self.turn_ind, len(history) - 1), color, self.show_collision_radius)
+            draw_history(self.axes, history, min(self.turn_ind, len(history) - 1), color, self.show_collision_radius, self.show_past_trajectories)
         if self.collision_pos is not None and self.turn_ind == len(self.history) - 1:
             self.axes.scatter(self.collision_pos[0], self.collision_pos[1], color=COLLISION_COLOR, marker="x", s=220, linewidths=3)
         draw_predictions(self.axes, self.history[self.turn_ind], self.checkpoints, self.get_selected_moves(), self.color, self.show_predicted_collision_radius,
                          self.show_racer_avoidance_area)
+        if self.show_brute_predictions:
+            draw_brute_predictions(self.axes, self.history, self.color, self.extra_histories, self.turn_ind, self.checkpoints)
         if self.show_closest_brute_approach:
             draw_closest_brute_approach(self.axes, self.history, self.extra_histories, self.turn_ind, self.get_selected_moves(), self.checkpoints,
                                         self.show_predicted_collision_radius)
@@ -222,15 +227,17 @@ def show_coasting():
     brute_direction = get_segment_direction(CHECKPOINTS[1], CHECKPOINTS[2])
     brute = BrutePod(1, CHECKPOINTS[1].astype(float), np.array((0, 0), dtype=float), brute_direction, 1)
     enemy = EnemyRacerPod(0, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), brute_direction, 1)
-    show_simulation(CHECKPOINTS, 1, [brute, enemy], 0)
+    show_simulation(CHECKPOINTS, 1, [brute, enemy], 0, show_past_trajectories=False, show_brute_predictions=True)
 
 
 def show_simulation(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod], boosts: int, show_predicted_collision_radius: bool = False,
-                    show_racer_avoidance_area: bool = False, show_closest_brute_approach: bool = False):
+                    show_racer_avoidance_area: bool = False, show_closest_brute_approach: bool = False, show_past_trajectories: bool = True,
+                    show_brute_predictions: bool = False):
     """Runs the shared simulator for the supplied initial pods and opens the shared interactive viewer."""
     histories, colors, collision_pos = simulate_pods(checkpoints, laps, pods, boosts)
     RaceViewer.create(checkpoints, histories[0], colors[0], list(zip(histories[1:], colors[1:])), collision_pos, len(pods) > 1,
-                      show_predicted_collision_radius, show_racer_avoidance_area, show_closest_brute_approach).show()
+                      show_predicted_collision_radius, show_racer_avoidance_area, show_closest_brute_approach, show_past_trajectories,
+                      show_brute_predictions).show()
 
 
 def simulate_pods(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod], boosts: int = 1) \
@@ -408,13 +415,16 @@ def draw_checkpoints(axes: Axes, checkpoints: list[NDArray[int]]):
         axes.text(checkpoint[0], checkpoint[1], str(checkpoint_ind), ha="center", va="center")
 
 
-def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int, color: str, show_collision_radius: bool):
+def draw_history(axes: Axes, history: list[TurnSnapshot], turn_ind: int, color: str, show_collision_radius: bool, show_past_trajectories: bool):
     """Draws the simulated trajectory through the selected turn and fades older pod states."""
-    positions = np.array([snapshot.pod.position for snapshot in history[:turn_ind + 1]])
-    axes.plot(positions[:, 0], positions[:, 1], color=color, linewidth=1)
-    for state_ind, snapshot in enumerate(history[:turn_ind + 1]):
-        draw_pod_state(axes, snapshot.pod, 1 if state_ind == turn_ind else 0.35, color, show_collision_radius and state_ind == turn_ind,
-                       state_ind > 0 and history[state_ind - 1].thrust == "SHIELD")
+    if show_past_trajectories:
+        positions = np.array([snapshot.pod.position for snapshot in history[:turn_ind + 1]])
+        axes.plot(positions[:, 0], positions[:, 1], color=color, linewidth=1)
+        for state_ind, snapshot in enumerate(history[:turn_ind + 1]):
+            draw_pod_state(axes, snapshot.pod, 1 if state_ind == turn_ind else 0.35, color, show_collision_radius and state_ind == turn_ind,
+                           state_ind > 0 and history[state_ind - 1].thrust == "SHIELD")
+    else:
+        draw_pod_state(axes, history[turn_ind].pod, 1, color, show_collision_radius, turn_ind > 0 and history[turn_ind - 1].thrust == "SHIELD")
     if isinstance(history[turn_ind].pod, BrutePod) and history[turn_ind].target_direction is not None:
         if history[turn_ind].base_target_pos is not None:
             axes.plot((history[turn_ind].pod.position[0], history[turn_ind].base_target_pos[0]),
@@ -428,6 +438,37 @@ def draw_direction_line(axes: Axes, pod: BasePod, direction: float, color: str, 
     vector = np.array(get_direction_vector(direction, bot.TARGET_DISTANCE))
     axes.plot((pod.position[0], pod.position[0] + vector[0]), (pod.position[1], pod.position[1] + vector[1]), color=color, linestyle=":",
               linewidth=1.5, alpha=alpha)
+
+
+def draw_brute_predictions(axes: Axes, history: list[TurnSnapshot], color: str, extra_histories: list[tuple[list[TurnSnapshot], str]], turn_ind: int,
+                           checkpoints: list[NDArray[int]]):
+    """Draws the brute attackability lookahead for the selected turn, including predicted brute and foe paths."""
+    histories = [(history, color)] + extra_histories
+    brute_snapshot = None
+    brute_color = ""
+    for candidate_history, candidate_color in histories:
+        if isinstance(candidate_history[min(turn_ind, len(candidate_history) - 1)].pod, BrutePod):
+            brute_snapshot = candidate_history[min(turn_ind, len(candidate_history) - 1)]
+            brute_color = candidate_color
+    if brute_snapshot is None:
+        return
+    foes = [(candidate_history[min(turn_ind, len(candidate_history) - 1)], candidate_color) for candidate_history, candidate_color in histories
+            if isinstance(candidate_history[min(turn_ind, len(candidate_history) - 1)].pod, EnemyRacerPod)]
+    if not foes:
+        return
+    foe_snapshot, foe_color = max(foes, key=lambda foe: foe[0].pod.get_race_progress(checkpoints))
+    brute_pods = [brute_snapshot.pod]
+    foe_pods = [foe_snapshot.pod]
+    for _ in range(bot.BRUTE_PREDICT_TURNS):
+        direction = get_segment_direction(brute_pods[-1].position, brute_pods[-1].get_attack_target(foe_pods[-1]))
+        brute_pods.append(bot.predict_next(brute_pods[-1], None, bot.normalize_angle(direction - brute_pods[-1].direction), 100).pod)
+        foe_pods.append(bot.predict_next(foe_pods[-1], None, 0, 100).pod)
+    for pods, path_color in ((brute_pods, brute_color), (foe_pods, foe_color)):
+        positions = np.array([pod.position for pod in pods])
+        axes.plot(positions[:, 0], positions[:, 1], color=path_color, linestyle="--", linewidth=1.5, alpha=0.8)
+        for pod in pods[1:]:
+            axes.add_patch(Circle(pod.position, POD_RADIUS, fill=False, edgecolor=path_color, linestyle="--", linewidth=1.2, alpha=0.8))
+            draw_pod_arrows(axes, pod, 0.45, path_color)
 
 
 def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], color: str, show_collision_radius: bool,

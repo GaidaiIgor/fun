@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import sys
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -40,6 +41,9 @@ BRUTE_PREDICT_TURNS = 5
 
 # Debug
 DEBUG = True
+TIMING = True
+TIMER_START = time.perf_counter()
+TIMER_LAST = TIMER_START
 
 @dataclass(slots=True)
 class BasePod:
@@ -84,10 +88,13 @@ class RacerPod(BasePod):
         checkpoint_delta = game_state.checkpoints[self.next_checkpoint_ind] - self.position
         checkpoint_direction = -math.degrees(math.atan2(checkpoint_delta[1], checkpoint_delta[0]))
         if game_state.turn_ind == 0:
+            log_time(f"racer {self.ind} first command")
             return checkpoint_direction, "BOOST" if self.get_next_checkpoint_distance(game_state.checkpoints) > BOOST_MIN_DIST and game_state.boosts else 100, \
                 np.array((), dtype=float)
 
+        log_time(f"racer {self.ind} optimize start")
         result = self.optimize_moves(game_state.checkpoints)
+        log_time(f"racer {self.ind} optimize end")
         direction = normalize_angle(self.direction + result.x[0])
         thrust = result.x[1]
         if abs(normalize_angle(self.direction - checkpoint_direction)) <= BOOST_ANGLE_TOL and \
@@ -101,6 +108,7 @@ class RacerPod(BasePod):
         log("Predicted:")
         for future_state in predict_turns(self, game_state.checkpoints, result.x):
             log(f"pos={future_state.pod.position}; CP={future_state.pod.next_checkpoint_ind}")
+        log_time(f"racer {self.ind} debug predictions")
 
         return direction, thrust, result.x
 
@@ -114,6 +122,7 @@ class RacerPod(BasePod):
         result = optimize.minimize(lambda moves: predict_turns(self, checkpoints, moves)[-1].get_score(checkpoints), self.get_optimizer_guess_moves(),
                                    method="L-BFGS-B", bounds=move_bounds, options={"maxiter": np.iinfo(np.int32).max})
         result.x = constrain_moves(result.x)
+        log_time(f"racer {self.ind} minimize nfev={result.nfev}")
         return result
 
     @staticmethod
@@ -129,12 +138,18 @@ class BrutePod(BasePod):
     def choose_command(self, game_state: GameState, racer_command: tuple[float, float | str] | None = None) -> tuple[float, float | str]:
         """Chooses the brute command against the lead enemy, applying racer avoidance and replacing thrust with SHIELD when impact is predicted."""
         enemy = self.get_lead_enemy(game_state)
+        log_time("brute lead enemy")
         if game_state.turn_ind == 0:
             target_pos = game_state.checkpoints[(enemy.next_checkpoint_ind + 1) % len(game_state.checkpoints)]
+            log_time("brute first command")
             return get_segment_direction(self.position, target_pos), 100
         direction, thrust = self.choose_base_command(game_state, enemy)
+        log_time("brute base command")
         direction = direction if racer_command is None else self.avoid_racer(game_state, direction, racer_command)
-        return direction, "SHIELD" if self.does_next_motion_collide(game_state, (direction, "SHIELD"), enemy) else thrust
+        log_time("brute avoid racer")
+        shield = self.does_next_motion_collide(game_state, (direction, "SHIELD"), enemy)
+        log_time("brute shield check")
+        return direction, "SHIELD" if shield else thrust
 
     @staticmethod
     def get_lead_enemy(game_state: GameState) -> BasePod:
@@ -152,19 +167,23 @@ class BrutePod(BasePod):
     def is_attackable(self, enemy: BasePod) -> bool:
         """Checks current attack angles and keeps predicting until either impact is found or future attack angles break."""
         if not self.has_attack_angles(enemy):
+            log_time("brute attack angles initial")
             return False
         brute = self
         foe = enemy
-        for _ in range(BRUTE_PREDICT_TURNS):
+        for turn_ind in range(BRUTE_PREDICT_TURNS):
             next_direction = get_segment_direction(brute.position, brute.get_attack_target(foe))
             next_brute = predict_next(brute, None, normalize_angle(next_direction - brute.direction), 100).pod
             next_foe = predict_next(foe, None, 0, 100).pod
             if self.get_min_approach_distance(brute.position, next_brute.position, foe.position, next_foe.position) <= COLLISION_RADIUS:
+                log_time(f"brute attack prediction hit {turn_ind}")
                 return True
             brute = next_brute
             foe = next_foe
             if not brute.has_attack_angles(foe):
+                log_time(f"brute attack prediction fail {turn_ind}")
                 return False
+        log_time("brute attack prediction full")
         return True
 
     def has_attack_angles(self, enemy: BasePod) -> bool:
@@ -202,22 +221,28 @@ class BrutePod(BasePod):
         if turn_count == 0:
             return False
         future_states = predict_turns(self, None, np.tile(np.array((0, 0), dtype=float), turn_count))
+        log_time("brute coast prediction")
         return linalg.norm(future_states[-1].pod.position - target_pos) <= PARKING_DIST
 
     def avoid_racer(self, game_state: GameState, direction: float, racer_command: tuple[float, float | str]) -> float:
         """Returns the first direction whose predicted segment avoids the racer predicted segment."""
         racer_moves = self.predict_moves(game_state.my_pods[0], racer_command[0])
         racer_segment_end = predict_turns(game_state.my_pods[0], None, racer_moves)[-1].pod.position
+        log_time("brute avoid racer predict racer")
         for direction_offset in range(181):
+            if direction_offset and direction_offset % 30 == 0:
+                log_time(f"brute avoid racer offset {direction_offset}")
             for sign in (1,) if direction_offset == 0 else (1, -1):
                 candidate = normalize_angle(direction + direction_offset * sign)
                 brute_moves = self.predict_moves(self, candidate)
                 brute_segment_end = predict_turns(self, None, brute_moves)[-1].pod.position
                 distance = self.get_min_approach_distance(self.position, brute_segment_end, game_state.my_pods[0].position, racer_segment_end)
                 if distance > RACER_AVOID_RADIUS:
+                    log_time(f"brute avoid racer found {direction_offset}")
                     return candidate
 
         log("Brute: no racer-safe direction found")
+        log_time("brute avoid racer exhausted")
         fallback_direction = min((racer_command[0] + 90, racer_command[0] - 90), key=lambda candidate: abs(normalize_angle(candidate - self.direction)))
         return normalize_angle(fallback_direction)
 
@@ -296,12 +321,18 @@ def main():
     """Reads initialization once, then repeats server turn read, debug logging, decision and command output."""
     game_state = read_initial_game_state()
     while True:
+        reset_timer()
         game_state = update_game_state(game_state)
+        log_time("read turn")
         game_state.log()
+        log_time("state log")
 
-        for pod, (direction, thrust) in zip(game_state.my_pods, choose_move(game_state)):
+        commands = choose_move(game_state)
+        log_time("choose move total")
+        for pod, (direction, thrust) in zip(game_state.my_pods, commands):
             target_pos = get_command_target(pod.position, direction)
             print(round(target_pos[0]), round(target_pos[1]), thrust if isinstance(thrust, str) else round(thrust))
+        log_time("output commands")
 
 
 def read_initial_game_state() -> GameState:
@@ -338,10 +369,13 @@ def read_pod(pod_ind: int, pod_type: type[BasePod], prev_game_state: GameState) 
 def choose_move(game_state: GameState) -> list[tuple[float, float | str]]:
     """Chooses both pod commands and applies command side effects to shared boosts."""
     commands = [game_state.my_pods[0].choose_move(game_state)[:2]]
+    log_time("choose racer")
     commands.append(game_state.my_pods[1].choose_command(game_state, commands[0]))
+    log_time("choose brute")
     for _, thrust in commands:
         if thrust == "BOOST":
             game_state.boosts -= 1
+    log_time("boost update")
     return commands
 
 
@@ -413,6 +447,22 @@ def get_command_target(position: NDArray[float], direction: float) -> NDArray[fl
     """Converts a command direction into the far target point required by Codingame output."""
     direction_rad = math.radians(direction)
     return position + np.array((math.cos(direction_rad), -math.sin(direction_rad))) * TARGET_DISTANCE
+
+
+def reset_timer():
+    """Starts the global per-turn debug timer."""
+    global TIMER_START, TIMER_LAST
+    TIMER_START = time.perf_counter()
+    TIMER_LAST = TIMER_START
+
+
+def log_time(msg: str):
+    """Prints elapsed milliseconds since the previous timing mark and since the turn timer started."""
+    global TIMER_LAST
+    if TIMING:
+        now = time.perf_counter()
+        log(f"TIME {msg}: step={(now - TIMER_LAST) * 1000:.3g}ms total={(now - TIMER_START) * 1000:.3g}ms")
+        TIMER_LAST = now
 
 
 def log(msg: str):

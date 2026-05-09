@@ -16,7 +16,6 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle, Polygon, Wedge
 from matplotlib.widgets import Button, Slider
-from mpl_toolkits.mplot3d import Axes3D
 from numpy import linalg
 from numpy.typing import NDArray
 
@@ -95,11 +94,11 @@ class RaceViewer:
         figure.canvas.manager.window.showMaximized()
         plt.subplots_adjust(right=0.78, bottom=0.12)
         move_sliders = []
-        for move_ind in range(2 * bot.PREDICT_TURNS):
+        for move_ind in range(2 * bot.RACER_PREDICT_TURNS):
             move_sliders.append(Slider(plt.axes((0.84, 0.86 - 0.08 * move_ind, 0.12, 0.025)),
                                        ("d" if move_ind % 2 == 0 else "t") + str(move_ind // 2),
-                                       -180 if move_ind == 0 else -bot.MAX_TURN_DEG if move_ind % 2 == 0 else 0,
-                                       180 if move_ind == 0 else bot.MAX_TURN_DEG if move_ind % 2 == 0 else 100, valinit=0))
+                                       -bot.MAX_TURN_DEG if move_ind % 2 == 0 else 0,
+                                       bot.MAX_TURN_DEG if move_ind % 2 == 0 else 100, valinit=0))
         viewer = cls(checkpoints, history, color, extra_histories, collision_pos, show_collision_radius, show_predicted_collision_radius,
                      show_racer_avoidance_area, show_closest_brute_approach, 0, figure, axes,
                      Slider(plt.axes((0.18, 0.06, 0.55, 0.03)), "Turn", 0, len(history) - 1, valinit=0, valstep=1),
@@ -123,11 +122,11 @@ class RaceViewer:
 
     def sync_move_sliders(self):
         """Copies optimized moves from the selected snapshot into the sliders.
-        The first direction slider allows a full turn only on turn 0; all other direction sliders use the normal turn cap.
+        Direction sliders use the normal turn cap because turn 0 has no optimized prediction path.
         """
         self.updating_controls = True
-        self.move_sliders[0].valmin = -180 if self.turn_ind == 0 else -bot.MAX_TURN_DEG
-        self.move_sliders[0].valmax = 180 if self.turn_ind == 0 else bot.MAX_TURN_DEG
+        self.move_sliders[0].valmin = -bot.MAX_TURN_DEG
+        self.move_sliders[0].valmax = bot.MAX_TURN_DEG
         self.move_sliders[0].ax.set_xlim(self.move_sliders[0].valmin, self.move_sliders[0].valmax)
         for move_ind, slider in enumerate(self.move_sliders):
             slider.set_val(self.history[self.turn_ind].moves[move_ind] if move_ind < len(self.history[self.turn_ind].moves) else 0)
@@ -163,8 +162,8 @@ class RaceViewer:
             draw_history(self.axes, history, min(self.turn_ind, len(history) - 1), color, self.show_collision_radius)
         if self.collision_pos is not None and self.turn_ind == len(self.history) - 1:
             self.axes.scatter(self.collision_pos[0], self.collision_pos[1], color=COLLISION_COLOR, marker="x", s=220, linewidths=3)
-        draw_predictions(self.axes, self.history[self.turn_ind], self.checkpoints, self.get_selected_moves(), self.turn_ind == 0, self.color,
-                         self.show_predicted_collision_radius, self.show_racer_avoidance_area)
+        draw_predictions(self.axes, self.history[self.turn_ind], self.checkpoints, self.get_selected_moves(), self.color, self.show_predicted_collision_radius,
+                         self.show_racer_avoidance_area)
         if self.show_closest_brute_approach:
             draw_closest_brute_approach(self.axes, self.history, self.extra_histories, self.turn_ind, self.get_selected_moves(), self.checkpoints,
                                         self.show_predicted_collision_radius)
@@ -219,12 +218,9 @@ def show_three_pods():
 
 
 def show_coasting():
-    """Simulates a brute drifting into the enemy segment end while it turns around with zero thrust."""
-    segment_end = CHECKPOINTS[2].astype(float)
-    velocity = np.array((250, 0), dtype=float)
-    coast_distance = linalg.norm(velocity) * (1 - bot.DRAG ** 10) / (1 - bot.DRAG)
-    brute_direction = bot.normalize_angle(get_segment_direction(CHECKPOINTS[2], CHECKPOINTS[1]) + 180)
-    brute = BrutePod(1, segment_end - velocity / linalg.norm(velocity) * coast_distance, velocity, brute_direction, 1)
+    """Simulates a zero-speed brute accelerating toward a segment end before coasting while turning back along that segment."""
+    brute_direction = get_segment_direction(CHECKPOINTS[1], CHECKPOINTS[2])
+    brute = BrutePod(1, CHECKPOINTS[1].astype(float), np.array((0, 0), dtype=float), brute_direction, 1)
     enemy = EnemyRacerPod(0, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), brute_direction, 1)
     show_simulation(CHECKPOINTS, 1, [brute, enemy], 0)
 
@@ -248,14 +244,17 @@ def simulate_pods(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod
         commands = []
         for pod_ind, pod in enumerate(pods):
             target_direction, thrust, moves, base_target_pos = choose_pod_command(pod, pods, commands, turn_ind, laps, checkpoints, boosts)
-            future_states = bot.predict_turns(pod, checkpoints, moves, turn_ind == 0) if len(moves) else []
+            future_states = bot.predict_turns(pod, checkpoints, moves) if len(moves) else []
             histories[pod_ind].append(TurnSnapshot(pod, [future_state.pod for future_state in future_states], moves.tolist(), target_direction,
                                                    base_target_pos, thrust))
             if thrust == "BOOST":
                 boosts -= 1
             commands.append((target_direction, thrust))
-        next_pods = [bot.predict_next(pod, checkpoints, bot.normalize_angle(command[0] - pod.direction), command[1], turn_ind == 0).pod
-                     for pod, command in zip(pods, commands)]
+        next_pods = []
+        for pod, command in zip(pods, commands):
+            command_pod = type(pod)(pod.ind, pod.position, pod.velocity, command[0] if turn_ind == 0 else pod.direction, pod.next_checkpoint_ind,
+                                    pod.passed_checkpoints)
+            next_pods.append(bot.predict_next(command_pod, checkpoints, bot.normalize_angle(command[0] - command_pod.direction), command[1]).pod)
         collision_pos = get_first_collision_pos(pods, next_pods)
         if collision_pos is not None or any(pod.passed_checkpoints >= len(checkpoints) * laps for pod in next_pods if isinstance(pod, RacerPod)):
             for pod_ind, pod in enumerate(next_pods):
@@ -431,20 +430,20 @@ def draw_direction_line(axes: Axes, pod: BasePod, direction: float, color: str, 
               linewidth=1.5, alpha=alpha)
 
 
-def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], first_turn: bool, color: str,
-                     show_collision_radius: bool, show_racer_avoidance_area: bool):
+def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArray[int]], moves: list[float], color: str, show_collision_radius: bool,
+                     show_racer_avoidance_area: bool):
     """Draws the dashed future path from the selected turn using the current slider moves.
     Predicted positions inside any checkpoint get red outlines, and the final projected score is shown in the map corner.
     """
     if not snapshot.moves:
         return
-    future_states = bot.predict_turns(snapshot.pod, checkpoints, moves[:len(snapshot.moves)], first_turn)
+    future_states = bot.predict_turns(snapshot.pod, checkpoints, moves[:len(snapshot.moves)])
     positions = np.array([snapshot.pod.position] + [future_state.pod.position for future_state in future_states])
     axes.plot(positions[:, 0], positions[:, 1], color=color, linestyle="--", linewidth=1)
     axes.text(0.02, 0.98, f"score={round(future_states[-1].get_score(checkpoints))}", color="red", transform=axes.transAxes, ha="left", va="top")
     if show_racer_avoidance_area and isinstance(snapshot.pod, RacerPod):
-        direction_delta = bot.constrain_moves([moves[0], 100], first_turn)[0]
-        draw_racer_avoidance_area(axes, snapshot.pod, bot.normalize_angle(snapshot.pod.direction + direction_delta), first_turn, color)
+        direction_delta = bot.constrain_moves([moves[0], 100])[0]
+        draw_racer_avoidance_area(axes, snapshot.pod, bot.normalize_angle(snapshot.pod.direction + direction_delta), color)
     for future_state in future_states:
         edgecolor = "red" if any(linalg.norm(checkpoint - future_state.pod.position) <= OPTIMIZER_CHECKPOINT_RADIUS for checkpoint in checkpoints) else color
         axes.add_patch(Circle(future_state.pod.position, POD_RADIUS, fill=False, edgecolor=edgecolor, linestyle="--", linewidth=1))
@@ -453,9 +452,9 @@ def draw_predictions(axes: Axes, snapshot: TurnSnapshot, checkpoints: list[NDArr
         draw_pod_arrows(axes, future_state.pod, 0.5, color)
 
 
-def draw_racer_avoidance_area(axes: Axes, pod: BasePod, direction: float, first_turn: bool, color: str):
+def draw_racer_avoidance_area(axes: Axes, pod: BasePod, direction: float, color: str):
     """Draws the capsule-shaped avoidance area around the racer predicted avoidance segment."""
-    segment_end = bot.predict_turns(pod, None, BrutePod.predict_moves(pod, direction), first_turn)[-1].pod.position
+    segment_end = bot.predict_turns(pod, None, BrutePod.predict_moves(pod, direction))[-1].pod.position
     segment_unit = (segment_end - pod.position) / linalg.norm(segment_end - pod.position)
     perpendicular = np.array((-segment_unit[1], segment_unit[0]))
     segment_angle = math.degrees(math.atan2(segment_unit[1], segment_unit[0]))
@@ -473,15 +472,15 @@ def draw_closest_brute_approach(axes: Axes, history: list[TurnSnapshot], extra_h
     """Draws a predicted-style brute marker at synchronized closest approach to the racer predicted segment."""
     if not history[turn_ind].moves:
         return
-    direction_delta = bot.constrain_moves([moves[0], 100], turn_ind == 0)[0]
+    direction_delta = bot.constrain_moves([moves[0], 100])[0]
     racer_direction = bot.normalize_angle(history[turn_ind].pod.direction + direction_delta)
     for extra_history, color in extra_histories:
         snapshot = extra_history[min(turn_ind, len(extra_history) - 1)]
         if isinstance(snapshot.pod, BrutePod) and snapshot.target_direction is not None:
             brute_moves = BrutePod.predict_moves(snapshot.pod, snapshot.target_direction)
             racer_moves = BrutePod.predict_moves(history[turn_ind].pod, racer_direction)
-            brute_segment_end = bot.predict_turns(snapshot.pod, None, brute_moves, turn_ind == 0)[-1].pod.position
-            racer_segment_end = bot.predict_turns(history[turn_ind].pod, None, racer_moves, turn_ind == 0)[-1].pod.position
+            brute_segment_end = bot.predict_turns(snapshot.pod, None, brute_moves)[-1].pod.position
+            racer_segment_end = bot.predict_turns(history[turn_ind].pod, None, racer_moves)[-1].pod.position
             relative_position = snapshot.pod.position - history[turn_ind].pod.position
             relative_velocity = brute_segment_end - snapshot.pod.position - racer_segment_end + history[turn_ind].pod.position
             if not np.any(relative_velocity):

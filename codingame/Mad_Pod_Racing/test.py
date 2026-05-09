@@ -186,7 +186,8 @@ def main():
 
     # show_race(CHECKPOINTS, laps)
     # show_brute_collision()
-    show_three_pods()
+    # show_three_pods()
+    show_coasting()
     # run_optimization(CHECKPOINTS, turn)
     # plot_optimization_landscape_1d(CHECKPOINTS, turn)
     # plot_optimization_landscape_2d(CHECKPOINTS, turn)
@@ -215,6 +216,17 @@ def show_three_pods():
     brute = BrutePod(1, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), brute_direction, 0)
     enemy = EnemyRacerPod(0, CHECKPOINTS[2].astype(float), np.array((0, 0), dtype=float), racer_direction, 0)
     show_simulation(CHECKPOINTS, 1, [racer, brute, enemy], 0, True, True, True)
+
+
+def show_coasting():
+    """Simulates a brute drifting into the enemy segment end while it turns around with zero thrust."""
+    segment_end = CHECKPOINTS[2].astype(float)
+    velocity = np.array((250, 0), dtype=float)
+    coast_distance = linalg.norm(velocity) * (1 - bot.DRAG ** 10) / (1 - bot.DRAG)
+    brute_direction = bot.normalize_angle(get_segment_direction(CHECKPOINTS[2], CHECKPOINTS[1]) + 180)
+    brute = BrutePod(1, segment_end - velocity / linalg.norm(velocity) * coast_distance, velocity, brute_direction, 1)
+    enemy = EnemyRacerPod(0, CHECKPOINTS[0].astype(float), np.array((0, 0), dtype=float), brute_direction, 1)
+    show_simulation(CHECKPOINTS, 1, [brute, enemy], 0)
 
 
 def show_simulation(checkpoints: list[NDArray[int]], laps: int, pods: list[BasePod], boosts: int, show_predicted_collision_radius: bool = False,
@@ -267,8 +279,10 @@ def choose_pod_command(pod: BasePod, pods: list[BasePod], commands: list[tuple[f
     my_pods = [pod] if racer_ind is None else [pods[racer_ind], pod]
     foe_pods = [other_pod for other_pod in pods if isinstance(other_pod, EnemyRacerPod)]
     game_state = GameState(turn_ind, laps, checkpoints, my_pods, foe_pods, 0)
+    enemy = pod.get_lead_enemy(game_state)
     direction, thrust = pod.choose_command(game_state, None if racer_ind is None else commands[racer_ind])
-    return direction, thrust, np.array((), dtype=float), pod.choose_base_command(game_state, pod.get_lead_enemy(game_state))[0]
+    return direction, thrust, np.array((), dtype=float), pod.get_attack_target(enemy) if pod.is_attackable(enemy) else \
+        checkpoints[(enemy.next_checkpoint_ind + 1) % len(checkpoints)]
 
 
 def get_first_collision_pos(pods: list[BasePod], next_pods: list[BasePod]) -> NDArray[float] | None:

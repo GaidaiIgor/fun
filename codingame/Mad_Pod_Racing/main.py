@@ -128,8 +128,7 @@ class BrutePod(BasePod):
     def choose_command(self, game_state: GameState, racer_command: tuple[float, float | str] | None = None) -> tuple[float, float | str]:
         """Chooses the brute command against the lead enemy, applying racer avoidance and replacing thrust with SHIELD when impact is predicted."""
         enemy = self.get_lead_enemy(game_state)
-        target_pos, thrust = self.choose_base_command(game_state, enemy)
-        direction = self.direction if np.array_equal(target_pos, self.position) else get_segment_direction(self.position, target_pos)
+        direction, thrust = self.choose_base_command(game_state, enemy)
         direction = direction if racer_command is None else self.avoid_racer(game_state, direction, racer_command)
         return direction, "SHIELD" if self.does_next_motion_collide(game_state, (direction, "SHIELD"), enemy) else thrust
 
@@ -138,11 +137,11 @@ class BrutePod(BasePod):
         """Returns the opponent pod with the greatest observed race progress."""
         return max(game_state.foe_pods, key=lambda pod: pod.get_race_progress(game_state.checkpoints))
 
-    def choose_base_command(self, game_state: GameState, enemy: BasePod) -> tuple[NDArray[float], float]:
-        """Chooses the brute target and thrust before racer avoidance and shield override."""
+    def choose_base_command(self, game_state: GameState, enemy: BasePod) -> tuple[float, float]:
+        """Chooses the brute direction and thrust before racer avoidance and shield override."""
         if self.is_attackable(enemy):
             log(f"Brute: attacking foe {enemy.ind}")
-            return self.get_attack_target(enemy), 100
+            return get_segment_direction(self.position, self.get_attack_target(enemy)), 100
         log(f"Brute: ambushing foe {enemy.ind}")
         return self.choose_ambush_command(game_state, enemy)
 
@@ -157,18 +156,18 @@ class BrutePod(BasePod):
         enemy_direction_vector = np.array((math.cos(enemy_direction), -math.sin(enemy_direction)))
         return enemy.position + enemy_direction_vector * np.dot(self.position - enemy.position, enemy_direction_vector) * ATTACK_DIST_FRAC
 
-    def choose_ambush_command(self, game_state: GameState, enemy: BasePod) -> tuple[NDArray[float], float]:
+    def choose_ambush_command(self, game_state: GameState, enemy: BasePod) -> tuple[float, float]:
         """Chooses a fallback command toward the end of enemy next active segment, or coasts while turning back along it."""
         segment_start = game_state.checkpoints[enemy.next_checkpoint_ind]
         segment_end = game_state.checkpoints[(enemy.next_checkpoint_ind + 1) % len(game_state.checkpoints)]
         segment_back_direction = get_segment_direction(segment_end, segment_start)
         if linalg.norm(self.position - segment_end) <= PARKING_DIST:
             log(f"Brute: parked foe {enemy.ind}")
-            return self.position, 0
+            return segment_back_direction, 0
         if self.should_coast_to_turn(segment_end, segment_back_direction):
             log(f"Brute: coast segment end foe {enemy.ind}")
-            return self.position, 0
-        return segment_end, 100
+            return segment_back_direction, 0
+        return get_segment_direction(self.position, segment_end), 100
 
     def should_coast_to_turn(self, target_pos: NDArray[float], target_direction: float) -> bool:
         """Checks whether the velocity ray crosses the parking spot and zero-thrust prediction ends inside it after turning time."""

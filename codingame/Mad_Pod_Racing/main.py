@@ -84,11 +84,7 @@ class BasePod:
 class RacerPod(BasePod):
     """Represents our racing pod, which follows checkpoints in order using continuous move optimization."""
 
-    def choose_command(self, game_state: GameState) -> tuple[float, float | str]:
-        """Returns only the command direction and thrust from choose_move(game_state)."""
-        return self.choose_move(game_state)[:2]
-
-    def choose_move(self, game_state: GameState) -> tuple[float, float | str, list[FutureState]]:
+    def choose_command(self, game_state: GameState) -> tuple[float, float | str, list[FutureState]]:
         """Chooses one racer command and the optimized future move sequence that produced it.
         game_state supplies checkpoints, turn index and boost availability. The first turn aims straight at the next checkpoint.
         Later turns optimize direction delta and thrust pairs, unless the pre-optimization BOOST check selects a direct boost.
@@ -146,12 +142,12 @@ class BrutePod(BasePod):
         enemy = self.get_lead_enemy(game_state)
         if game_state.turn_ind == 0:
             return self.get_target_direction(game_state.checkpoints[(enemy.next_checkpoint_ind + 1) % len(game_state.checkpoints)]), 100
-        brute_trajectory, foe_trajectory = self.choose_base_command(game_state, enemy)
+        brute_trajectory, enemy_trajectory = self.choose_base_command(game_state, enemy)
         if racer_trajectory is not None:
-            brute_trajectory = self.avoid_racer(game_state, brute_trajectory, foe_trajectory, racer_trajectory)
+            brute_trajectory = self.avoid_racer(game_state, brute_trajectory, enemy_trajectory, racer_trajectory)
         direction = normalize_angle(self.direction + brute_trajectory[1].moves[0])
         thrust = brute_trajectory[1].moves[1]
-        shield = self.does_next_motion_collide(game_state, (direction, "SHIELD"), enemy)
+        shield = self.get_collision_time(brute_trajectory, enemy_trajectory, COLLISION_RADIUS) <= 1
         return direction, "SHIELD" if shield else thrust
 
     @staticmethod
@@ -230,31 +226,30 @@ class BrutePod(BasePod):
         future_states = predict_turns(self, None, np.tile(np.array((0, 0), dtype=float), turn_count))
         return linalg.norm(future_states[-1].pod.position - target_pos) <= PARKING_DIST
 
-    def avoid_racer(self, game_state: GameState, brute_trajectory: list[FutureState], foe_trajectory: list[FutureState],
-                    racer_trajectory: list[FutureState]) -> list[FutureState]:
+    def avoid_racer(self, game_state: GameState, brute_trajectory: list[FutureState], foe_trajectory: list[FutureState], racer_trajectory: list[FutureState]) \
+        -> list[FutureState]:
         """Checks brute_trajectory against racer_trajectory and foe_trajectory from game_state.
         Returns the chosen brute trajectory after trying racer avoidance trajectories.
         """
         racer_trajectory = extend_checkpoint_trajectory(racer_trajectory.copy(), game_state.checkpoints, BRUTE_PREDICT_TURNS)
-        racer_avoid_time = self.get_first_trajectory_collision_time(brute_trajectory, racer_trajectory, RACER_AVOID_RADIUS)
-        if math.isinf(racer_avoid_time):
+        racer_collision_time = self.get_collision_time(brute_trajectory, racer_trajectory, RACER_AVOID_RADIUS)
+        if math.isinf(racer_collision_time):
             return brute_trajectory
-        enemy_collision_time = self.get_first_trajectory_collision_time(brute_trajectory, foe_trajectory, COLLISION_RADIUS)
-        if enemy_collision_time < racer_avoid_time:
+        enemy_collision_time = self.get_collision_time(brute_trajectory, foe_trajectory, COLLISION_RADIUS)
+        if enemy_collision_time < racer_collision_time:
             return brute_trajectory
         thrust = brute_trajectory[1].moves[1]
-        for candidate in (normalize_angle(self.direction - MAX_TURN_DEG), normalize_angle(self.direction + MAX_TURN_DEG)):
-            candidate_moves = [normalize_angle(candidate - self.direction), thrust] + [0, thrust] * (BRUTE_PREDICT_TURNS - 1)
-            candidate_trajectory = [FutureState([], self)] + predict_turns(self, None, candidate_moves)
-            if math.isinf(self.get_first_trajectory_collision_time(candidate_trajectory, racer_trajectory, RACER_AVOID_RADIUS)):
+        for direction_delta in (-MAX_TURN_DEG, MAX_TURN_DEG):
+            candidate_trajectory = [FutureState([], self)] + predict_turns(self, None, [direction_delta, thrust] * BRUTE_PREDICT_TURNS)
+            if math.isinf(self.get_collision_time(candidate_trajectory, racer_trajectory, RACER_AVOID_RADIUS)):
                 return candidate_trajectory
         log("Brute: no racer-safe direction found")
         return [FutureState([], self)] + predict_turns(self, None, [brute_trajectory[1].moves[0], 0] + [0, 0] * (BRUTE_PREDICT_TURNS - 1))
 
     @staticmethod
-    def get_first_trajectory_collision_time(trajectory_1: list[FutureState], trajectory_2: list[FutureState], radius: float) -> float:
+    def get_collision_time(trajectory_1: list[FutureState], trajectory_2: list[FutureState], radius: float) -> float:
         """Returns the first fractional turn time when trajectory_1 and trajectory_2 enter radius, or infinity if they never do."""
-        for turn_ind in range(min(len(trajectory_1), len(trajectory_2)) - 1):
+        for turn_ind in range(len(trajectory_1) - 1):
             relative_position = trajectory_1[turn_ind].pod.position - trajectory_2[turn_ind].pod.position
             relative_velocity = trajectory_1[turn_ind + 1].pod.position - trajectory_1[turn_ind].pod.position \
                 - trajectory_2[turn_ind + 1].pod.position + trajectory_2[turn_ind].pod.position
@@ -279,18 +274,6 @@ class BrutePod(BasePod):
             return linalg.norm(point - start)
         segment_pos = np.clip(np.dot(point - start, segment) / np.dot(segment, segment), 0, 1)
         return linalg.norm(start + segment * segment_pos - point)
-
-    def does_next_motion_collide(self, game_state: GameState, my_command: tuple[float, float | str], pod: BasePod,
-                                 pod_command: tuple[float, float | str] | None = None) -> bool:
-        """Checks whether my_command in game_state comes within collision distance of pod using pod_command or default foe motion.
-        Returns true when collision is predicted.
-        """
-        if pod_command is None:
-            pod_end = predict_next(pod, game_state.checkpoints, 0, 100).pod.position
-        else:
-            pod_end = predict_next(pod, game_state.checkpoints, normalize_angle(pod_command[0] - pod.direction), pod_command[1]).pod.position
-        my_end = predict_next(self, game_state.checkpoints, normalize_angle(my_command[0] - self.direction), my_command[1]).pod.position
-        return self.get_min_approach_distance(self.position, my_end, pod.position, pod_end) <= COLLISION_RADIUS
 
     @staticmethod
     def get_min_approach_distance(start_1: NDArray[float], end_1: NDArray[float], start_2: NDArray[float], end_2: NDArray[float]) -> float:
@@ -345,7 +328,7 @@ def main():
         game_state.log()
         log_time("state log")
 
-        commands = choose_move(game_state)
+        commands = choose_pods_move(game_state)
         for pod, (direction, thrust) in zip(game_state.my_pods, commands):
             target_pos = get_command_target(pod.position, direction)
             print(round(target_pos[0]), round(target_pos[1]), thrust if isinstance(thrust, str) else round(thrust))
@@ -383,16 +366,17 @@ def read_pod(pod_ind: int, pod_type: type[BasePod], prev_game_state: GameState) 
     return pod_type(pod_ind, np.array((x, y), dtype=float), np.array((vx, vy), dtype=float), normalize_angle(-angle), next_checkpoint_ind, checkpoint_passes)
 
 
-def choose_move(game_state: GameState) -> list[tuple[float, float | str]]:
+def choose_pods_move(game_state: GameState) -> list[tuple[float, float | str]]:
     """Chooses both pod commands from game_state and applies boost side effects. Returns one command per controlled pod."""
-    racer_move = game_state.my_pods[0].choose_move(game_state)
-    commands = [racer_move[:2]]
+    racer_response = game_state.my_pods[0].choose_command(game_state)
+    commands = [racer_response[:2]]
+    if racer_response[1] == "BOOST":
+        game_state.boosts -= 1
     log_time("choose racer")
-    commands.append(game_state.my_pods[1].choose_command(game_state, racer_move[2]))
+
+    brute_command = game_state.my_pods[1].choose_command(game_state, racer_response[2])
+    commands.append(brute_command)
     log_time("choose brute")
-    for _, thrust in commands:
-        if thrust == "BOOST":
-            game_state.boosts -= 1
     return commands
 
 

@@ -281,7 +281,7 @@ def choose_pod_command(pod: BasePod, pods: list[BasePod], commands: list[tuple[f
     -> tuple[float, float | str, NDArray[float], NDArray[float] | None, list[FutureState]]:
     """Chooses one command for pod using pods, commands, turn_ind, laps, checkpoints and boosts. Returns direction, thrust, moves, target and trajectory."""
     if isinstance(pod, RacerPod):
-        direction, thrust, trajectory = pod.choose_move(GameState(turn_ind, laps, checkpoints, [pod], [], boosts))
+        direction, thrust, trajectory = pod.choose_command(GameState(turn_ind, laps, checkpoints, [pod], [], boosts))
         moves = np.array(trajectory[-1].moves, dtype=float) if len(trajectory[-1].moves) == 2 * bot.RACER_PREDICT_TURNS else np.array((), dtype=float)
         return direction, thrust, moves, None, trajectory
     racer_ind = next((other_ind for other_ind, other_pod in enumerate(pods[:len(commands)])

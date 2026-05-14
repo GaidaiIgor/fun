@@ -102,13 +102,14 @@ def evaluate_builds(
     return best
 
 
-def make_route() -> tuple[dict[int, int], set[tuple[int, int]]]:
-    """Builds floor targets and the subset of targets where a new elevator must be built."""
+def make_route(start_floor: int, start_pos: int, start_direction: int) -> tuple[dict[int, int], set[tuple[int, int]]]:
+    """Builds floor targets and the subset of targets where a new elevator must be built from a start state."""
     global important_positions
 
     targets = {}
     builds = set()
-    state = 0, 0, RIGHT, nb_additional_elevators, nb_total_clones - 1
+    state = start_floor, start_pos, start_direction, nb_additional_elevators, nb_total_clones - 1
+    debug("ROUTE_START", state)
     route_cost = best_cost(*state)
     debug("ROUTE_INITIAL_COST", route_cost)
     if route_cost[0] > nb_rounds:
@@ -155,7 +156,8 @@ debug("INIT_RESOURCES", "clones", nb_total_clones, "extra", nb_additional_elevat
 debug("ELEVATORS", [sorted(elevator_positions) for elevator_positions in elevators_by_floor])
 debug("IMPORTANT_POSITIONS", important_positions)
 
-targets_by_floor, elevators_to_build = make_route()
+targets_by_floor = None
+elevators_to_build = set()
 built_elevators = set()
 turn = 0
 
@@ -170,6 +172,10 @@ while True:
         print("WAIT")
         continue
 
+    direction = DIRECTIONS[direction_text]
+    if targets_by_floor is None:
+        targets_by_floor, elevators_to_build = make_route(clone_floor, clone_pos, direction)
+
     if clone_floor not in targets_by_floor:
         debug("MISSING_TARGET", "turn", turn, "floor", clone_floor, "pos", clone_pos, "direction", direction_text, "targets", targets_by_floor)
     target_pos = targets_by_floor[clone_floor]
@@ -181,7 +187,6 @@ while True:
         print("ELEVATOR")
         continue
 
-    direction = DIRECTIONS[direction_text]
     needs_block = direction == LEFT and clone_pos < target_pos or direction == RIGHT and clone_pos > target_pos
     action = "BLOCK" if needs_block else "WAIT"
     debug("TURN", turn, "f", clone_floor, "p", clone_pos, "dir", direction_text, "t", target_pos, "build", needs_build, "block", needs_block, "act", action)

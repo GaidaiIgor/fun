@@ -97,7 +97,9 @@ class RacerPod(BasePod):
             next_state = predict_next(self, game_state.checkpoints, normalize_angle(checkpoint_direction - self.direction), "BOOST")
             return checkpoint_direction, "BOOST", [FutureState([], self), next_state]
 
+        log_time("Racer: begin optimization")
         result = self.optimize_moves(game_state.checkpoints)
+        log_time("Racer: end optimization")
         future_states = predict_turns(self, game_state.checkpoints, result.x)
 
         log(f"Pod {self.ind} move:")
@@ -116,13 +118,13 @@ class RacerPod(BasePod):
             (game_state.turn_ind == 0 or abs(normalize_angle(self.direction - checkpoint_direction)) <= BOOST_ANGLE_TOL)
 
     def optimize_moves(self, checkpoints: list[NDArray[int]]) -> OptimizeResult:
-        """Optimizes alternating direction delta and thrust coordinates for the configured prediction horizon.
-        checkpoints define the race path used by the FutureState score after applying model-level move constraints and progress.
-        result.x is constrained again after minimize returns so downstream code sees valid model inputs. Returns the scipy optimization result.
+        """Optimizes racer moves for checkpoints using the fast scalar objective.
+        :param checkpoints: Race checkpoints used to score predicted progress.
+        :return: Scipy optimization result with result.x constrained to legal model coordinates.
         """
         move_bounds = optimize.Bounds(np.tile(np.array((-MAX_TURN_DEG, 0), dtype=float), RACER_PREDICT_TURNS),
                                       np.tile(np.array((MAX_TURN_DEG, 100), dtype=float), RACER_PREDICT_TURNS))
-        result = optimize.minimize(lambda moves: predict_turns(self, checkpoints, moves)[-1].get_score(checkpoints), self.get_optimizer_guess_moves(),
+        result = optimize.minimize(lambda moves: get_optimizer_score(self, checkpoints, moves), self.get_optimizer_guess_moves(),
                                    method="L-BFGS-B", bounds=move_bounds, options={"maxiter": np.iinfo(np.int32).max})
         result.x = constrain_moves(result.x)
         return result
@@ -238,6 +240,8 @@ class BrutePod(BasePod):
         enemy_collision_time = self.get_collision_time(brute_trajectory, foe_trajectory, COLLISION_RADIUS)
         if enemy_collision_time < racer_collision_time:
             return brute_trajectory
+
+        log("Brute: avoiding racer")
         thrust = brute_trajectory[1].moves[1]
         for direction_delta in (-MAX_TURN_DEG, MAX_TURN_DEG):
             candidate_trajectory = [FutureState([], self)] + predict_turns(self, None, [direction_delta, thrust] * BRUTE_PREDICT_TURNS)
@@ -326,7 +330,6 @@ def main():
         game_state = update_game_state(game_state)
         log_time("read turn")
         game_state.log()
-        log_time("state log")
 
         commands = choose_pods_move(game_state)
         for pod, (direction, thrust) in zip(game_state.my_pods, commands):
@@ -392,6 +395,45 @@ def predict_turns(current: BasePod, checkpoints: list[NDArray[int]] | None, move
             next_state.moves = future_states[-1].moves + next_state.moves
         future_states.append(next_state)
     return future_states
+
+
+def get_optimizer_score(current: BasePod, checkpoints: list[NDArray[int]], moves: list[float] | NDArray[float]) -> float:
+    """Scores moves from current against checkpoints without allocating FutureState objects.
+    :param current: Pod state at the start of prediction.
+    :param checkpoints: Race checkpoints used for checkpoint progress and final distance.
+    :param moves: Alternating direction delta and thrust coordinates to score.
+    :return: Optimizer score matching FutureState.get_score for the final predicted state.
+    """
+    x, y = current.position
+    vx, vy = current.velocity
+    direction = current.direction
+    next_checkpoint_ind = current.next_checkpoint_ind
+    passed_checkpoints = current.passed_checkpoints
+    checkpoint_radius_sq = OPTIMIZER_CHECKPOINT_RADIUS ** 2
+    for move_ind in range(0, len(moves), 2):
+        direction_delta = np.clip(moves[move_ind], -MAX_TURN_DEG, MAX_TURN_DEG)
+        thrust = np.clip(moves[move_ind + 1], 0, 100)
+        direction = normalize_angle(direction + direction_delta)
+        direction_rad = math.radians(direction)
+        vx += math.cos(direction_rad) * thrust
+        vy -= math.sin(direction_rad) * thrust
+        x += vx
+        y += vy
+        passed_this_turn = 0
+        while passed_this_turn < len(checkpoints):
+            checkpoint = checkpoints[(next_checkpoint_ind + passed_this_turn) % len(checkpoints)]
+            dx = checkpoint[0] - x
+            dy = checkpoint[1] - y
+            if dx * dx + dy * dy > checkpoint_radius_sq:
+                break
+            passed_this_turn += 1
+        passed_checkpoints += passed_this_turn
+        next_checkpoint_ind = (next_checkpoint_ind + passed_this_turn) % len(checkpoints)
+        vx *= DRAG
+        vy *= DRAG
+    dx = checkpoints[next_checkpoint_ind][0] - x
+    dy = checkpoints[next_checkpoint_ind][1] - y
+    return math.sqrt(dx * dx + dy * dy) - passed_checkpoints * CHECKPOINT_BONUS
 
 
 def extend_checkpoint_trajectory(trajectory: list[FutureState], checkpoints: list[NDArray[int]], turn_count: int) -> list[FutureState]:

@@ -342,7 +342,8 @@ def run_optimization(checkpoints: list[NDArray[int]], turn: int):
 
 def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
     """Plots a score surface over the first direction delta and thrust coordinates for a simulated turn.
-    checkpoints and turn choose the simulated pod. White marks the seed and red marks the optimized first move at its actual score height.
+    :param checkpoints: Race checkpoints used to simulate the pod and score moves.
+    :param turn: Simulated turn index whose pod state is plotted.
     """
     pod = simulate_single_pod(checkpoints, 1)[turn].pod
     guess_moves = RacerPod.get_optimizer_guess_moves()
@@ -355,7 +356,7 @@ def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
             moves = guess_moves.copy()
             moves[0] = direction_delta
             moves[1] = thrust
-            scores[thrust_ind, direction_ind] = bot.predict_turns(pod, checkpoints, moves)[-1].get_score(checkpoints)
+            scores[thrust_ind, direction_ind] = bot.get_optimizer_score(pod, checkpoints, moves)
 
     figure = plt.figure(figsize=(10, 7))
     figure.canvas.manager.window.showMaximized()
@@ -365,10 +366,10 @@ def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
     figure.colorbar(surface, ax=axes, label="Score", shrink=0.65)
     optimized_marker_moves = guess_moves.copy()
     optimized_marker_moves[:2] = result.x[:2]
-    axes.scatter(guess_moves[0], guess_moves[1], bot.predict_turns(pod, checkpoints, guess_moves)[-1].get_score(checkpoints), color="white",
-                 edgecolor="black", marker="o", s=60, label="Guess")
-    axes.scatter(optimized_marker_moves[0], optimized_marker_moves[1], bot.predict_turns(pod, checkpoints, optimized_marker_moves)[-1].get_score(checkpoints),
-                 color="red", edgecolor="black", marker="x", s=80, label="Optimized")
+    axes.scatter(guess_moves[0], guess_moves[1], bot.get_optimizer_score(pod, checkpoints, guess_moves), color="white", edgecolor="black", marker="o",
+                 s=60, label="Guess")
+    axes.scatter(optimized_marker_moves[0], optimized_marker_moves[1], bot.get_optimizer_score(pod, checkpoints, optimized_marker_moves), color="red",
+                 edgecolor="black", marker="x", s=80, label="Optimized")
     axes.set_xlabel("Direction delta")
     axes.set_ylabel("Thrust")
     axes.set_zlabel("Score")
@@ -379,7 +380,8 @@ def plot_optimization_landscape_2d(checkpoints: list[NDArray[int]], turn: int):
 
 def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
     """Plots a one-coordinate score slice through an explicit move vector.
-    checkpoints and turn choose the simulated pod. coordinate_ind sweeps one coordinate while every other coordinate stays at coords.
+    :param checkpoints: Race checkpoints used to simulate the pod and score moves.
+    :param turn: Simulated turn index whose pod state is plotted.
     """
     coordinate_ind = 8
     coords = np.array((9.32, 99, 6.8, 99.2, 4.28, 99.4, 2.25, 99.5, 0.79, 99.7), dtype=float)
@@ -391,15 +393,15 @@ def plot_optimization_landscape_1d(checkpoints: list[NDArray[int]], turn: int):
     for coordinate_value in coordinate_values:
         moves = coords.copy()
         moves[coordinate_ind] = coordinate_value
-        scores.append(bot.predict_turns(pod, checkpoints, moves)[-1].get_score(checkpoints))
+        scores.append(bot.get_optimizer_score(pod, checkpoints, moves))
 
     figure, axes = plt.subplots(figsize=(10, 7))
     figure.canvas.manager.window.showMaximized()
     optimized_marker_moves = coords.copy()
     optimized_marker_moves[coordinate_ind] = result.x[coordinate_ind]
     axes.plot(coordinate_values, scores, color="black", marker="o", markersize=3)
-    axes.scatter(optimized_marker_moves[coordinate_ind], bot.predict_turns(pod, checkpoints, optimized_marker_moves)[-1].get_score(checkpoints), color="red",
-                 marker="x", s=80, label="Optimized")
+    axes.scatter(optimized_marker_moves[coordinate_ind], bot.get_optimizer_score(pod, checkpoints, optimized_marker_moves), color="red", marker="x", s=80,
+                 label="Optimized")
     axes.set_xlabel(f"move[{coordinate_ind}]")
     axes.set_ylabel("Score")
     axes.set_title("One-coordinate optimization landscape")

@@ -145,12 +145,26 @@ class Planner:
             if candidate is None:
                 print(f"[M{self.month + 1:02d}] capacity stop no_candidate budget={budget} rounds={capacity_round}", file=sys.stderr)
                 break
-            if candidate.efficiency < 1:
-                print(f"[M{self.month + 1:02d}] capacity stop low_eff best={describe_candidate(candidate)}", file=sys.stderr)
+            if candidate.score <= 0:
+                print(f"[M{self.month + 1:02d}] capacity stop non_positive best={describe_candidate(candidate)}", file=sys.stderr)
                 break
             capacity_round += 1
             print(f"[M{self.month + 1:02d}] capacity choose round={capacity_round} best={describe_candidate(candidate)}", file=sys.stderr)
             budget = self.apply_candidate("capacity", candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts,
+                                          budget, pod_ids)
+
+        teleport_round = 0
+        while True:
+            candidate = self.best_teleport_speed_candidate(serviced, direct_pod_counts, teleport_used, budget)
+            if candidate is None:
+                print(f"[M{self.month + 1:02d}] speed_teleport stop no_candidate budget={budget} rounds={teleport_round}", file=sys.stderr)
+                break
+            if candidate.score <= 0:
+                print(f"[M{self.month + 1:02d}] speed_teleport stop non_positive best={describe_candidate(candidate)}", file=sys.stderr)
+                break
+            teleport_round += 1
+            print(f"[M{self.month + 1:02d}] speed_teleport choose round={teleport_round} best={describe_candidate(candidate)}", file=sys.stderr)
+            budget = self.apply_candidate("speed_teleport", candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts,
                                           budget, pod_ids)
 
         action_line = ";".join(actions) or "WAIT"
@@ -210,6 +224,7 @@ class Planner:
     def get_module_load(self) -> Counter[int]:
         """Estimates monthly passenger counts assigned to each module."""
         loads = Counter()
+        counted_pairs = set()
         for entrance, exit_id in self.teleports.items():
             if entrance not in self.buildings or exit_id not in self.buildings:
                 continue
@@ -217,16 +232,16 @@ class Planner:
             module = self.buildings[exit_id]
             if pad.kind == 0 and module.kind > 0:
                 loads[exit_id] += pad.demand[module.kind]
+                counted_pairs.add((pad.id, module.kind))
 
         for pod in self.pods.values():
             if not pod.path or pod.path[0] not in self.buildings or self.buildings[pod.path[0]].kind != 0:
                 continue
             pad = self.buildings[pod.path[0]]
-            counted_types = set()
             for building_id in pod.path[1:]:
-                if building_id not in self.buildings or self.buildings[building_id].kind <= 0 or self.buildings[building_id].kind in counted_types:
+                if building_id not in self.buildings or self.buildings[building_id].kind <= 0 or (pad.id, self.buildings[building_id].kind) in counted_pairs:
                     continue
-                counted_types.add(self.buildings[building_id].kind)
+                counted_pairs.add((pad.id, self.buildings[building_id].kind))
                 loads[building_id] += pad.demand[self.buildings[building_id].kind]
         return loads
 
@@ -420,6 +435,30 @@ class Planner:
                         best = candidate
         return best
 
+    def best_teleport_speed_candidate(self, serviced: set[tuple[int, int]], direct_counts: Counter[tuple[int, int]], teleport_used: set[int],
+                                      budget: int) -> Candidate | None:
+        """Finds the best teleporter that speeds up an already served direct route."""
+        if budget < TELEPORT_COST:
+            return None
+        best = None
+        for pad in self.get_landing_pads():
+            if pad.id in teleport_used:
+                continue
+            for astronaut_type, count in pad.demand.items():
+                if (pad.id, astronaut_type) not in serviced:
+                    continue
+                for module in self.get_modules_by_type()[astronaut_type]:
+                    pod_count = direct_counts[(pad.id, module.id)]
+                    if pod_count <= 0 or module.id in teleport_used:
+                        continue
+                    old_score = monthly_score(count, 1, 0, pod_count)
+                    new_score = monthly_teleport_score(count, 0)
+                    candidate = Candidate((new_score - old_score) * self.months_left(), TELEPORT_COST, pad.id, module.id, astronaut_type,
+                                          teleport=(pad.id, module.id), delivered=count)
+                    if best is None or candidate.score > best.score:
+                        best = candidate
+        return best
+
     def apply_candidate(self, reason: str, candidate: Candidate, actions: list[str], serviced: set[tuple[int, int]], module_load: Counter[int],
                         degrees: Counter[int], teleport_used: set[int], tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]],
                         budget: int, pod_ids: set[int]) -> int:
@@ -444,10 +483,11 @@ class Planner:
             pod_id = next_pod_id(pod_ids)
             pod_ids.add(pod_id)
             actions.append("POD {} {}".format(pod_id, " ".join(map(str, candidate.path))))
-        if len(candidate.path) == 3 and candidate.path[0] == candidate.path[2]:
-            direct_pod_counts[(candidate.path[0], candidate.path[1])] += 1
-        serviced.add((candidate.pad_id, candidate.astronaut_type))
-        module_load[candidate.module_id] += candidate.delivered
+            if len(candidate.path) == 3 and candidate.path[0] == candidate.path[2]:
+                direct_pod_counts[(candidate.path[0], candidate.path[1])] += 1
+        if reason == "service":
+            serviced.add((candidate.pad_id, candidate.astronaut_type))
+            module_load[candidate.module_id] += candidate.delivered
         new_budget = budget - candidate.cost
         print(
             f"[M{self.month + 1:02d}] apply {reason} budget={budget}->{new_budget} "

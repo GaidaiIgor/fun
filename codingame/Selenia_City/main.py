@@ -118,6 +118,7 @@ class Planner:
         module_load = self.get_module_load()
         degrees = self.get_tube_degrees()
         teleport_used = self.get_teleport_used_buildings()
+        teleported_pairs = self.get_teleported_pairs()
         pod_ids = set(self.pods)
         tubes = dict(self.tubes)
         direct_pod_counts = self.get_direct_service_pod_counts()
@@ -138,34 +139,35 @@ class Planner:
                 print(f"{prefix} choose best={describe_candidate(candidate)}", file=sys.stderr)
                 budget = self.apply_candidate("service", candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts,
                                               budget, pod_ids)
+                if candidate.teleport is not None:
+                    teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
-        capacity_round = 0
+        speed_round = 0
         while True:
-            candidate = self.best_capacity_candidate(serviced, tubes, direct_pod_counts, budget, pod_ids)
-            if candidate is None:
-                print(f"[M{self.month + 1:02d}] capacity stop no_candidate budget={budget} rounds={capacity_round}", file=sys.stderr)
+            speed_budget = self.speed_spend_budget(budget)
+            speed_pick = self.best_speed_candidate(serviced, tubes, direct_pod_counts, teleport_used, teleported_pairs, speed_budget, pod_ids)
+            if speed_budget <= 0:
+                print(f"[M{self.month + 1:02d}] speed stop reserve budget={budget} reserve={self.reserve_floor()} rounds={speed_round}", file=sys.stderr)
                 break
+            if speed_pick is None:
+                print(f"[M{self.month + 1:02d}] speed stop no_candidate budget={budget} spendable={speed_budget} rounds={speed_round}", file=sys.stderr)
+                break
+            reason, candidate = speed_pick
             if candidate.score <= 0:
-                print(f"[M{self.month + 1:02d}] capacity stop non_positive best={describe_candidate(candidate)}", file=sys.stderr)
+                print(f"[M{self.month + 1:02d}] speed stop non_positive best={describe_candidate(candidate)}", file=sys.stderr)
                 break
-            capacity_round += 1
-            print(f"[M{self.month + 1:02d}] capacity choose round={capacity_round} best={describe_candidate(candidate)}", file=sys.stderr)
-            budget = self.apply_candidate("capacity", candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts,
-                                          budget, pod_ids)
-
-        teleport_round = 0
-        while True:
-            candidate = self.best_teleport_speed_candidate(serviced, direct_pod_counts, teleport_used, budget)
-            if candidate is None:
-                print(f"[M{self.month + 1:02d}] speed_teleport stop no_candidate budget={budget} rounds={teleport_round}", file=sys.stderr)
+            min_speed_efficiency = self.min_speed_efficiency()
+            if candidate.efficiency < min_speed_efficiency:
+                print(
+                    f"[M{self.month + 1:02d}] speed stop low_eff best={describe_candidate(candidate)} min_speed_eff={min_speed_efficiency:.2f}",
+                    file=sys.stderr,
+                )
                 break
-            if candidate.score <= 0:
-                print(f"[M{self.month + 1:02d}] speed_teleport stop non_positive best={describe_candidate(candidate)}", file=sys.stderr)
-                break
-            teleport_round += 1
-            print(f"[M{self.month + 1:02d}] speed_teleport choose round={teleport_round} best={describe_candidate(candidate)}", file=sys.stderr)
-            budget = self.apply_candidate("speed_teleport", candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts,
-                                          budget, pod_ids)
+            speed_round += 1
+            print(f"[M{self.month + 1:02d}] speed choose reason={reason} round={speed_round} best={describe_candidate(candidate)}", file=sys.stderr)
+            budget = self.apply_candidate(reason, candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts, budget, pod_ids)
+            if candidate.teleport is not None:
+                teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
         action_line = ";".join(actions) or "WAIT"
         print(f"[M{self.month + 1:02d}] output resources={self.resources} spent={self.resources - budget} remaining={budget}", file=sys.stderr)
@@ -198,7 +200,8 @@ class Planner:
         """Prints the planning state before candidate selection starts."""
         print(
             f"[M{self.month + 1:02d}] plan start months_left={self.months_left()} min_eff={min_efficiency:.2f} "
-            f"teleport_threshold={self.teleport_threshold()} serviced_pairs={len(serviced)} unserved_demands={len(demands)}",
+            f"min_speed_eff={self.min_speed_efficiency():.2f} reserve={self.reserve_floor()} teleport_threshold={self.teleport_threshold()} "
+            f"serviced_pairs={len(serviced)} unserved_demands={len(demands)}",
             file=sys.stderr,
         )
         print(f"[M{self.month + 1:02d}] plan module_load={format_counter(module_load)}", file=sys.stderr)
@@ -258,6 +261,14 @@ class Planner:
         used = set(self.teleports)
         used.update(self.teleports.values())
         return used
+
+    def get_teleported_pairs(self) -> set[tuple[int, int]]:
+        """Gets landing-pad and astronaut-type pairs already served by direct teleporters."""
+        pairs = set()
+        for entrance, exit_id in self.teleports.items():
+            if entrance in self.buildings and exit_id in self.buildings and self.buildings[entrance].kind == 0 and self.buildings[exit_id].kind > 0:
+                pairs.add((entrance, self.buildings[exit_id].kind))
+        return pairs
 
     def get_direct_service_pod_counts(self) -> Counter[tuple[int, int]]:
         """Counts pods that directly shuttle between landing pads and modules."""
@@ -406,15 +417,15 @@ class Planner:
         """Orders possible intermediate buildings for a two-hop connection between a landing pad and module."""
         return sorted(self.buildings.values(), key=lambda building: tube_cost(pad, building) + tube_cost(building, module))[:20]
 
-    def best_capacity_candidate(self, serviced: set[tuple[int, int]], tubes: dict[tuple[int, int], int], direct_counts: Counter[tuple[int, int]], budget: int,
-                                pod_ids: set[int]) -> Candidate | None:
+    def best_capacity_candidate(self, serviced: set[tuple[int, int]], tubes: dict[tuple[int, int], int], direct_counts: Counter[tuple[int, int]],
+                                teleported_pairs: set[tuple[int, int]], budget: int, pod_ids: set[int]) -> Candidate | None:
         """Finds the best affordable extra pod or tube upgrade for already served direct routes."""
         if len(pod_ids) >= MAX_PODS:
             return None
         best = None
         for pad in self.get_landing_pads():
             for astronaut_type, count in pad.demand.items():
-                if (pad.id, astronaut_type) not in serviced:
+                if (pad.id, astronaut_type) not in serviced or (pad.id, astronaut_type) in teleported_pairs:
                     continue
                 modules = [building for building in self.buildings.values() if building.kind == astronaut_type and route_key(pad.id, building.id) in tubes]
                 for module in modules:
@@ -434,6 +445,23 @@ class Planner:
                     if best is None or candidate.efficiency > best.efficiency:
                         best = candidate
         return best
+
+    def best_speed_candidate(self, serviced: set[tuple[int, int]], tubes: dict[tuple[int, int], int], direct_counts: Counter[tuple[int, int]],
+                             teleport_used: set[int], teleported_pairs: set[tuple[int, int]], budget: int,
+                             pod_ids: set[int]) -> tuple[str, Candidate] | None:
+        """Finds the best currently spendable speed improvement candidate."""
+        candidates = []
+        capacity_candidate = self.best_capacity_candidate(serviced, tubes, direct_counts, teleported_pairs, budget, pod_ids)
+        if capacity_candidate is not None:
+            candidates.append(("capacity", capacity_candidate))
+        teleport_candidate = self.best_teleport_speed_candidate(serviced, direct_counts, teleport_used, budget)
+        if teleport_candidate is not None:
+            candidates.append(("speed_teleport", teleport_candidate))
+        if not candidates:
+            return None
+        if self.months_left() <= 2:
+            return max(candidates, key=lambda item: (item[1].score, item[1].efficiency))
+        return max(candidates, key=lambda item: (item[1].efficiency, item[1].score))
 
     def best_teleport_speed_candidate(self, serviced: set[tuple[int, int]], direct_counts: Counter[tuple[int, int]], teleport_used: set[int],
                                       budget: int) -> Candidate | None:
@@ -503,6 +531,38 @@ class Planner:
     def min_efficiency(self) -> float:
         """Returns the minimum estimated score per resource worth spending this month."""
         return 0.55 if self.month < 14 else 0.8
+
+    def speed_spend_budget(self, budget: int) -> int:
+        """Returns the resources currently allowed for speed-only improvements after preserving reserve."""
+        return max(0, budget - self.reserve_floor())
+
+    def reserve_floor(self) -> int:
+        """Returns the resource reserve preserved for compounding and future unknown construction."""
+        months_left = self.months_left()
+        if months_left <= 2:
+            return 0
+        if months_left <= 5:
+            return 1000
+        if months_left <= 8:
+            return 2500
+        if months_left <= 12:
+            return 3500
+        if months_left <= 16:
+            return 4500
+        return 6000
+
+    def min_speed_efficiency(self) -> float:
+        """Returns the minimum score per resource for speed-only spending at this game stage."""
+        months_left = self.months_left()
+        if months_left > 12:
+            return 0.3
+        if months_left > 8:
+            return 0.15
+        if months_left > 5:
+            return 5e-2
+        if months_left > 2:
+            return 1e-2
+        return 0
 
     def teleport_threshold(self) -> int:
         """Returns the minimum monthly demand for considering a direct teleporter."""

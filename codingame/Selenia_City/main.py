@@ -50,6 +50,8 @@ class Candidate:
     delivered: int = 0
     reroute_pod_id: int | None = None
     lost_score: int = 0
+    pressure_gain: int = 0
+    max_pressure_gain: int = 0
 
     @property
     def efficiency(self) -> float:
@@ -333,6 +335,14 @@ class Planner:
                 schedule[(edge, day)] += 1
         return schedule
 
+    def get_directed_edge_schedule(self) -> Counter[tuple[tuple[int, int], int]]:
+        """Counts pods departing through each directed tube edge on each day of the lunar month."""
+        schedule = Counter()
+        for pod in self.pods.values():
+            for edge, day in directed_path_edge_days(pod.path):
+                schedule[(edge, day)] += 1
+        return schedule
+
     def get_unserved_demands(self, serviced: set[tuple[int, int]]) -> list[tuple[Building, int, int]]:
         """Gets unserved monthly demands in priority order from the already served pad and astronaut-type pairs."""
         demands = []
@@ -521,6 +531,15 @@ class Planner:
                 del schedule[(edge, day)]
         return schedule
 
+    def directed_schedule_without_pod(self, schedule: Counter[tuple[tuple[int, int], int]], pod: Pod) -> Counter[tuple[tuple[int, int], int]]:
+        """Returns a directed edge-day schedule with one existing pod itinerary removed."""
+        result = schedule.copy()
+        for edge, day in directed_path_edge_days(pod.path):
+            result[(edge, day)] -= 1
+            if result[(edge, day)] <= 0:
+                del result[(edge, day)]
+        return result
+
     def shortest_tube_path(self, start_id: int, finish_id: int, tubes: dict[tuple[int, int], int]) -> list[int] | None:
         """Gets the shortest existing magnetic-tube building path between two building ids, or no path if disconnected."""
         if start_id == finish_id:
@@ -604,6 +623,8 @@ class Planner:
                                 teleported_pairs: set[tuple[int, int]], budget: int, pod_ids: set[int]) -> Candidate | None:
         """Finds the best affordable new or rerouted pod capacity for already served direct routes."""
         best = None
+        directed_schedule = self.get_directed_edge_schedule()
+        old_max_pressure, old_total_pressure, old_node_pressure = self.waiting_pressure_metrics(directed_schedule)
         for pad in self.get_landing_pads():
             for astronaut_type, count in pad.demand.items():
                 if (pad.id, astronaut_type) not in serviced or (pad.id, astronaut_type) in teleported_pairs:
@@ -623,7 +644,8 @@ class Planner:
                         cost = POD_COST + upgrade_cost
                         if cost <= budget:
                             candidate = Candidate(score_gain, cost, pad.id, module.id, astronaut_type, path, upgrades=upgrades, delivered=count)
-                            if best is None or candidate.efficiency > best.efficiency:
+                            self.set_capacity_pressure(candidate, directed_schedule, old_max_pressure, old_total_pressure, old_node_pressure)
+                            if self.is_good_capacity_pressure(candidate) and self.is_better_capacity_candidate(candidate, best):
                                 best = candidate
                     for old_pod in self.reroutable_pods(rerouted_pod_ids):
                         if old_pod.path == path:
@@ -636,9 +658,91 @@ class Planner:
                         lost_score = self.reroute_loss(old_pod)
                         candidate = Candidate(score_gain - lost_score, cost, pad.id, module.id, astronaut_type, path, upgrades=upgrades, delivered=count,
                                               reroute_pod_id=old_pod.id, lost_score=lost_score)
-                        if best is None or candidate.efficiency > best.efficiency:
+                        changed_schedule = self.directed_schedule_without_pod(directed_schedule, old_pod)
+                        self.set_capacity_pressure(candidate, changed_schedule, old_max_pressure, old_total_pressure, old_node_pressure)
+                        if self.is_good_capacity_pressure(candidate) and self.is_better_capacity_candidate(candidate, best):
                             best = candidate
         return best
+
+    def set_capacity_pressure(self, candidate: Candidate, base_schedule: Counter[tuple[tuple[int, int], int]], old_max_pressure: int, old_total_pressure: int,
+                              old_node_pressure: Counter[int]):
+        """Stores how much a capacity candidate improves total and maximum estimated waiting pressure."""
+        schedule = base_schedule.copy()
+        for edge, day in directed_path_edge_days(candidate.path):
+            schedule[(edge, day)] += 1
+        new_max_pressure, new_total_pressure, new_node_pressure = self.waiting_pressure_metrics(schedule)
+        candidate.max_pressure_gain = old_max_pressure - new_max_pressure
+        candidate.pressure_gain = old_total_pressure - new_total_pressure
+        if candidate.reroute_pod_id is not None and candidate.max_pressure_gain == 0:
+            for node_id, pressure in new_node_pressure.items():
+                if pressure > old_node_pressure[node_id]:
+                    candidate.pressure_gain = min(candidate.pressure_gain, -1)
+
+    def waiting_pressure_metrics(self, directed_schedule: Counter[tuple[tuple[int, int], int]]) -> tuple[int, int, Counter[int]]:
+        """Estimates maximum, total, and per-building passenger-days spent waiting for pod departures."""
+        node_pressure = Counter()
+        pod_edges = {edge for edge, _ in directed_schedule}
+        for (pad_id, astronaut_type), path in self.get_service_paths().items():
+            queues = [0] * len(path)
+            queues[0] = self.buildings[pad_id].demand[astronaut_type]
+            for day in range(MONTH_DAYS):
+                self.apply_instant_edges(path, queues, pod_edges)
+                for index, waiting in enumerate(queues[:-1]):
+                    if waiting and (path[index], path[index + 1]) in pod_edges:
+                        node_pressure[path[index]] += waiting
+                moved = [0] * len(path)
+                for index, waiting in enumerate(queues[:-1]):
+                    edge = (path[index], path[index + 1])
+                    boarded = min(waiting, 10 * directed_schedule[(edge, day)]) if edge in pod_edges else 0
+                    queues[index] -= boarded
+                    moved[index + 1] += boarded
+                for index, count in enumerate(moved):
+                    queues[index] += count
+        return max(node_pressure.values(), default=0), sum(node_pressure.values()), node_pressure
+
+    def apply_instant_edges(self, path: list[int], queues: list[int], pod_edges: set[tuple[int, int]]):
+        """Moves queued passengers through non-pod path edges before daily waiting is measured."""
+        changed = True
+        while changed:
+            changed = False
+            for index, waiting in enumerate(queues[:-1]):
+                if waiting and (path[index], path[index + 1]) not in pod_edges:
+                    queues[index + 1] += waiting
+                    queues[index] = 0
+                    changed = True
+
+    def get_service_paths(self) -> dict[tuple[int, int], list[int]]:
+        """Maps each served landing-pad demand to the shortest current pod or teleporter building path."""
+        adjacency = self.get_pod_adjacency()
+        paths = {}
+        for pad in self.get_landing_pads():
+            queue = deque([pad.id])
+            parent = {pad.id: pad.id}
+            while queue:
+                building_id = queue.popleft()
+                building = self.buildings[building_id]
+                if building.kind > 0 and building.kind in pad.demand and (pad.id, building.kind) not in paths:
+                    paths[(pad.id, building.kind)] = unwind_path(parent, pad.id, building_id)
+                for neighbor_id in adjacency.get(building_id, []):
+                    if neighbor_id in parent:
+                        continue
+                    parent[neighbor_id] = building_id
+                    queue.append(neighbor_id)
+        return paths
+
+    def is_good_capacity_pressure(self, candidate: Candidate) -> bool:
+        """Checks whether a capacity candidate reduces queue pressure instead of merely moving it elsewhere."""
+        if candidate.max_pressure_gain > 0:
+            return True
+        return candidate.max_pressure_gain == 0 and candidate.pressure_gain > 0
+
+    def is_better_capacity_candidate(self, candidate: Candidate, best: Candidate | None) -> bool:
+        """Compares capacity candidates by worst waiting pressure, total waiting pressure, then score efficiency."""
+        if best is None:
+            return True
+        candidate_key = (candidate.max_pressure_gain, candidate.pressure_gain, candidate.efficiency, candidate.score)
+        best_key = (best.max_pressure_gain, best.pressure_gain, best.efficiency, best.score)
+        return candidate_key > best_key
 
     def best_speed_candidate(self, serviced: set[tuple[int, int]], tubes: dict[tuple[int, int], int], direct_counts: Counter[tuple[int, int]],
                              edge_schedule: Counter[tuple[tuple[int, int], int]], rerouted_pod_ids: set[int], teleport_used: set[int],
@@ -815,6 +919,9 @@ def describe_candidate(candidate: Candidate) -> str:
         parts.append(f"reroute_pod={candidate.reroute_pod_id}")
     if candidate.lost_score:
         parts.append(f"lost_score={candidate.lost_score}")
+    if candidate.pressure_gain or candidate.max_pressure_gain:
+        parts.append(f"pressure_gain={candidate.pressure_gain}")
+        parts.append(f"max_wait_gain={candidate.max_pressure_gain}")
     if candidate.tubes:
         parts.append(f"tubes={format_edges(candidate.tubes)}")
     if candidate.upgrades:
@@ -920,6 +1027,16 @@ def loop_path(path: list[int]) -> list[int]:
 def path_edge_days(path: list[int]) -> list[tuple[tuple[int, int], int]]:
     """Gets the undirected tube edges used by a pod on each day of a lunar month."""
     edges = [route_key(a, b) for a, b in zip(path, path[1:])]
+    if not edges:
+        return []
+    if path[0] == path[-1]:
+        return [(edges[day % len(edges)], day) for day in range(MONTH_DAYS)]
+    return [(edges[day], day) for day in range(min(MONTH_DAYS, len(edges)))]
+
+
+def directed_path_edge_days(path: list[int]) -> list[tuple[tuple[int, int], int]]:
+    """Gets the directed tube edges used by a pod on each day of a lunar month."""
+    edges = list(zip(path, path[1:]))
     if not edges:
         return []
     if path[0] == path[-1]:

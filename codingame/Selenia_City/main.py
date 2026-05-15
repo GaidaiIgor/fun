@@ -12,6 +12,8 @@ MONTH_DAYS = 20
 MAX_TUBES_PER_BUILDING = 5
 MAX_PODS = 500
 POD_COST = 1000
+POD_REFUND = 750
+REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 DEBUG_LIST_LIMIT = 18
 
@@ -46,6 +48,8 @@ class Candidate:
     upgrades: list[tuple[int, int]] = field(default_factory=list)
     teleport: tuple[int, int] | None = None
     delivered: int = 0
+    reroute_pod_id: int | None = None
+    lost_score: int = 0
 
     @property
     def efficiency(self) -> float:
@@ -115,6 +119,7 @@ class Planner:
         """Chooses and returns semicolon-separated action fragments for the current month."""
         actions = []
         serviced = self.get_serviced_pairs()
+        service_counts = self.get_service_counts()
         module_load = self.get_module_load()
         degrees = self.get_tube_degrees()
         teleport_used = self.get_teleport_used_buildings()
@@ -122,14 +127,17 @@ class Planner:
         pod_ids = set(self.pods)
         tubes = dict(self.tubes)
         direct_pod_counts = self.get_direct_service_pod_counts()
+        edge_schedule = self.get_edge_schedule()
+        rerouted_pod_ids = set()
         budget = self.resources
         modules_by_type = self.get_modules_by_type()
         unserved_demands = self.get_unserved_demands(serviced)
         min_efficiency = self.min_efficiency()
-        self.debug_plan_start(serviced, module_load, degrees, direct_pod_counts, unserved_demands, min_efficiency)
+        self.debug_plan_start(serviced, service_counts, module_load, degrees, direct_pod_counts, edge_schedule, unserved_demands, min_efficiency)
 
         for demand_ind, (pad, astronaut_type, count) in enumerate(unserved_demands, 1):
-            candidate = self.best_service_candidate(pad, astronaut_type, count, modules_by_type, module_load, degrees, teleport_used, tubes, budget, pod_ids)
+            candidate = self.best_service_candidate(pad, astronaut_type, count, modules_by_type, module_load, degrees, teleport_used, tubes, edge_schedule,
+                                                    service_counts, rerouted_pod_ids, budget, pod_ids)
             prefix = f"[M{self.month + 1:02d}] demand {demand_ind}/{len(unserved_demands)} {describe_demand(pad, astronaut_type, count)}"
             if candidate is None:
                 print(f"{prefix} no_candidate budget={budget}", file=sys.stderr)
@@ -137,15 +145,18 @@ class Planner:
                 print(f"{prefix} skip best={describe_candidate(candidate)} min_eff={min_efficiency:.2f}", file=sys.stderr)
             else:
                 print(f"{prefix} choose best={describe_candidate(candidate)}", file=sys.stderr)
-                budget = self.apply_candidate("service", candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts,
-                                              budget, pod_ids)
+                budget = self.apply_candidate("service", candidate, actions, serviced, service_counts, module_load, degrees, teleport_used, tubes,
+                                              direct_pod_counts, edge_schedule, budget, pod_ids)
+                if candidate.reroute_pod_id is not None:
+                    rerouted_pod_ids.add(candidate.reroute_pod_id)
                 if candidate.teleport is not None:
                     teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
         speed_round = 0
         while True:
             speed_budget = self.speed_spend_budget(budget)
-            speed_pick = self.best_speed_candidate(serviced, tubes, direct_pod_counts, teleport_used, teleported_pairs, speed_budget, pod_ids)
+            speed_pick = self.best_speed_candidate(serviced, tubes, direct_pod_counts, edge_schedule, rerouted_pod_ids, teleport_used, teleported_pairs,
+                                                   speed_budget, pod_ids)
             if speed_budget <= 0:
                 print(f"[M{self.month + 1:02d}] speed stop reserve budget={budget} reserve={self.reserve_floor()} rounds={speed_round}", file=sys.stderr)
                 break
@@ -158,14 +169,15 @@ class Planner:
                 break
             min_speed_efficiency = self.min_speed_efficiency()
             if candidate.efficiency < min_speed_efficiency:
-                print(
-                    f"[M{self.month + 1:02d}] speed stop low_eff best={describe_candidate(candidate)} min_speed_eff={min_speed_efficiency:.2f}",
-                    file=sys.stderr,
-                )
+                message = f"[M{self.month + 1:02d}] speed stop low_eff best={describe_candidate(candidate)} min_speed_eff={min_speed_efficiency:.2f}"
+                print(message, file=sys.stderr)
                 break
             speed_round += 1
             print(f"[M{self.month + 1:02d}] speed choose reason={reason} round={speed_round} best={describe_candidate(candidate)}", file=sys.stderr)
-            budget = self.apply_candidate(reason, candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts, budget, pod_ids)
+            budget = self.apply_candidate(reason, candidate, actions, serviced, service_counts, module_load, degrees, teleport_used, tubes,
+                                          direct_pod_counts, edge_schedule, budget, pod_ids)
+            if candidate.reroute_pod_id is not None:
+                rerouted_pod_ids.add(candidate.reroute_pod_id)
             if candidate.teleport is not None:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
@@ -179,12 +191,10 @@ class Planner:
         module_counts = Counter(building.kind for building in self.buildings.values() if building.kind > 0)
         pads = self.get_landing_pads()
         total_demand = sum(sum(pad.demand.values()) for pad in pads)
-        print(
-            f"[M{self.month + 1:02d}] input resources={self.resources} route_lines={route_count} tubes={len(self.tubes)} "
-            f"teleports={len(self.teleports)} pod_lines={pod_count} pods={len(self.pods)} new_buildings={len(new_buildings)} "
-            f"total_buildings={len(self.buildings)} pads={len(pads)} modules={sum(module_counts.values())} total_monthly_demand={total_demand}",
-            file=sys.stderr,
-        )
+        message = f"[M{self.month + 1:02d}] input resources={self.resources} route_lines={route_count} tubes={len(self.tubes)} "
+        message += f"teleports={len(self.teleports)} pod_lines={pod_count} pods={len(self.pods)} new_buildings={len(new_buildings)} "
+        message += f"total_buildings={len(self.buildings)} pads={len(pads)} modules={sum(module_counts.values())} total_monthly_demand={total_demand}"
+        print(message, file=sys.stderr)
         print(f"[M{self.month + 1:02d}] input modules_by_type={format_counter(module_counts)}", file=sys.stderr)
         if self.tubes:
             print(f"[M{self.month + 1:02d}] input tubes={format_tubes(self.tubes)}", file=sys.stderr)
@@ -195,57 +205,93 @@ class Planner:
         for building in new_buildings:
             print(f"[M{self.month + 1:02d}] input new {describe_building(building)}", file=sys.stderr)
 
-    def debug_plan_start(self, serviced: set[tuple[int, int]], module_load: Counter[int], degrees: Counter[int], direct_pod_counts: Counter[tuple[int, int]],
+    def debug_plan_start(self, serviced: set[tuple[int, int]], service_counts: Counter[tuple[int, int]], module_load: Counter[int], degrees: Counter[int],
+                         direct_pod_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
                          demands: list[tuple[Building, int, int]], min_efficiency: float):
         """Prints the planning state before candidate selection starts."""
-        print(
-            f"[M{self.month + 1:02d}] plan start months_left={self.months_left()} min_eff={min_efficiency:.2f} "
-            f"min_speed_eff={self.min_speed_efficiency():.2f} reserve={self.reserve_floor()} teleport_threshold={self.teleport_threshold()} "
-            f"serviced_pairs={len(serviced)} unserved_demands={len(demands)}",
-            file=sys.stderr,
-        )
+        message = f"[M{self.month + 1:02d}] plan start months_left={self.months_left()} min_eff={min_efficiency:.2f} "
+        message += f"min_speed_eff={self.min_speed_efficiency():.2f} reserve={self.reserve_floor()} teleport_threshold={self.teleport_threshold()} "
+        message += f"serviced_pairs={len(serviced)} unserved_demands={len(demands)}"
+        print(message, file=sys.stderr)
+        print(f"[M{self.month + 1:02d}] plan service_counts={format_pair_counter(service_counts)}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] plan module_load={format_counter(module_load)}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] plan tube_degrees={format_counter(degrees)}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] plan direct_pods={format_pair_counter(direct_pod_counts)}", file=sys.stderr)
+        print(f"[M{self.month + 1:02d}] plan edge_schedule={format_edge_schedule(edge_schedule)}", file=sys.stderr)
 
     def get_serviced_pairs(self) -> set[tuple[int, int]]:
         """Gets landing-pad and astronaut-type pairs already served by teleporters or pods."""
-        serviced = set()
+        return set(self.get_service_counts())
+
+    def get_service_counts(self) -> Counter[tuple[int, int]]:
+        """Counts how many teleporters or pods currently serve each landing-pad and astronaut-type pair."""
+        counts = Counter()
         for entrance, exit_id in self.teleports.items():
             if entrance in self.buildings and exit_id in self.buildings and self.buildings[entrance].kind == 0 and self.buildings[exit_id].kind > 0:
-                serviced.add((entrance, self.buildings[exit_id].kind))
+                counts[(entrance, self.buildings[exit_id].kind)] += 1
 
         for pod in self.pods.values():
-            if not pod.path or pod.path[0] not in self.buildings or self.buildings[pod.path[0]].kind != 0:
+            for pad_id, astronaut_type, _, _ in self.pod_services(pod):
+                counts[(pad_id, astronaut_type)] += 1
+        for pair in self.get_reachable_services():
+            counts[pair] = max(1, counts[pair])
+        return counts
+
+    def pod_services(self, pod: Pod) -> list[tuple[int, int, int, int]]:
+        """Lists pad, astronaut type, module, and one-way distance pairs served by a pod itinerary."""
+        if not pod.path or pod.path[0] not in self.buildings or self.buildings[pod.path[0]].kind != 0:
+            return []
+        services = []
+        seen_types = set()
+        for distance, building_id in enumerate(pod.path[1:], 1):
+            if building_id not in self.buildings or self.buildings[building_id].kind <= 0 or self.buildings[building_id].kind in seen_types:
                 continue
-            pad_id = pod.path[0]
-            for building_id in pod.path[1:]:
-                if building_id in self.buildings and self.buildings[building_id].kind > 0:
-                    serviced.add((pad_id, self.buildings[building_id].kind))
-        return serviced
+            seen_types.add(self.buildings[building_id].kind)
+            services.append((pod.path[0], self.buildings[building_id].kind, building_id, distance))
+        return services
+
+    def get_reachable_services(self, skip_pod_id: int | None = None) -> dict[tuple[int, int], tuple[int, int]]:
+        """Maps each pod-reachable landing-pad demand to the nearest reachable module and travel distance."""
+        adjacency = self.get_pod_adjacency(skip_pod_id)
+        services = {}
+        for pad in self.get_landing_pads():
+            queue = deque([pad.id])
+            distances = {pad.id: 0}
+            while queue:
+                building_id = queue.popleft()
+                building = self.buildings[building_id]
+                if building.kind > 0 and building.kind in pad.demand and (pad.id, building.kind) not in services:
+                    services[(pad.id, building.kind)] = (building_id, distances[building_id])
+                for neighbor_id in adjacency.get(building_id, []):
+                    if neighbor_id in distances:
+                        continue
+                    distances[neighbor_id] = distances[building_id] + 1
+                    queue.append(neighbor_id)
+        return services
+
+    def get_pod_adjacency(self, skip_pod_id: int | None = None) -> dict[int, list[int]]:
+        """Builds directed pod and teleporter reachability between buildings, optionally omitting one pod."""
+        adjacency = {}
+        for a, b in self.get_pod_directed_edges(skip_pod_id):
+            adjacency.setdefault(a, []).append(b)
+        for a, b in self.teleports.items():
+            adjacency.setdefault(a, []).append(b)
+        return adjacency
+
+    def get_pod_directed_edges(self, skip_pod_id: int | None = None) -> set[tuple[int, int]]:
+        """Gets directed building hops that at least one current pod can eventually traverse."""
+        edges = set()
+        for pod in self.pods.values():
+            if pod.id == skip_pod_id:
+                continue
+            edges.update(zip(pod.path, pod.path[1:]))
+        return edges
 
     def get_module_load(self) -> Counter[int]:
         """Estimates monthly passenger counts assigned to each module."""
         loads = Counter()
-        counted_pairs = set()
-        for entrance, exit_id in self.teleports.items():
-            if entrance not in self.buildings or exit_id not in self.buildings:
-                continue
-            pad = self.buildings[entrance]
-            module = self.buildings[exit_id]
-            if pad.kind == 0 and module.kind > 0:
-                loads[exit_id] += pad.demand[module.kind]
-                counted_pairs.add((pad.id, module.kind))
-
-        for pod in self.pods.values():
-            if not pod.path or pod.path[0] not in self.buildings or self.buildings[pod.path[0]].kind != 0:
-                continue
-            pad = self.buildings[pod.path[0]]
-            for building_id in pod.path[1:]:
-                if building_id not in self.buildings or self.buildings[building_id].kind <= 0 or (pad.id, self.buildings[building_id].kind) in counted_pairs:
-                    continue
-                counted_pairs.add((pad.id, self.buildings[building_id].kind))
-                loads[building_id] += pad.demand[self.buildings[building_id].kind]
+        for (pad_id, astronaut_type), (module_id, _) in self.get_reachable_services().items():
+            loads[module_id] += self.buildings[pad_id].demand[astronaut_type]
         return loads
 
     def get_tube_degrees(self) -> Counter[int]:
@@ -279,6 +325,14 @@ class Planner:
                     counts[(pod.path[0], pod.path[1])] += 1
         return counts
 
+    def get_edge_schedule(self) -> Counter[tuple[tuple[int, int], int]]:
+        """Counts pods using each magnetic tube edge on each day of the lunar month."""
+        schedule = Counter()
+        for pod in self.pods.values():
+            for edge, day in path_edge_days(pod.path):
+                schedule[(edge, day)] += 1
+        return schedule
+
     def get_unserved_demands(self, serviced: set[tuple[int, int]]) -> list[tuple[Building, int, int]]:
         """Gets unserved monthly demands in priority order from the already served pad and astronaut-type pairs."""
         demands = []
@@ -289,12 +343,14 @@ class Planner:
         return sorted(demands, key=lambda demand: (-demand[2], demand[0].id, demand[1]))[:260]
 
     def best_service_candidate(self, pad: Building, astronaut_type: int, count: int, modules_by_type: dict[int, list[Building]], module_load: Counter[int],
-                               degrees: Counter[int], teleport_used: set[int], tubes: dict[tuple[int, int], int], budget: int,
-                               pod_ids: set[int]) -> Candidate | None:
+                               degrees: Counter[int], teleport_used: set[int], tubes: dict[tuple[int, int], int],
+                               edge_schedule: Counter[tuple[tuple[int, int], int]], service_counts: Counter[tuple[int, int]], rerouted_pod_ids: set[int],
+                               budget: int, pod_ids: set[int]) -> Candidate | None:
         """Finds the strongest affordable service candidate for one pad demand, using current planned routes and remaining budget."""
         best = None
         for module in self.best_modules(modules_by_type[astronaut_type], pad, module_load):
-            candidates = self.service_candidates(pad, module, astronaut_type, count, module_load[module.id], degrees, teleport_used, tubes, budget, pod_ids)
+            candidates = self.service_candidates(pad, module, astronaut_type, count, module_load[module.id], degrees, teleport_used, tubes, edge_schedule,
+                                                 service_counts, rerouted_pod_ids, budget, pod_ids)
             for candidate in candidates:
                 if best is None or candidate.efficiency > best.efficiency or candidate.efficiency == best.efficiency and candidate.score > best.score:
                     best = candidate
@@ -317,45 +373,153 @@ class Planner:
         return sorted(modules, key=lambda module: (module_load[module.id] // 20, tube_cost(pad, module)))[:4]
 
     def service_candidates(self, pad: Building, module: Building, astronaut_type: int, count: int, current_load: int, degrees: Counter[int],
-                           teleport_used: set[int], tubes: dict[tuple[int, int], int], budget: int, pod_ids: set[int]) -> list[Candidate]:
+                           teleport_used: set[int], tubes: dict[tuple[int, int], int], edge_schedule: Counter[tuple[tuple[int, int], int]],
+                           service_counts: Counter[tuple[int, int]], rerouted_pod_ids: set[int], budget: int, pod_ids: set[int]) -> list[Candidate]:
         """Builds affordable tube, pod, and teleporter bundles for one landing-pad demand."""
         candidates = []
-        if len(pod_ids) < MAX_PODS:
-            has_tube_candidate = False
-            existing_path = self.shortest_tube_path(pad.id, module.id, tubes)
-            if existing_path is not None and len(existing_path) <= 7 and POD_COST <= budget:
+        route_options = []
+        has_tube_candidate = False
+        existing_path = self.shortest_tube_path(pad.id, module.id, tubes)
+        if existing_path is not None and len(existing_path) <= 7:
+            candidate_path = loop_path(existing_path)
+            route_options.append((candidate_path, [], len(existing_path) - 1, 2 * (len(existing_path) - 1)))
+            if len(pod_ids) < MAX_PODS:
+                upgrade_cost, upgrades = self.path_upgrade_plan(candidate_path, [], tubes, edge_schedule)
+                candidate_cost = POD_COST + upgrade_cost
                 delivered = monthly_pod_deliveries(count, len(existing_path) - 1, 1)
                 score = monthly_score(delivered, len(existing_path) - 1, current_load) * self.months_left()
-                candidates.append(Candidate(score, POD_COST, pad.id, module.id, astronaut_type, loop_path(existing_path), delivered=delivered))
-                has_tube_candidate = True
+                if candidate_cost <= budget:
+                    candidate = Candidate(score, candidate_cost, pad.id, module.id, astronaut_type, candidate_path, upgrades=upgrades, delivered=delivered)
+                    candidates.append(candidate)
+                    has_tube_candidate = True
+            if len(existing_path) > 2 and self.path_has_pod_coverage(existing_path[:-1]):
+                transfer_path = [existing_path[-2], module.id, existing_path[-2]]
+                first_day = 2 * (len(existing_path) - 2) + 1
+                route_options.append((transfer_path, [], first_day, 2))
+                if len(pod_ids) < MAX_PODS:
+                    upgrade_cost, upgrades = self.path_upgrade_plan(transfer_path, [], tubes, edge_schedule)
+                    transfer_cost = POD_COST + upgrade_cost
+                    if transfer_cost <= budget:
+                        delivered = monthly_pod_deliveries(count, first_day, 1, 2)
+                        score = monthly_score(delivered, first_day, current_load, period=2) * self.months_left()
+                        candidate = Candidate(score, transfer_cost, pad.id, module.id, astronaut_type, transfer_path, upgrades=upgrades,
+                                              delivered=delivered)
+                        candidates.append(candidate)
+                        has_tube_candidate = True
 
-            direct_tubes = [] if route_key(pad.id, module.id) in tubes else [(pad.id, module.id)]
-            direct_cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in direct_tubes) + POD_COST
-            if direct_cost <= budget and self.can_reserve_tubes(direct_tubes, degrees, tubes) and len(pod_ids) < MAX_PODS:
-                delivered = monthly_pod_deliveries(count, 1, 1)
-                score = monthly_score(delivered, 1, current_load) * self.months_left()
-                path = [pad.id, module.id, pad.id]
-                candidates.append(Candidate(score, direct_cost, pad.id, module.id, astronaut_type, path, direct_tubes, delivered=delivered))
-                has_tube_candidate = True
+        direct_tubes = [] if route_key(pad.id, module.id) in tubes else [(pad.id, module.id)]
+        path = [pad.id, module.id, pad.id]
+        if self.can_reserve_tubes(direct_tubes, degrees, tubes):
+            route_options.append((path, direct_tubes, 1, 2))
+            if len(pod_ids) < MAX_PODS:
+                upgrade_cost, upgrades = self.path_upgrade_plan(path, direct_tubes, tubes, edge_schedule)
+                direct_cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in direct_tubes) + POD_COST + upgrade_cost
+                if direct_cost <= budget:
+                    delivered = monthly_pod_deliveries(count, 1, 1)
+                    score = monthly_score(delivered, 1, current_load) * self.months_left()
+                    candidates.append(Candidate(score, direct_cost, pad.id, module.id, astronaut_type, path, direct_tubes, upgrades, delivered=delivered))
+                    has_tube_candidate = True
 
-            if not has_tube_candidate and count >= 8:
-                for via in self.two_hop_buildings(pad, module):
-                    if via.id in (pad.id, module.id):
-                        continue
-                    path = [pad.id, via.id, module.id]
-                    two_hop_tubes = [edge for edge in zip(path, path[1:]) if route_key(edge[0], edge[1]) not in tubes]
-                    two_hop_cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in two_hop_tubes) + POD_COST
-                    if two_hop_cost <= budget and self.can_reserve_tubes(two_hop_tubes, degrees, tubes):
+        if not has_tube_candidate and count >= 8:
+            two_hop_options = 0
+            for via in self.two_hop_buildings(pad, module):
+                if via.id in (pad.id, module.id):
+                    continue
+                path = [pad.id, via.id, module.id]
+                two_hop_tubes = [edge for edge in zip(path, path[1:]) if route_key(edge[0], edge[1]) not in tubes]
+                candidate_path = loop_path(path)
+                if not self.can_reserve_tubes(two_hop_tubes, degrees, tubes):
+                    continue
+                route_options.append((candidate_path, two_hop_tubes, 2, 4))
+                two_hop_options += 1
+                added_two_hop = False
+                if len(pod_ids) < MAX_PODS:
+                    upgrade_cost, upgrades = self.path_upgrade_plan(candidate_path, two_hop_tubes, tubes, edge_schedule)
+                    two_hop_cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in two_hop_tubes) + POD_COST + upgrade_cost
+                    if two_hop_cost <= budget:
                         delivered = monthly_pod_deliveries(count, 2, 1)
                         score = monthly_score(delivered, 2, current_load) * self.months_left()
-                        candidate_path = loop_path(path)
-                        candidates.append(Candidate(score, two_hop_cost, pad.id, module.id, astronaut_type, candidate_path, two_hop_tubes, delivered=delivered))
-                        break
+                        candidate = Candidate(score, two_hop_cost, pad.id, module.id, astronaut_type, candidate_path, two_hop_tubes, upgrades,
+                                              delivered=delivered)
+                        candidates.append(candidate)
+                        added_two_hop = True
+                if self.path_has_pod_coverage([pad.id, via.id]):
+                    transfer_path = [via.id, module.id, via.id]
+                    transfer_tubes = [] if route_key(via.id, module.id) in tubes else [(via.id, module.id)]
+                    route_options.append((transfer_path, transfer_tubes, 3, 2))
+                    if len(pod_ids) < MAX_PODS:
+                        upgrade_cost, upgrades = self.path_upgrade_plan(transfer_path, transfer_tubes, tubes, edge_schedule)
+                        transfer_cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in transfer_tubes) + POD_COST + upgrade_cost
+                        if transfer_cost <= budget:
+                            delivered = monthly_pod_deliveries(count, 3, 1, 2)
+                            score = monthly_score(delivered, 3, current_load, period=2) * self.months_left()
+                            candidate = Candidate(score, transfer_cost, pad.id, module.id, astronaut_type, transfer_path, transfer_tubes, upgrades,
+                                                  delivered=delivered)
+                            candidates.append(candidate)
+                            added_two_hop = True
+                if added_two_hop:
+                    break
+                if two_hop_options >= 6:
+                    break
+
+        if route_options:
+            candidates.extend(self.reroute_candidates(pad, module, astronaut_type, count, current_load, tubes, edge_schedule, rerouted_pod_ids,
+                                                      route_options, budget))
 
         if count >= self.teleport_threshold() and pad.id not in teleport_used and module.id not in teleport_used and TELEPORT_COST <= budget:
             score = monthly_teleport_score(count, current_load) * self.months_left()
             candidates.append(Candidate(score, TELEPORT_COST, pad.id, module.id, astronaut_type, teleport=(pad.id, module.id), delivered=count))
         return candidates
+
+    def path_has_pod_coverage(self, path: list[int]) -> bool:
+        """Checks whether current pods can move passengers along every directed hop of a path."""
+        edges = self.get_pod_directed_edges()
+        return all((a, b) in edges for a, b in zip(path, path[1:]))
+
+    def reroute_candidates(self, pad: Building, module: Building, astronaut_type: int, count: int, current_load: int, tubes: dict[tuple[int, int], int],
+                           edge_schedule: Counter[tuple[tuple[int, int], int]], rerouted_pod_ids: set[int],
+                           route_options: list[tuple[list[int], list[tuple[int, int]], int, int]], budget: int) -> list[Candidate]:
+        """Builds pod destroy-and-recreate candidates for the same route options as new service pods."""
+        candidates = []
+        for old_pod in self.reroutable_pods(rerouted_pod_ids):
+            lost_score = self.reroute_loss(old_pod)
+            removed_schedule = self.schedule_without_pod(edge_schedule, old_pod)
+            for path, new_tubes, first_day, period in route_options:
+                upgrade_cost, upgrades = self.path_upgrade_plan(path, new_tubes, tubes, removed_schedule)
+                cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in new_tubes) + REROUTE_COST + upgrade_cost
+                if cost > budget:
+                    continue
+                delivered = monthly_pod_deliveries(count, first_day, 1, period)
+                score = monthly_score(delivered, first_day, current_load, period=period) * self.months_left() - lost_score
+                candidate = Candidate(score, cost, pad.id, module.id, astronaut_type, path, new_tubes, upgrades, delivered=delivered,
+                                      reroute_pod_id=old_pod.id, lost_score=lost_score)
+                candidates.append(candidate)
+        return candidates
+
+    def reroutable_pods(self, rerouted_pod_ids: set[int]) -> list[Pod]:
+        """Orders existing pods by the estimated score sacrificed if they are destroyed this month."""
+        pods = [pod for pod in self.pods.values() if pod.id not in rerouted_pod_ids and pod.path]
+        return sorted(pods, key=lambda pod: (self.reroute_loss(pod), pod.id))[:30]
+
+    def reroute_loss(self, pod: Pod) -> int:
+        """Estimates future score lost by removing a pod from service before recreating it elsewhere."""
+        loss = 0
+        after = self.get_reachable_services(pod.id)
+        for (pad_id, astronaut_type), (_, distance) in self.get_reachable_services().items():
+            if (pad_id, astronaut_type) not in after:
+                count = self.buildings[pad_id].demand[astronaut_type]
+                delivered = monthly_pod_deliveries(count, distance, 1)
+                loss += monthly_score(delivered, distance, 0) * self.months_left()
+        return loss
+
+    def schedule_without_pod(self, edge_schedule: Counter[tuple[tuple[int, int], int]], pod: Pod) -> Counter[tuple[tuple[int, int], int]]:
+        """Returns an edge-day schedule with one existing pod itinerary removed."""
+        schedule = edge_schedule.copy()
+        for edge, day in path_edge_days(pod.path):
+            schedule[(edge, day)] -= 1
+            if schedule[(edge, day)] <= 0:
+                del schedule[(edge, day)]
+        return schedule
 
     def shortest_tube_path(self, start_id: int, finish_id: int, tubes: dict[tuple[int, int], int]) -> list[int] | None:
         """Gets the shortest existing magnetic-tube building path between two building ids, or no path if disconnected."""
@@ -377,6 +541,24 @@ class Planner:
                     return unwind_path(parent, start_id, finish_id)
                 queue.append(neighbor_id)
         return None
+
+    def path_upgrade_plan(self, path: list[int], new_tubes: list[tuple[int, int]], tubes: dict[tuple[int, int], int],
+                          edge_schedule: Counter[tuple[tuple[int, int], int]]) -> tuple[int, list[tuple[int, int]]]:
+        """Gets tube upgrades needed before a new pod can use a path without same-day edge conflicts."""
+        new_keys = {route_key(a, b) for a, b in new_tubes}
+        required_capacities = Counter()
+        for edge, day in path_edge_days(path):
+            required_capacities[edge] = max(required_capacities[edge], edge_schedule[(edge, day)] + 1)
+
+        upgrades = []
+        cost = 0
+        for edge, required_capacity in required_capacities.items():
+            capacity = 1 if edge in new_keys else tubes[edge]
+            for new_capacity in range(capacity + 1, required_capacity + 1):
+                a, b = edge
+                cost += tube_cost(self.buildings[a], self.buildings[b]) * new_capacity
+                upgrades.append(edge)
+        return cost, upgrades
 
     def can_reserve_tubes(self, new_tubes: list[tuple[int, int]], degrees: Counter[int], tubes: dict[tuple[int, int], int]) -> bool:
         """Checks whether all new tube endpoint pairs can be added to the current planned geometry."""
@@ -418,10 +600,9 @@ class Planner:
         return sorted(self.buildings.values(), key=lambda building: tube_cost(pad, building) + tube_cost(building, module))[:20]
 
     def best_capacity_candidate(self, serviced: set[tuple[int, int]], tubes: dict[tuple[int, int], int], direct_counts: Counter[tuple[int, int]],
+                                edge_schedule: Counter[tuple[tuple[int, int], int]], rerouted_pod_ids: set[int],
                                 teleported_pairs: set[tuple[int, int]], budget: int, pod_ids: set[int]) -> Candidate | None:
-        """Finds the best affordable extra pod or tube upgrade for already served direct routes."""
-        if len(pod_ids) >= MAX_PODS:
-            return None
+        """Finds the best affordable new or rerouted pod capacity for already served direct routes."""
         best = None
         for pad in self.get_landing_pads():
             for astronaut_type, count in pad.demand.items():
@@ -433,25 +614,38 @@ class Planner:
                     pods_on_edge = direct_counts[(pad.id, module.id)]
                     if pods_on_edge <= 0 or pods_on_edge >= 4:
                         continue
-                    current_capacity = tubes[edge]
-                    upgrade_cost = 0 if pods_on_edge < current_capacity else tube_cost(pad, module) * (current_capacity + 1)
-                    cost = POD_COST + upgrade_cost
-                    if cost > budget:
-                        continue
+                    path = [pad.id, module.id, pad.id]
                     old_score = monthly_score(monthly_pod_deliveries(count, 1, pods_on_edge), 1, 0, pods_on_edge)
                     new_score = monthly_score(monthly_pod_deliveries(count, 1, pods_on_edge + 1), 1, 0, pods_on_edge + 1)
-                    candidate = Candidate((new_score - old_score) * self.months_left(), cost, pad.id, module.id, astronaut_type, [pad.id, module.id, pad.id],
-                                          upgrades=[] if upgrade_cost == 0 else [edge], delivered=count)
-                    if best is None or candidate.efficiency > best.efficiency:
-                        best = candidate
+                    score_gain = (new_score - old_score) * self.months_left()
+                    if len(pod_ids) < MAX_PODS:
+                        upgrade_cost, upgrades = self.path_upgrade_plan(path, [], tubes, edge_schedule)
+                        cost = POD_COST + upgrade_cost
+                        if cost <= budget:
+                            candidate = Candidate(score_gain, cost, pad.id, module.id, astronaut_type, path, upgrades=upgrades, delivered=count)
+                            if best is None or candidate.efficiency > best.efficiency:
+                                best = candidate
+                    for old_pod in self.reroutable_pods(rerouted_pod_ids):
+                        if old_pod.path == path:
+                            continue
+                        removed_schedule = self.schedule_without_pod(edge_schedule, old_pod)
+                        upgrade_cost, upgrades = self.path_upgrade_plan(path, [], tubes, removed_schedule)
+                        cost = REROUTE_COST + upgrade_cost
+                        if cost > budget:
+                            continue
+                        lost_score = self.reroute_loss(old_pod)
+                        candidate = Candidate(score_gain - lost_score, cost, pad.id, module.id, astronaut_type, path, upgrades=upgrades, delivered=count,
+                                              reroute_pod_id=old_pod.id, lost_score=lost_score)
+                        if best is None or candidate.efficiency > best.efficiency:
+                            best = candidate
         return best
 
     def best_speed_candidate(self, serviced: set[tuple[int, int]], tubes: dict[tuple[int, int], int], direct_counts: Counter[tuple[int, int]],
-                             teleport_used: set[int], teleported_pairs: set[tuple[int, int]], budget: int,
-                             pod_ids: set[int]) -> tuple[str, Candidate] | None:
+                             edge_schedule: Counter[tuple[tuple[int, int], int]], rerouted_pod_ids: set[int], teleport_used: set[int],
+                             teleported_pairs: set[tuple[int, int]], budget: int, pod_ids: set[int]) -> tuple[str, Candidate] | None:
         """Finds the best currently spendable speed improvement candidate."""
         candidates = []
-        capacity_candidate = self.best_capacity_candidate(serviced, tubes, direct_counts, teleported_pairs, budget, pod_ids)
+        capacity_candidate = self.best_capacity_candidate(serviced, tubes, direct_counts, edge_schedule, rerouted_pod_ids, teleported_pairs, budget, pod_ids)
         if capacity_candidate is not None:
             candidates.append(("capacity", capacity_candidate))
         teleport_candidate = self.best_teleport_speed_candidate(serviced, direct_counts, teleport_used, budget)
@@ -487,11 +681,27 @@ class Planner:
                         best = candidate
         return best
 
-    def apply_candidate(self, reason: str, candidate: Candidate, actions: list[str], serviced: set[tuple[int, int]], module_load: Counter[int],
-                        degrees: Counter[int], teleport_used: set[int], tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]],
-                        budget: int, pod_ids: set[int]) -> int:
+    def apply_candidate(self, reason: str, candidate: Candidate, actions: list[str], serviced: set[tuple[int, int]],
+                        service_counts: Counter[tuple[int, int]], module_load: Counter[int], degrees: Counter[int], teleport_used: set[int],
+                        tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]],
+                        edge_schedule: Counter[tuple[tuple[int, int], int]], budget: int, pod_ids: set[int]) -> int:
         """Appends a chosen candidate to the action list, updates planned state, and returns the remaining budget."""
         action_start = len(actions)
+        if candidate.reroute_pod_id is not None:
+            old_pod = self.pods[candidate.reroute_pod_id]
+            actions.append(f"DESTROY {candidate.reroute_pod_id}")
+            if len(old_pod.path) == 3 and old_pod.path[0] == old_pod.path[2]:
+                direct_pod_counts[(old_pod.path[0], old_pod.path[1])] -= 1
+            for edge, day in path_edge_days(old_pod.path):
+                edge_schedule[(edge, day)] -= 1
+                if edge_schedule[(edge, day)] <= 0:
+                    del edge_schedule[(edge, day)]
+            for pad_id, astronaut_type, module_id, _ in self.pod_services(old_pod):
+                service_counts[(pad_id, astronaut_type)] -= 1
+                if service_counts[(pad_id, astronaut_type)] <= 0:
+                    del service_counts[(pad_id, astronaut_type)]
+                    serviced.discard((pad_id, astronaut_type))
+                    module_load[module_id] -= self.buildings[pad_id].demand[astronaut_type]
         for a, b in candidate.tubes:
             if route_key(a, b) in tubes:
                 continue
@@ -508,20 +718,22 @@ class Planner:
             teleport_used.add(a)
             teleport_used.add(b)
         if candidate.path:
-            pod_id = next_pod_id(pod_ids)
+            pod_id = candidate.reroute_pod_id if candidate.reroute_pod_id is not None else next_pod_id(pod_ids)
             pod_ids.add(pod_id)
             actions.append("POD {} {}".format(pod_id, " ".join(map(str, candidate.path))))
             if len(candidate.path) == 3 and candidate.path[0] == candidate.path[2]:
                 direct_pod_counts[(candidate.path[0], candidate.path[1])] += 1
-        if reason == "service":
+            for edge, day in path_edge_days(candidate.path):
+                edge_schedule[(edge, day)] += 1
+        if candidate.path and reason in ("service", "capacity"):
             serviced.add((candidate.pad_id, candidate.astronaut_type))
+            service_counts[(candidate.pad_id, candidate.astronaut_type)] += 1
+        if reason == "service":
             module_load[candidate.module_id] += candidate.delivered
         new_budget = budget - candidate.cost
-        print(
-            f"[M{self.month + 1:02d}] apply {reason} budget={budget}->{new_budget} "
-            f"actions={format_items(actions[action_start:], 10)} candidate={describe_candidate(candidate)}",
-            file=sys.stderr,
-        )
+        message = f"[M{self.month + 1:02d}] apply {reason} budget={budget}->{new_budget} "
+        message += f"actions={format_items(actions[action_start:], 10)} candidate={describe_candidate(candidate)}"
+        print(message, file=sys.stderr)
         return new_budget
 
     def months_left(self) -> int:
@@ -596,10 +808,13 @@ def describe_candidate(candidate: Candidate) -> str:
         f"cost={candidate.cost}",
         f"score={candidate.score}",
         f"eff={candidate.efficiency:.2f}",
-        f"delivered={candidate.delivered}",
-    ]
+        f"delivered={candidate.delivered}"]
     if candidate.teleport is not None:
         parts.append(f"teleport={candidate.teleport[0]}->{candidate.teleport[1]}")
+    if candidate.reroute_pod_id is not None:
+        parts.append(f"reroute_pod={candidate.reroute_pod_id}")
+    if candidate.lost_score:
+        parts.append(f"lost_score={candidate.lost_score}")
     if candidate.tubes:
         parts.append(f"tubes={format_edges(candidate.tubes)}")
     if candidate.upgrades:
@@ -619,6 +834,14 @@ def format_pair_counter(counter: Counter[tuple[int, int]]) -> str:
     """Formats a pair-keyed counter as compact key-value text."""
     items = [f"{a}->{b}:{counter[(a, b)]}" for a, b in sorted(counter) if counter[(a, b)] > 0]
     return format_items(items)
+
+
+def format_edge_schedule(schedule: Counter[tuple[tuple[int, int], int]]) -> str:
+    """Formats maximum scheduled pod occupancy for each edge."""
+    max_by_edge = Counter()
+    for edge, day in schedule:
+        max_by_edge[edge] = max(max_by_edge[edge], schedule[(edge, day)])
+    return format_pair_counter(max_by_edge)
 
 
 def format_tubes(tubes: dict[tuple[int, int], int]) -> str:
@@ -694,6 +917,16 @@ def loop_path(path: list[int]) -> list[int]:
     return path + path[-2::-1]
 
 
+def path_edge_days(path: list[int]) -> list[tuple[tuple[int, int], int]]:
+    """Gets the undirected tube edges used by a pod on each day of a lunar month."""
+    edges = [route_key(a, b) for a, b in zip(path, path[1:])]
+    if not edges:
+        return []
+    if path[0] == path[-1]:
+        return [(edges[day % len(edges)], day) for day in range(MONTH_DAYS)]
+    return [(edges[day], day) for day in range(min(MONTH_DAYS, len(edges)))]
+
+
 def unwind_path(parent: dict[int, int], start_id: int, finish_id: int) -> list[int]:
     """Reconstructs an ordered BFS path from parent links between the start and finish building ids."""
     path = [finish_id]
@@ -703,27 +936,29 @@ def unwind_path(parent: dict[int, int], start_id: int, finish_id: int) -> list[i
     return path
 
 
-def monthly_pod_deliveries(count: int, distance: int, pod_count: int) -> int:
+def monthly_pod_deliveries(count: int, distance: int, pod_count: int, period: int | None = None) -> int:
     """Estimates how many passengers a shuttling pod group delivers in one month."""
     delivered = 0
     day = distance
+    period = 2 * distance if period is None else period
     while day <= MONTH_DAYS and delivered < count:
         delivered += min(count - delivered, 10 * pod_count)
-        day += 2 * distance
+        day += period
     return delivered
 
 
-def monthly_score(count: int, distance: int, current_load: int, pod_count: int = 1) -> int:
+def monthly_score(count: int, distance: int, current_load: int, pod_count: int = 1, period: int | None = None) -> int:
     """Estimates one month of score from pod deliveries, travel distance, module load, and synchronized pod count."""
     score = 0
     delivered = 0
     day = distance
+    period = 2 * distance if period is None else period
     while day <= MONTH_DAYS and delivered < count:
         batch = min(count - delivered, 10 * pod_count)
         for _ in range(batch):
             score += max(0, 50 - day) + max(0, 50 - current_load - delivered)
             delivered += 1
-        day += 2 * distance
+        day += period
     return score
 
 

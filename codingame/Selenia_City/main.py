@@ -13,6 +13,7 @@ MAX_TUBES_PER_BUILDING = 5
 MAX_PODS = 500
 POD_COST = 1000
 TELEPORT_COST = 5000
+DEBUG_LIST_LIMIT = 18
 
 
 @dataclass(slots=True)
@@ -85,7 +86,8 @@ class Planner:
         self.resources = int(input())
         self.tubes = {}
         self.teleports = {}
-        for _ in range(int(input())):
+        route_count = int(input())
+        for _ in range(route_count):
             a, b, capacity = map(int, input().split())
             if capacity == 0:
                 self.teleports[a] = b
@@ -93,16 +95,21 @@ class Planner:
                 self.tubes[route_key(a, b)] = capacity
 
         self.pods = {}
-        for _ in range(int(input())):
+        pod_count = int(input())
+        for _ in range(pod_count):
             parts = list(map(int, input().split()))
             self.pods[parts[0]] = Pod(parts[0], parts[2:])
 
+        new_buildings = []
         for _ in range(int(input())):
             parts = list(map(int, input().split()))
             if parts[0] == 0:
-                self.buildings[parts[1]] = Building(parts[1], 0, parts[2], parts[3], Counter(parts[5:]))
+                building = Building(parts[1], 0, parts[2], parts[3], Counter(parts[5:]))
             else:
-                self.buildings[parts[1]] = Building(parts[1], parts[0], parts[2], parts[3])
+                building = Building(parts[1], parts[0], parts[2], parts[3])
+            self.buildings[building.id] = building
+            new_buildings.append(building)
+        self.debug_month_input(route_count, pod_count, new_buildings)
 
     def choose_actions(self) -> list[str]:
         """Chooses and returns semicolon-separated action fragments for the current month."""
@@ -116,20 +123,73 @@ class Planner:
         direct_pod_counts = self.get_direct_service_pod_counts()
         budget = self.resources
         modules_by_type = self.get_modules_by_type()
+        unserved_demands = self.get_unserved_demands(serviced)
+        min_efficiency = self.min_efficiency()
+        self.debug_plan_start(serviced, module_load, degrees, direct_pod_counts, unserved_demands, min_efficiency)
 
-        for pad, astronaut_type, count in self.get_unserved_demands(serviced):
+        for demand_ind, (pad, astronaut_type, count) in enumerate(unserved_demands, 1):
             candidate = self.best_service_candidate(pad, astronaut_type, count, modules_by_type, module_load, degrees, teleport_used, tubes, budget, pod_ids)
-            if candidate is not None and candidate.efficiency >= self.min_efficiency():
-                budget = self.apply_candidate(candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts, budget, pod_ids)
+            prefix = f"[M{self.month + 1:02d}] demand {demand_ind}/{len(unserved_demands)} {describe_demand(pad, astronaut_type, count)}"
+            if candidate is None:
+                print(f"{prefix} no_candidate budget={budget}", file=sys.stderr)
+            elif candidate.efficiency < min_efficiency:
+                print(f"{prefix} skip best={describe_candidate(candidate)} min_eff={min_efficiency:.2f}", file=sys.stderr)
+            else:
+                print(f"{prefix} choose best={describe_candidate(candidate)}", file=sys.stderr)
+                budget = self.apply_candidate("service", candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts,
+                                              budget, pod_ids)
 
+        capacity_round = 0
         while True:
             candidate = self.best_capacity_candidate(serviced, tubes, direct_pod_counts, budget, pod_ids)
-            if candidate is None or candidate.efficiency < 1:
+            if candidate is None:
+                print(f"[M{self.month + 1:02d}] capacity stop no_candidate budget={budget} rounds={capacity_round}", file=sys.stderr)
                 break
-            budget = self.apply_candidate(candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts, budget, pod_ids)
+            if candidate.efficiency < 1:
+                print(f"[M{self.month + 1:02d}] capacity stop low_eff best={describe_candidate(candidate)}", file=sys.stderr)
+                break
+            capacity_round += 1
+            print(f"[M{self.month + 1:02d}] capacity choose round={capacity_round} best={describe_candidate(candidate)}", file=sys.stderr)
+            budget = self.apply_candidate("capacity", candidate, actions, serviced, module_load, degrees, teleport_used, tubes, direct_pod_counts,
+                                          budget, pod_ids)
 
-        print(f"month={self.month + 1} resources={self.resources} spent={self.resources - budget} actions={len(actions)}", file=sys.stderr)
+        action_line = ";".join(actions) or "WAIT"
+        print(f"[M{self.month + 1:02d}] output resources={self.resources} spent={self.resources - budget} remaining={budget}", file=sys.stderr)
+        print(f"[M{self.month + 1:02d}] output actions={len(actions)} line={action_line}", file=sys.stderr)
         return actions
+
+    def debug_month_input(self, route_count: int, pod_count: int, new_buildings: list[Building]):
+        """Prints the parsed monthly input snapshot to the debug log."""
+        module_counts = Counter(building.kind for building in self.buildings.values() if building.kind > 0)
+        pads = self.get_landing_pads()
+        total_demand = sum(sum(pad.demand.values()) for pad in pads)
+        print(
+            f"[M{self.month + 1:02d}] input resources={self.resources} route_lines={route_count} tubes={len(self.tubes)} "
+            f"teleports={len(self.teleports)} pod_lines={pod_count} pods={len(self.pods)} new_buildings={len(new_buildings)} "
+            f"total_buildings={len(self.buildings)} pads={len(pads)} modules={sum(module_counts.values())} total_monthly_demand={total_demand}",
+            file=sys.stderr,
+        )
+        print(f"[M{self.month + 1:02d}] input modules_by_type={format_counter(module_counts)}", file=sys.stderr)
+        if self.tubes:
+            print(f"[M{self.month + 1:02d}] input tubes={format_tubes(self.tubes)}", file=sys.stderr)
+        if self.teleports:
+            print(f"[M{self.month + 1:02d}] input teleports={format_teleports(self.teleports)}", file=sys.stderr)
+        if self.pods:
+            print(f"[M{self.month + 1:02d}] input pods={format_pods(self.pods)}", file=sys.stderr)
+        for building in new_buildings:
+            print(f"[M{self.month + 1:02d}] input new {describe_building(building)}", file=sys.stderr)
+
+    def debug_plan_start(self, serviced: set[tuple[int, int]], module_load: Counter[int], degrees: Counter[int], direct_pod_counts: Counter[tuple[int, int]],
+                         demands: list[tuple[Building, int, int]], min_efficiency: float):
+        """Prints the planning state before candidate selection starts."""
+        print(
+            f"[M{self.month + 1:02d}] plan start months_left={self.months_left()} min_eff={min_efficiency:.2f} "
+            f"teleport_threshold={self.teleport_threshold()} serviced_pairs={len(serviced)} unserved_demands={len(demands)}",
+            file=sys.stderr,
+        )
+        print(f"[M{self.month + 1:02d}] plan module_load={format_counter(module_load)}", file=sys.stderr)
+        print(f"[M{self.month + 1:02d}] plan tube_degrees={format_counter(degrees)}", file=sys.stderr)
+        print(f"[M{self.month + 1:02d}] plan direct_pods={format_pair_counter(direct_pod_counts)}", file=sys.stderr)
 
     def get_serviced_pairs(self) -> set[tuple[int, int]]:
         """Gets landing-pad and astronaut-type pairs already served by teleporters or pods."""
@@ -360,10 +420,11 @@ class Planner:
                         best = candidate
         return best
 
-    def apply_candidate(self, candidate: Candidate, actions: list[str], serviced: set[tuple[int, int]], module_load: Counter[int], degrees: Counter[int],
-                        teleport_used: set[int], tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]], budget: int,
-                        pod_ids: set[int]) -> int:
+    def apply_candidate(self, reason: str, candidate: Candidate, actions: list[str], serviced: set[tuple[int, int]], module_load: Counter[int],
+                        degrees: Counter[int], teleport_used: set[int], tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]],
+                        budget: int, pod_ids: set[int]) -> int:
         """Appends a chosen candidate to the action list, updates planned state, and returns the remaining budget."""
+        action_start = len(actions)
         for a, b in candidate.tubes:
             if route_key(a, b) in tubes:
                 continue
@@ -383,11 +444,17 @@ class Planner:
             pod_id = next_pod_id(pod_ids)
             pod_ids.add(pod_id)
             actions.append("POD {} {}".format(pod_id, " ".join(map(str, candidate.path))))
-            if len(candidate.path) == 3 and candidate.path[0] == candidate.path[2]:
-                direct_pod_counts[(candidate.path[0], candidate.path[1])] += 1
+        if len(candidate.path) == 3 and candidate.path[0] == candidate.path[2]:
+            direct_pod_counts[(candidate.path[0], candidate.path[1])] += 1
         serviced.add((candidate.pad_id, candidate.astronaut_type))
         module_load[candidate.module_id] += candidate.delivered
-        return budget - candidate.cost
+        new_budget = budget - candidate.cost
+        print(
+            f"[M{self.month + 1:02d}] apply {reason} budget={budget}->{new_budget} "
+            f"actions={format_items(actions[action_start:], 10)} candidate={describe_candidate(candidate)}",
+            file=sys.stderr,
+        )
+        return new_budget
 
     def months_left(self) -> int:
         """Returns the number of lunar months that can still benefit from new construction."""
@@ -404,6 +471,89 @@ class Planner:
         if self.month <= 10:
             return 70
         return 90
+
+
+def describe_building(building: Building) -> str:
+    """Formats one building for the debug log."""
+    if building.kind == 0:
+        return f"pad id={building.id} xy=({building.x},{building.y}) demand={format_counter(building.demand)} total={sum(building.demand.values())}"
+    return f"module id={building.id} type={building.kind} xy=({building.x},{building.y})"
+
+
+def describe_demand(pad: Building, astronaut_type: int, count: int) -> str:
+    """Formats one landing-pad demand for the debug log."""
+    return f"pad={pad.id} xy=({pad.x},{pad.y}) type={astronaut_type} count={count}"
+
+
+def describe_candidate(candidate: Candidate) -> str:
+    """Formats one candidate with its cost, score, and route details for the debug log."""
+    mode = "teleport" if candidate.teleport is not None else "pod"
+    parts = [
+        f"mode={mode}",
+        f"pad={candidate.pad_id}",
+        f"type={candidate.astronaut_type}",
+        f"module={candidate.module_id}",
+        f"cost={candidate.cost}",
+        f"score={candidate.score}",
+        f"eff={candidate.efficiency:.2f}",
+        f"delivered={candidate.delivered}",
+    ]
+    if candidate.teleport is not None:
+        parts.append(f"teleport={candidate.teleport[0]}->{candidate.teleport[1]}")
+    if candidate.tubes:
+        parts.append(f"tubes={format_edges(candidate.tubes)}")
+    if candidate.upgrades:
+        parts.append(f"upgrades={format_edges(candidate.upgrades)}")
+    if candidate.path:
+        parts.append(f"path={format_path(candidate.path)}")
+    return " ".join(parts)
+
+
+def format_counter(counter: Counter[int]) -> str:
+    """Formats an integer counter as compact key-value text."""
+    items = [f"{key}:{counter[key]}" for key in sorted(counter) if counter[key] > 0]
+    return format_items(items)
+
+
+def format_pair_counter(counter: Counter[tuple[int, int]]) -> str:
+    """Formats a pair-keyed counter as compact key-value text."""
+    items = [f"{a}->{b}:{counter[(a, b)]}" for a, b in sorted(counter) if counter[(a, b)] > 0]
+    return format_items(items)
+
+
+def format_tubes(tubes: dict[tuple[int, int], int]) -> str:
+    """Formats tube capacities as compact route text."""
+    return format_items([f"{a}-{b}:c{tubes[(a, b)]}" for a, b in sorted(tubes)])
+
+
+def format_teleports(teleports: dict[int, int]) -> str:
+    """Formats teleporters as compact directed route text."""
+    return format_items([f"{entrance}->{teleports[entrance]}" for entrance in sorted(teleports)])
+
+
+def format_pods(pods: dict[int, Pod]) -> str:
+    """Formats pod paths as compact itinerary text."""
+    return format_items([f"{pod_id}:{format_path(pods[pod_id].path)}" for pod_id in sorted(pods)])
+
+
+def format_edges(edges: list[tuple[int, int]]) -> str:
+    """Formats endpoint pairs as compact undirected edge text."""
+    return format_items([f"{a}-{b}" for a, b in edges])
+
+
+def format_path(path: list[int]) -> str:
+    """Formats a pod path, shortening very long itineraries."""
+    if len(path) <= 9:
+        return "-".join(map(str, path))
+    return "{}-...-{}".format("-".join(map(str, path[:5])), "-".join(map(str, path[-3:])))
+
+
+def format_items(items: list[str], limit: int = DEBUG_LIST_LIMIT) -> str:
+    """Formats a bounded comma-separated item list for debug output."""
+    if not items:
+        return "none"
+    suffix = "" if len(items) <= limit else f",...(+{len(items) - limit})"
+    return ",".join(items[:limit]) + suffix
 
 
 def route_key(a: int, b: int) -> tuple[int, int]:

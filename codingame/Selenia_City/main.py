@@ -17,12 +17,7 @@ TELEPORT_COST = 5000
 
 @dataclass(slots=True)
 class Building:
-    """Stores one building.
-    :var id: Unique building identifier.
-    :var kind: Zero for landing pads, otherwise the lunar module type.
-    :var x: Horizontal coordinate in kilometers.
-    :var y: Vertical coordinate in kilometers.
-    :var demand: Monthly astronaut demand by type for landing pads, or empty for modules."""
+    """Stores one building with its identifier, type, coordinates, and monthly landing-pad demand."""
     id: int
     kind: int
     x: int
@@ -32,26 +27,14 @@ class Building:
 
 @dataclass(slots=True)
 class Pod:
-    """Stores one transport pod itinerary.
-    :var id: Unique pod identifier.
-    :var path: Ordered building identifiers followed by the pod."""
+    """Stores one transport pod identifier and ordered itinerary."""
     id: int
     path: list[int]
 
 
 @dataclass(slots=True)
 class Candidate:
-    """Stores one possible infrastructure action bundle.
-    :var score: Estimated recurring score value.
-    :var cost: Required resources.
-    :var pad_id: Landing pad served by the bundle.
-    :var module_id: Module served by the bundle.
-    :var astronaut_type: Astronaut type served by the bundle.
-    :var path: Pod itinerary to create, or empty for teleporter-only bundles.
-    :var tubes: New magnetic tubes required by the bundle.
-    :var upgrades: Tube upgrades required by the bundle.
-    :var teleport: Teleporter entrance and exit to create, or None.
-    :var delivered: Estimated passengers delivered each month by the bundle."""
+    """Stores one possible infrastructure action bundle with its cost, score, route work, and estimated deliveries."""
     score: int
     cost: int
     pad_id: int
@@ -70,13 +53,7 @@ class Candidate:
 
 
 class Planner:
-    """Maintains city memory and chooses monthly construction actions.
-    :var buildings: Known buildings keyed by identifier.
-    :var month: Zero-based lunar month counter.
-    :var resources: Current available resources.
-    :var tubes: Existing magnetic tube capacities keyed by endpoint pair.
-    :var teleports: Existing directed teleporter exits keyed by entrance building.
-    :var pods: Existing transport pods keyed by identifier."""
+    """Maintains city memory and chooses monthly construction actions from buildings, routes, pods, and resources."""
     buildings: dict[int, Building]
     month: int
     resources: int
@@ -128,8 +105,7 @@ class Planner:
                 self.buildings[parts[1]] = Building(parts[1], parts[0], parts[2], parts[3])
 
     def choose_actions(self) -> list[str]:
-        """Chooses and reserves all useful actions for the current month.
-        :return: Semicolon-separated action fragments as a list."""
+        """Chooses and returns semicolon-separated action fragments for the current month."""
         actions = []
         serviced = self.get_serviced_pairs()
         module_load = self.get_module_load()
@@ -156,8 +132,7 @@ class Planner:
         return actions
 
     def get_serviced_pairs(self) -> set[tuple[int, int]]:
-        """Gets landing-pad and astronaut-type pairs already served by teleporters or pods.
-        :return: Set of pairs as pad id and astronaut type."""
+        """Gets landing-pad and astronaut-type pairs already served by teleporters or pods."""
         serviced = set()
         for entrance, exit_id in self.teleports.items():
             if entrance in self.buildings and exit_id in self.buildings and self.buildings[entrance].kind == 0 and self.buildings[exit_id].kind > 0:
@@ -173,8 +148,7 @@ class Planner:
         return serviced
 
     def get_module_load(self) -> Counter[int]:
-        """Estimates monthly passengers already assigned to each module.
-        :return: Passenger counts keyed by module id."""
+        """Estimates monthly passenger counts assigned to each module."""
         loads = Counter()
         for entrance, exit_id in self.teleports.items():
             if entrance not in self.buildings or exit_id not in self.buildings:
@@ -197,8 +171,7 @@ class Planner:
         return loads
 
     def get_tube_degrees(self) -> Counter[int]:
-        """Counts magnetic tube endpoints per building.
-        :return: Tube degree keyed by building id."""
+        """Counts magnetic tube endpoints per building."""
         degrees = Counter()
         for a, b in self.tubes:
             degrees[a] += 1
@@ -206,15 +179,13 @@ class Planner:
         return degrees
 
     def get_teleport_used_buildings(self) -> set[int]:
-        """Gets buildings that already host a teleporter entrance or exit.
-        :return: Building identifiers used by any teleporter endpoint."""
+        """Gets buildings that already host a teleporter entrance or exit."""
         used = set(self.teleports)
         used.update(self.teleports.values())
         return used
 
     def get_direct_service_pod_counts(self) -> Counter[tuple[int, int]]:
-        """Counts pods that directly shuttle between landing pads and modules.
-        :return: Pod counts keyed by directed pad and module id."""
+        """Counts pods that directly shuttle between landing pads and modules."""
         counts = Counter()
         for pod in self.pods.values():
             if len(pod.path) == 3 and pod.path[0] == pod.path[2] and pod.path[0] in self.buildings and pod.path[1] in self.buildings:
@@ -223,9 +194,7 @@ class Planner:
         return counts
 
     def get_unserved_demands(self, serviced: set[tuple[int, int]]) -> list[tuple[Building, int, int]]:
-        """Gets unserved monthly demands in priority order.
-        :param serviced: Already served pad and astronaut-type pairs.
-        :return: Tuples of landing pad, astronaut type, and passenger count."""
+        """Gets unserved monthly demands in priority order from the already served pad and astronaut-type pairs."""
         demands = []
         for pad in self.get_landing_pads():
             for astronaut_type, count in pad.demand.items():
@@ -236,18 +205,7 @@ class Planner:
     def best_service_candidate(self, pad: Building, astronaut_type: int, count: int, modules_by_type: dict[int, list[Building]], module_load: Counter[int],
                                degrees: Counter[int], teleport_used: set[int], tubes: dict[tuple[int, int], int], budget: int,
                                pod_ids: set[int]) -> Candidate | None:
-        """Finds the strongest affordable service candidate for one demand.
-        :param pad: Landing pad whose passengers need transport.
-        :param astronaut_type: Type of passengers to serve.
-        :param count: Monthly passenger count.
-        :param modules_by_type: Known lunar modules grouped by type.
-        :param module_load: Estimated monthly module passenger loads.
-        :param degrees: Current or planned magnetic tube degrees.
-        :param teleport_used: Buildings occupied by teleporters.
-        :param tubes: Current or planned magnetic tube capacities.
-        :param budget: Remaining resources.
-        :param pod_ids: Already used or reserved pod identifiers.
-        :return: Best candidate, or None if no affordable candidate exists."""
+        """Finds the strongest affordable service candidate for one pad demand, using current planned routes and remaining budget."""
         best = None
         for module in self.best_modules(modules_by_type[astronaut_type], pad, module_load):
             candidates = self.service_candidates(pad, module, astronaut_type, count, module_load[module.id], degrees, teleport_used, tubes, budget, pod_ids)
@@ -257,8 +215,7 @@ class Planner:
         return best
 
     def get_modules_by_type(self) -> dict[int, list[Building]]:
-        """Groups known lunar modules by type.
-        :return: Module lists keyed by astronaut type."""
+        """Groups known lunar modules by astronaut type."""
         modules_by_type = {}
         for building in self.buildings.values():
             if building.kind > 0:
@@ -266,32 +223,16 @@ class Planner:
         return modules_by_type
 
     def get_landing_pads(self) -> list[Building]:
-        """Gets all known landing pads with their monthly demands.
-        :return: Landing pad buildings."""
+        """Gets all known landing pads with monthly demands."""
         return [building for building in self.buildings.values() if building.kind == 0 and building.demand]
 
     def best_modules(self, modules: list[Building], pad: Building, module_load: Counter[int]) -> list[Building]:
-        """Orders a module list for one landing pad by load-adjusted distance.
-        :param modules: Candidate modules with the needed type.
-        :param pad: Landing pad that needs service.
-        :param module_load: Estimated monthly module passenger loads.
-        :return: The most promising modules to evaluate."""
+        """Orders modules for one landing pad by load-adjusted distance and returns the most promising subset."""
         return sorted(modules, key=lambda module: (module_load[module.id] // 20, tube_cost(pad, module)))[:4]
 
     def service_candidates(self, pad: Building, module: Building, astronaut_type: int, count: int, current_load: int, degrees: Counter[int],
                            teleport_used: set[int], tubes: dict[tuple[int, int], int], budget: int, pod_ids: set[int]) -> list[Candidate]:
-        """Builds affordable ways to serve one landing-pad demand.
-        :param pad: Landing pad to serve.
-        :param module: Destination module to connect.
-        :param astronaut_type: Astronaut type being served.
-        :param count: Monthly passengers of this type.
-        :param current_load: Estimated passengers already assigned to the module.
-        :param degrees: Current or planned magnetic tube degrees.
-        :param teleport_used: Buildings occupied by teleporters.
-        :param tubes: Current or planned magnetic tube capacities.
-        :param budget: Remaining resources.
-        :param pod_ids: Already used or reserved pod identifiers.
-        :return: Candidate bundles for this demand."""
+        """Builds affordable tube, pod, and teleporter bundles for one landing-pad demand."""
         candidates = []
         if len(pod_ids) < MAX_PODS:
             has_tube_candidate = False
@@ -331,11 +272,7 @@ class Planner:
         return candidates
 
     def shortest_tube_path(self, start_id: int, finish_id: int, tubes: dict[tuple[int, int], int]) -> list[int] | None:
-        """Gets the shortest existing magnetic-tube path between two buildings.
-        :param start_id: Starting building id.
-        :param finish_id: Destination building id.
-        :param tubes: Magnetic tube capacities keyed by endpoint pair.
-        :return: Building path, or None if disconnected."""
+        """Gets the shortest existing magnetic-tube building path between two building ids, or no path if disconnected."""
         if start_id == finish_id:
             return [start_id]
         graph = {}
@@ -356,11 +293,7 @@ class Planner:
         return None
 
     def can_reserve_tubes(self, new_tubes: list[tuple[int, int]], degrees: Counter[int], tubes: dict[tuple[int, int], int]) -> bool:
-        """Checks whether a list of new tubes can be added to the current planned geometry.
-        :param new_tubes: New tube endpoint pairs to validate.
-        :param degrees: Current or planned magnetic tube degrees.
-        :param tubes: Current or planned magnetic tube capacities.
-        :return: True when every tube can be built."""
+        """Checks whether all new tube endpoint pairs can be added to the current planned geometry."""
         extra = []
         extra_keys = set()
         extra_degrees = Counter()
@@ -379,12 +312,7 @@ class Planner:
         return True
 
     def can_build_tube(self, a: int, b: int, tubes: dict[tuple[int, int], int], extra_tubes: list[tuple[int, int]]) -> bool:
-        """Checks geometry constraints for one tube against existing and planned tubes.
-        :param a: First endpoint id.
-        :param b: Second endpoint id.
-        :param tubes: Current or planned magnetic tube capacities.
-        :param extra_tubes: New tubes tentatively planned before this one.
-        :return: True when the segment neither crosses tubes nor passes through buildings."""
+        """Checks whether one tube segment can be built without crossing tubes or passing through buildings."""
         if a == b or route_key(a, b) in tubes:
             return False
         first = self.buildings[a]
@@ -400,21 +328,12 @@ class Planner:
         return True
 
     def two_hop_buildings(self, pad: Building, module: Building) -> list[Building]:
-        """Orders possible intermediate buildings for a two-hop connection.
-        :param pad: Landing pad endpoint.
-        :param module: Destination module endpoint.
-        :return: A short list of promising intermediate buildings."""
+        """Orders possible intermediate buildings for a two-hop connection between a landing pad and module."""
         return sorted(self.buildings.values(), key=lambda building: tube_cost(pad, building) + tube_cost(building, module))[:20]
 
     def best_capacity_candidate(self, serviced: set[tuple[int, int]], tubes: dict[tuple[int, int], int], direct_counts: Counter[tuple[int, int]], budget: int,
                                 pod_ids: set[int]) -> Candidate | None:
-        """Finds the best direct-tube extra pod or upgrade candidate.
-        :param serviced: Already served pad and astronaut-type pairs.
-        :param tubes: Current or planned magnetic tube capacities.
-        :param direct_counts: Existing or reserved direct pod counts keyed by pad and module id.
-        :param budget: Remaining resources.
-        :param pod_ids: Already used or reserved pod identifiers.
-        :return: Best capacity candidate, or None if none is affordable."""
+        """Finds the best affordable extra pod or tube upgrade for already served direct routes."""
         if len(pod_ids) >= MAX_PODS:
             return None
         best = None
@@ -444,18 +363,7 @@ class Planner:
     def apply_candidate(self, candidate: Candidate, actions: list[str], serviced: set[tuple[int, int]], module_load: Counter[int], degrees: Counter[int],
                         teleport_used: set[int], tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]], budget: int,
                         pod_ids: set[int]) -> int:
-        """Appends a candidate to the action list and updates planned state.
-        :param candidate: Candidate bundle chosen for execution.
-        :param actions: Mutable action list being built.
-        :param serviced: Mutable set of served pad and type pairs.
-        :param module_load: Mutable estimated module loads.
-        :param degrees: Mutable tube degrees.
-        :param teleport_used: Mutable teleporter endpoint set.
-        :param tubes: Mutable tube capacity map.
-        :param direct_pod_counts: Mutable direct pod counts keyed by pad and module id.
-        :param budget: Current remaining resources.
-        :param pod_ids: Mutable used pod identifiers.
-        :return: Remaining resources after paying for the candidate."""
+        """Appends a chosen candidate to the action list, updates planned state, and returns the remaining budget."""
         for a, b in candidate.tubes:
             if route_key(a, b) in tubes:
                 continue
@@ -537,11 +445,7 @@ def loop_path(path: list[int]) -> list[int]:
 
 
 def unwind_path(parent: dict[int, int], start_id: int, finish_id: int) -> list[int]:
-    """Reconstructs a BFS path from parent links.
-    :param parent: Parent links keyed by building id.
-    :param start_id: Starting building id.
-    :param finish_id: Destination building id.
-    :return: Ordered path from start to finish."""
+    """Reconstructs an ordered BFS path from parent links between the start and finish building ids."""
     path = [finish_id]
     while path[-1] != start_id:
         path.append(parent[path[-1]])
@@ -560,12 +464,7 @@ def monthly_pod_deliveries(count: int, distance: int, pod_count: int) -> int:
 
 
 def monthly_score(count: int, distance: int, current_load: int, pod_count: int = 1) -> int:
-    """Estimates monthly score from pod deliveries.
-    :param count: Number of passengers to score.
-    :param distance: Tube hops from pad to destination module.
-    :param current_load: Passengers already expected at the destination module.
-    :param pod_count: Number of synchronized pods on the route.
-    :return: Estimated score for one month."""
+    """Estimates one month of score from pod deliveries, travel distance, module load, and synchronized pod count."""
     score = 0
     delivered = 0
     day = distance
@@ -579,17 +478,12 @@ def monthly_score(count: int, distance: int, current_load: int, pod_count: int =
 
 
 def monthly_teleport_score(count: int, current_load: int) -> int:
-    """Estimates monthly score from a direct teleporter.
-    :param count: Number of passengers using the teleporter.
-    :param current_load: Passengers already expected at the destination module.
-    :return: Estimated score for one month."""
+    """Estimates one month of score for passengers using a direct teleporter into a module with an existing load."""
     return sum(50 + max(0, 50 - current_load - passenger_ind) for passenger_ind in range(count))
 
 
 def next_pod_id(used_ids: set[int]) -> int:
-    """Returns the smallest available pod identifier.
-    :param used_ids: Already existing or planned pod identifiers.
-    :return: Available pod id between 1 and 500."""
+    """Returns the smallest available pod identifier between 1 and 500 from existing or planned identifiers."""
     for pod_id in range(1, MAX_PODS + 1):
         if pod_id not in used_ids:
             return pod_id

@@ -267,6 +267,14 @@ class Planner:
         print(f"[M{self.month + 1:02d}] plan tube_degrees={format_counter(degrees)}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] plan direct_pods={format_pair_counter(direct_pod_counts)}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] plan edge_schedule={format_edge_schedule(edge_schedule)}", file=sys.stderr)
+        node_waits = self.current_node_waits()
+        print(f"[M{self.month + 1:02d}] plan wait_total={sum(node_waits.values())} wait_max={max(node_waits.values(), default=0)}", file=sys.stderr)
+        for building_id in sorted(self.buildings):
+            print(f"[M{self.month + 1:02d}] plan node_wait ({building_id}) -> {node_waits[building_id]}", file=sys.stderr)
+
+    def current_node_waits(self) -> Counter[int]:
+        """Estimates per-building passenger-days spent waiting under the current pod schedule."""
+        return self.waiting_pressure_metrics(self.get_directed_edge_schedule())[2]
 
     def get_serviced_pairs(self) -> set[tuple[int, int]]:
         """Gets landing-pad and astronaut-type pairs already served by teleporters or pods."""

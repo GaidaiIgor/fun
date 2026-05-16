@@ -141,6 +141,7 @@ class Planner:
         unserved_demands = self.get_unserved_demands(serviced)
         min_efficiency = self.min_efficiency()
         self.debug_plan_start(serviced, service_counts, module_load, degrees, direct_pod_counts, edge_schedule, unserved_demands, min_efficiency)
+        self.debug_node_waits("before", self.node_waits_from_pods(planned_pods))
 
         for demand_ind, (pad, astronaut_type, count) in enumerate(unserved_demands, 1):
             if (pad.id, astronaut_type) in serviced:
@@ -186,7 +187,7 @@ class Planner:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
         action_line = ";".join(actions) or "WAIT"
-        self.debug_node_waits(self.node_waits_from_pods(planned_pods))
+        self.debug_node_waits("after", self.node_waits_from_pods(planned_pods))
         print(f"[M{self.month + 1:02d}] output resources={self.resources} spent={self.resources - budget} remaining={budget}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] output actions={len(actions)} line={action_line}", file=sys.stderr)
         return actions
@@ -272,11 +273,12 @@ class Planner:
         print(f"[M{self.month + 1:02d}] plan direct_pods={format_pair_counter(direct_pod_counts)}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] plan edge_schedule={format_edge_schedule(edge_schedule)}", file=sys.stderr)
 
-    def debug_node_waits(self, node_waits: Counter[int]):
-        """Prints per-building passenger-days spent waiting after planned actions are applied."""
-        print(f"[M{self.month + 1:02d}] plan wait_total={sum(node_waits.values())} wait_max={max(node_waits.values(), default=0)}", file=sys.stderr)
+    def debug_node_waits(self, label: str, node_waits: Counter[int]):
+        """Prints per-building passenger-days spent waiting for a named planning snapshot."""
+        print(f"[M{self.month + 1:02d}] plan wait_{label}_total={sum(node_waits.values())} wait_{label}_max={max(node_waits.values(), default=0)}",
+              file=sys.stderr)
         for building_id in sorted(self.buildings):
-            print(f"[M{self.month + 1:02d}] plan node_wait ({building_id}) -> {node_waits[building_id]}", file=sys.stderr)
+            print(f"[M{self.month + 1:02d}] plan node_wait_{label} ({building_id}) -> {node_waits[building_id]}", file=sys.stderr)
 
     def node_waits_from_pods(self, planned_pods: dict[int, list[int]]) -> Counter[int]:
         """Estimates per-building passenger-days spent waiting under a planned pod network."""

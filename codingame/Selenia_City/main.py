@@ -740,7 +740,7 @@ class Planner:
                         if cost <= budget:
                             candidate = Candidate(score_gain, cost, pad.id, module.id, astronaut_type, path, upgrades=upgrades, delivered=count)
                             self.set_capacity_pressure(candidate, directed_schedule, old_max_pressure, old_total_pressure, old_node_pressure)
-                            if self.is_good_capacity_pressure(candidate) and self.is_better_capacity_candidate(candidate, best):
+                            if candidate.score > 0 and self.is_good_capacity_pressure(candidate) and self.is_better_capacity_candidate(candidate, best):
                                 best = candidate
                     for old_pod in self.reroutable_pods(rerouted_pod_ids):
                         if old_pod.path == path:
@@ -755,7 +755,7 @@ class Planner:
                                               reroute_pod_id=old_pod.id, lost_score=lost_score)
                         changed_schedule = self.directed_schedule_without_pod(directed_schedule, old_pod)
                         self.set_capacity_pressure(candidate, changed_schedule, old_max_pressure, old_total_pressure, old_node_pressure)
-                        if self.is_good_capacity_pressure(candidate) and self.is_better_capacity_candidate(candidate, best):
+                        if candidate.score > 0 and self.is_good_capacity_pressure(candidate) and self.is_better_capacity_candidate(candidate, best):
                             best = candidate
         return best
 

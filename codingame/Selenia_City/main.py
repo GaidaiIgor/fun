@@ -131,6 +131,7 @@ class Planner:
         teleported_pairs = self.get_teleported_pairs()
         pod_ids = set(self.pods)
         planned_pods = {pod_id: pod.path[:] for pod_id, pod in self.pods.items()}
+        planned_teleports = dict(self.teleports)
         tubes = dict(self.tubes)
         direct_pod_counts = self.get_direct_service_pod_counts()
         edge_schedule = self.get_edge_schedule()
@@ -142,7 +143,7 @@ class Planner:
         unserved_demands = self.get_unserved_demands(serviced)
         min_efficiency = self.min_efficiency()
         self.debug_plan_start(serviced, service_counts, module_load, degrees, direct_pod_counts, edge_schedule, unserved_demands, min_efficiency)
-        self.debug_node_waits("before", self.node_waits_from_pods(planned_pods))
+        self.debug_scores("before", planned_pods, planned_teleports)
 
         for demand_ind, (pad, astronaut_type, count) in enumerate(unserved_demands, 1):
             if (pad.id, astronaut_type) in serviced:
@@ -159,7 +160,8 @@ class Planner:
                 print(f"{prefix} skip best={describe_candidate(candidate)} min_eff={min_efficiency:.2f}", file=sys.stderr)
             else:
                 print(f"{prefix} choose best={describe_candidate(candidate)}", file=sys.stderr)
-                budget = self.apply_candidate("service", candidate, actions, serviced, service_counts, module_load, degrees, teleport_used, tubes,
+                budget = self.apply_candidate("service", candidate, actions, serviced, service_counts, module_load, degrees, teleport_used,
+                                              planned_teleports, tubes,
                                               direct_pod_counts, edge_schedule, dedicated_edge_counts, planned_pods, budget, pod_ids)
                 if candidate.reroute_pod_id is not None:
                     rerouted_pod_ids.add(candidate.reroute_pod_id)
@@ -180,7 +182,7 @@ class Planner:
                 break
             speed_round += 1
             print(f"[M{self.month + 1:02d}] speed choose reason={reason} round={speed_round} best={describe_candidate(candidate)}", file=sys.stderr)
-            budget = self.apply_candidate(reason, candidate, actions, serviced, service_counts, module_load, degrees, teleport_used, tubes,
+            budget = self.apply_candidate(reason, candidate, actions, serviced, service_counts, module_load, degrees, teleport_used, planned_teleports, tubes,
                                           direct_pod_counts, edge_schedule, dedicated_edge_counts, planned_pods, budget, pod_ids)
             if candidate.reroute_pod_id is not None:
                 rerouted_pod_ids.add(candidate.reroute_pod_id)
@@ -188,7 +190,7 @@ class Planner:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
         action_line = ";".join(actions) or "WAIT"
-        self.debug_node_waits("after", self.node_waits_from_pods(planned_pods))
+        self.debug_scores("after", planned_pods, planned_teleports)
         print(f"[M{self.month + 1:02d}] output resources={self.resources} spent={self.resources - budget} remaining={budget}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] output actions={len(actions)} line={action_line}", file=sys.stderr)
         return actions
@@ -281,6 +283,97 @@ class Planner:
         for building_id in sorted(self.buildings):
             print(f"[M{self.month + 1:02d}] plan node_wait_{label} ({building_id}) -> {node_waits[building_id]}", file=sys.stderr)
 
+    def debug_scores(self, label: str, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int]):
+        """Prints estimated score details for a named planning snapshot."""
+        score, speed, balance, delivered, module_arrivals, module_balance, service_details = self.score_from_pods(planned_pods, planned_teleports)
+        demand = sum(sum(pad.demand.values()) for pad in self.get_landing_pads())
+        message = f"[M{self.month + 1:02d}] plan score_{label}_total={score} speed={speed} diversity={balance} "
+        message += f"delivered={delivered}/{demand} stranded={demand - delivered}"
+        print(message, file=sys.stderr)
+        for module in sorted((building for building in self.buildings.values() if building.kind > 0), key=lambda building: building.id):
+            message = f"[M{self.month + 1:02d}] plan score_{label}_module ({module.id}) -> "
+            message += f"arrivals={module_arrivals[module.id]} diversity={module_balance[module.id]}"
+            print(message, file=sys.stderr)
+        for service_detail in service_details:
+            print(f"[M{self.month + 1:02d}] plan score_{label}_service {service_detail}", file=sys.stderr)
+
+    def score_from_pods(self, planned_pods: dict[int, list[int]],
+                        planned_teleports: dict[int, int] | None = None) -> tuple[int, int, int, int, Counter[int], Counter[int], list[str]]:
+        """Estimates monthly score, score components, module arrivals, and service details from a planned pod network."""
+        service_paths = self.service_paths_from_adjacency(self.adjacency_from_paths(list(planned_pods.values()), planned_teleports))
+        directed_schedule = self.directed_schedule_from_paths(list(planned_pods.values()))
+        pod_edges = {edge for edge, _ in directed_schedule}
+        queues = {}
+        for (pad_id, astronaut_type), path in service_paths.items():
+            counts = [0] * len(path)
+            counts[0] = self.buildings[pad_id].demand[astronaut_type]
+            queues[(pad_id, astronaut_type)] = counts
+        module_arrivals = Counter()
+        module_balance = Counter()
+        service_delivered = Counter()
+        service_speed = Counter()
+        service_balance = Counter()
+
+        for day in range(MONTH_DAYS):
+            for pair, path in service_paths.items():
+                self.apply_instant_edges(path, queues[pair], pod_edges)
+            self.settle_score_arrivals(day, service_paths, queues, module_arrivals, module_balance, service_delivered, service_speed, service_balance)
+            moved = {pair: [0] * len(path) for pair, path in service_paths.items()}
+            edge_waiters = {}
+            for pair, path in service_paths.items():
+                for index, waiting in enumerate(queues[pair][:-1]):
+                    edge = (path[index], path[index + 1])
+                    if waiting and edge in pod_edges:
+                        edge_waiters.setdefault(edge, []).append((pair, index))
+            for edge, waiters in edge_waiters.items():
+                capacity = 10 * directed_schedule[(edge, day)]
+                for pair, index in sorted(waiters):
+                    boarded = min(queues[pair][index], capacity)
+                    queues[pair][index] -= boarded
+                    moved[pair][index + 1] += boarded
+                    capacity -= boarded
+                    if capacity <= 0:
+                        break
+            for pair, path in service_paths.items():
+                for index, count in enumerate(moved[pair]):
+                    queues[pair][index] += count
+            self.settle_score_arrivals(day + 1, service_paths, queues, module_arrivals, module_balance, service_delivered, service_speed, service_balance)
+
+        service_details = []
+        for pad in self.get_landing_pads():
+            for astronaut_type in sorted(pad.demand):
+                pair = (pad.id, astronaut_type)
+                if pair in service_paths:
+                    module_id = service_paths[pair][-1]
+                    detail = f"pad={pad.id} type={astronaut_type} module={module_id} delivered={service_delivered[pair]}/{pad.demand[astronaut_type]} "
+                    detail += f"speed={service_speed[pair]} diversity={service_balance[pair]} path={format_path(service_paths[pair])}"
+                else:
+                    detail = f"pad={pad.id} type={astronaut_type} module=none delivered=0/{pad.demand[astronaut_type]} speed=0 diversity=0 path=none"
+                service_details.append(detail)
+        speed = sum(service_speed.values())
+        balance = sum(service_balance.values())
+        delivered = sum(service_delivered.values())
+        return speed + balance, speed, balance, delivered, module_arrivals, module_balance, service_details
+
+    def settle_score_arrivals(self, day: int, service_paths: dict[tuple[int, int], list[int]], queues: dict[tuple[int, int], list[int]],
+                              module_arrivals: Counter[int], module_balance: Counter[int], service_delivered: Counter[tuple[int, int]],
+                              service_speed: Counter[tuple[int, int]], service_balance: Counter[tuple[int, int]]):
+        """Scores queued passengers that have reached their destination module on a given day."""
+        for pair, path in service_paths.items():
+            arrived = queues[pair][-1]
+            if arrived <= 0:
+                continue
+            module_id = path[-1]
+            queues[pair][-1] = 0
+            for _ in range(arrived):
+                speed_points = max(0, 50 - day)
+                balance_points = max(0, 50 - module_arrivals[module_id])
+                service_speed[pair] += speed_points
+                service_balance[pair] += balance_points
+                service_delivered[pair] += 1
+                module_balance[module_id] += balance_points
+                module_arrivals[module_id] += 1
+
     def node_waits_from_pods(self, planned_pods: dict[int, list[int]]) -> Counter[int]:
         """Estimates per-building passenger-days spent waiting under a planned pod network."""
         service_paths = self.service_paths_from_adjacency(self.adjacency_from_paths(list(planned_pods.values())))
@@ -345,13 +438,13 @@ class Planner:
         """Builds directed pod and teleporter reachability between buildings, optionally omitting one pod."""
         return self.adjacency_from_paths([pod.path for pod in self.pods.values() if pod.id != skip_pod_id])
 
-    def adjacency_from_paths(self, paths: list[list[int]]) -> dict[int, list[int]]:
+    def adjacency_from_paths(self, paths: list[list[int]], teleports: dict[int, int] | None = None) -> dict[int, list[int]]:
         """Builds directed pod and teleporter reachability from explicit pod paths."""
         adjacency = {}
         for path in paths:
             for a, b in zip(path, path[1:]):
                 adjacency.setdefault(a, []).append(b)
-        for a, b in self.teleports.items():
+        for a, b in (self.teleports if teleports is None else teleports).items():
             adjacency.setdefault(a, []).append(b)
         return adjacency
 
@@ -1189,7 +1282,7 @@ class Planner:
 
     def apply_candidate(self, reason: str, candidate: Candidate, actions: list[str], serviced: set[tuple[int, int]],
                         service_counts: Counter[tuple[int, int]], module_load: Counter[int], degrees: Counter[int], teleport_used: set[int],
-                        tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]],
+                        planned_teleports: dict[int, int], tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]],
                         edge_schedule: Counter[tuple[tuple[int, int], int]], dedicated_edge_counts: Counter[tuple[int, int]],
                         planned_pods: dict[int, list[int]], budget: int, pod_ids: set[int]) -> int:
         """Appends a chosen candidate to the action list, updates planned state, and returns the remaining budget."""
@@ -1225,6 +1318,7 @@ class Planner:
         if candidate.teleport is not None:
             a, b = candidate.teleport
             actions.append(f"TELEPORT {a} {b}")
+            planned_teleports[a] = b
             teleport_used.add(a)
             teleport_used.add(b)
         created_paths = [candidate.path] + candidate.extra_paths if candidate.path else candidate.extra_paths

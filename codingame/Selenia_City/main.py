@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from dataclasses import dataclass, field
+from itertools import permutations
 from math import isqrt
 import sys
 
@@ -48,6 +49,7 @@ class Candidate:
     upgrades: list[tuple[int, int]] = field(default_factory=list)
     teleport: tuple[int, int] | None = None
     delivered: int = 0
+    services: list[tuple[int, int, int, int]] = field(default_factory=list)
     reroute_pod_id: int | None = None
     lost_score: int = 0
     pressure_gain: int = 0
@@ -138,6 +140,11 @@ class Planner:
         self.debug_plan_start(serviced, service_counts, module_load, degrees, direct_pod_counts, edge_schedule, unserved_demands, min_efficiency)
 
         for demand_ind, (pad, astronaut_type, count) in enumerate(unserved_demands, 1):
+            if (pad.id, astronaut_type) in serviced:
+                message = f"[M{self.month + 1:02d}] demand {demand_ind}/{len(unserved_demands)} skip already_serviced "
+                message += describe_demand(pad, astronaut_type, count)
+                print(message, file=sys.stderr)
+                continue
             candidate = self.best_service_candidate(pad, astronaut_type, count, modules_by_type, module_load, degrees, teleport_used, tubes, edge_schedule,
                                                     service_counts, rerouted_pod_ids, budget, pod_ids)
             prefix = f"[M{self.month + 1:02d}] demand {demand_ind}/{len(unserved_demands)} {describe_demand(pad, astronaut_type, count)}"
@@ -200,12 +207,29 @@ class Planner:
         print(f"[M{self.month + 1:02d}] input modules_by_type={format_counter(module_counts)}", file=sys.stderr)
         if self.tubes:
             print(f"[M{self.month + 1:02d}] input tubes={format_tubes(self.tubes)}", file=sys.stderr)
+        self.debug_pair_costs()
         if self.teleports:
             print(f"[M{self.month + 1:02d}] input teleports={format_teleports(self.teleports)}", file=sys.stderr)
         if self.pods:
             print(f"[M{self.month + 1:02d}] input pods={format_pods(self.pods)}", file=sys.stderr)
         for building in new_buildings:
             print(f"[M{self.month + 1:02d}] input new {describe_building(building)}", file=sys.stderr)
+
+    def debug_pair_costs(self):
+        """Prints construction or upgrade costs for every unordered building pair."""
+        degrees = self.get_tube_degrees()
+        building_ids = sorted(self.buildings)
+        for index, a in enumerate(building_ids):
+            for b in building_ids[index + 1:]:
+                key = route_key(a, b)
+                if key in self.tubes:
+                    capacity = self.tubes[key]
+                    cost = tube_cost(self.buildings[a], self.buildings[b]) * (capacity + 1)
+                    print(f"[M{self.month + 1:02d}] input pair_cost ({a}, {b}) -> {cost}", file=sys.stderr)
+                elif degrees[a] >= MAX_TUBES_PER_BUILDING or degrees[b] >= MAX_TUBES_PER_BUILDING or not self.can_build_tube(a, b, self.tubes, []):
+                    print(f"[M{self.month + 1:02d}] input pair_cost ({a}, {b}) -> impossible", file=sys.stderr)
+                else:
+                    print(f"[M{self.month + 1:02d}] input pair_cost ({a}, {b}) -> {tube_cost(self.buildings[a], self.buildings[b])}", file=sys.stderr)
 
     def debug_plan_start(self, serviced: set[tuple[int, int]], service_counts: Counter[tuple[int, int]], module_load: Counter[int], degrees: Counter[int],
                          direct_pod_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
@@ -364,6 +388,10 @@ class Planner:
             for candidate in candidates:
                 if best is None or candidate.efficiency > best.efficiency or candidate.efficiency == best.efficiency and candidate.score > best.score:
                     best = candidate
+        for candidate in self.multi_service_candidates(pad, astronaut_type, modules_by_type, module_load, degrees, tubes, edge_schedule, service_counts,
+                                                       budget, pod_ids):
+            if best is None or candidate.efficiency > best.efficiency or candidate.efficiency == best.efficiency and candidate.score > best.score:
+                best = candidate
         return best
 
     def get_modules_by_type(self) -> dict[int, list[Building]]:
@@ -381,6 +409,51 @@ class Planner:
     def best_modules(self, modules: list[Building], pad: Building, module_load: Counter[int]) -> list[Building]:
         """Orders modules for one landing pad by load-adjusted distance and returns the most promising subset."""
         return sorted(modules, key=lambda module: (module_load[module.id] // 20, tube_cost(pad, module)))[:4]
+
+    def multi_service_candidates(self, pad: Building, required_type: int, modules_by_type: dict[int, list[Building]], module_load: Counter[int],
+                                 degrees: Counter[int], tubes: dict[tuple[int, int], int], edge_schedule: Counter[tuple[tuple[int, int], int]],
+                                 service_counts: Counter[tuple[int, int]], budget: int, pod_ids: set[int]) -> list[Candidate]:
+        """Builds one-pod candidates that visit several modules from the same landing pad."""
+        if len(pod_ids) >= MAX_PODS:
+            return []
+        demands = []
+        for astronaut_type, count in pad.demand.items():
+            if (pad.id, astronaut_type) not in service_counts and astronaut_type in modules_by_type:
+                module = self.best_modules(modules_by_type[astronaut_type], pad, module_load)[0]
+                demands.append((astronaut_type, count, module))
+        if len(demands) < 2 or all(astronaut_type != required_type for astronaut_type, _, _ in demands):
+            return []
+
+        candidates = []
+        for size in range(2, min(4, len(demands)) + 1):
+            for ordered in permutations(demands, size):
+                if all(astronaut_type != required_type for astronaut_type, _, _ in ordered):
+                    continue
+                path = [pad.id]
+                for _, _, module in ordered:
+                    path.extend([module.id, pad.id])
+                direct_tubes = [(pad.id, module.id) for _, _, module in ordered if route_key(pad.id, module.id) not in tubes]
+                if not self.can_reserve_tubes(direct_tubes, degrees, tubes):
+                    continue
+                upgrade_cost, upgrades = self.path_upgrade_plan(path, direct_tubes, tubes, edge_schedule)
+                cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in direct_tubes) + POD_COST + upgrade_cost
+                if cost > budget:
+                    continue
+                score = 0
+                delivered_total = 0
+                services = []
+                period = len(path) - 1
+                for stop_index, (astronaut_type, count, module) in enumerate(ordered, 1):
+                    first_day = 2 * stop_index - 1
+                    delivered = monthly_pod_deliveries(count, first_day, 1, period)
+                    score += monthly_score(delivered, first_day, module_load[module.id], period=period) * self.months_left()
+                    delivered_total += delivered
+                    services.append((pad.id, astronaut_type, module.id, delivered))
+                first_type, _, first_module = ordered[0]
+                candidate = Candidate(score, cost, pad.id, first_module.id, first_type, path, direct_tubes, upgrades, delivered=delivered_total,
+                                      services=services)
+                candidates.append(candidate)
+        return candidates
 
     def service_candidates(self, pad: Building, module: Building, astronaut_type: int, count: int, current_load: int, degrees: Counter[int],
                            teleport_used: set[int], tubes: dict[tuple[int, int], int], edge_schedule: Counter[tuple[tuple[int, int], int]],
@@ -829,11 +902,15 @@ class Planner:
                 direct_pod_counts[(candidate.path[0], candidate.path[1])] += 1
             for edge, day in path_edge_days(candidate.path):
                 edge_schedule[(edge, day)] += 1
-        if candidate.path and reason in ("service", "capacity"):
+        if reason == "service":
+            for pad_id, astronaut_type, module_id, delivered in candidate.services or [(candidate.pad_id, candidate.astronaut_type, candidate.module_id,
+                                                                                        candidate.delivered)]:
+                serviced.add((pad_id, astronaut_type))
+                service_counts[(pad_id, astronaut_type)] += 1
+                module_load[module_id] += delivered
+        elif candidate.path and reason == "capacity":
             serviced.add((candidate.pad_id, candidate.astronaut_type))
             service_counts[(candidate.pad_id, candidate.astronaut_type)] += 1
-        if reason == "service":
-            module_load[candidate.module_id] += candidate.delivered
         new_budget = budget - candidate.cost
         message = f"[M{self.month + 1:02d}] apply {reason} budget={budget}->{new_budget} "
         message += f"actions={format_items(actions[action_start:], 10)} candidate={describe_candidate(candidate)}"
@@ -915,6 +992,8 @@ def describe_candidate(candidate: Candidate) -> str:
         f"delivered={candidate.delivered}"]
     if candidate.teleport is not None:
         parts.append(f"teleport={candidate.teleport[0]}->{candidate.teleport[1]}")
+    if candidate.services:
+        parts.append(f"services={format_services(candidate.services)}")
     if candidate.reroute_pod_id is not None:
         parts.append(f"reroute_pod={candidate.reroute_pod_id}")
     if candidate.lost_score:
@@ -969,6 +1048,11 @@ def format_pods(pods: dict[int, Pod]) -> str:
 def format_edges(edges: list[tuple[int, int]]) -> str:
     """Formats endpoint pairs as compact undirected edge text."""
     return format_items([f"{a}-{b}" for a, b in edges])
+
+
+def format_services(services: list[tuple[int, int, int, int]]) -> str:
+    """Formats grouped pad, astronaut type, module, and delivered-count service details."""
+    return format_items([f"{pad_id}:t{astronaut_type}->m{module_id}/{delivered}" for pad_id, astronaut_type, module_id, delivered in services])
 
 
 def format_path(path: list[int]) -> str:

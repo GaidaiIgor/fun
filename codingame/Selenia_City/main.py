@@ -404,16 +404,21 @@ class Planner:
                                budget: int, pod_ids: set[int]) -> Candidate | None:
         """Finds the strongest affordable service candidate for one pad demand, using current planned routes and remaining budget."""
         best = None
+        best_key = None
         for module in self.best_modules(modules_by_type[astronaut_type], pad, module_load):
             candidates = self.service_candidates(pad, module, astronaut_type, count, module_load[module.id], degrees, teleport_used, tubes, edge_schedule,
                                                  service_counts, rerouted_pod_ids, budget, pod_ids)
             for candidate in candidates:
-                if best is None or candidate.efficiency > best.efficiency or candidate.efficiency == best.efficiency and candidate.score > best.score:
+                candidate_key = (len(candidate.services) or 1, candidate.efficiency, candidate.score)
+                if best is None or candidate_key > best_key:
                     best = candidate
+                    best_key = candidate_key
         for candidate in self.multi_service_candidates(pad, astronaut_type, modules_by_type, module_load, degrees, tubes, edge_schedule, service_counts,
                                                        budget, pod_ids):
-            if best is None or candidate.efficiency > best.efficiency or candidate.efficiency == best.efficiency and candidate.score > best.score:
+            candidate_key = (len(candidate.services) or 1, candidate.efficiency, candidate.score)
+            if best is None or candidate_key > best_key:
                 best = candidate
+                best_key = candidate_key
         return best
 
     def get_modules_by_type(self) -> dict[int, list[Building]]:
@@ -451,30 +456,31 @@ class Planner:
             for ordered in permutations(demands, size):
                 if all(astronaut_type != required_type for astronaut_type, _, _ in ordered):
                     continue
-                path = [pad.id]
+                star_path = [pad.id]
                 for _, _, module in ordered:
-                    path.extend([module.id, pad.id])
-                direct_tubes = [(pad.id, module.id) for _, _, module in ordered if route_key(pad.id, module.id) not in tubes]
-                if not self.can_add_tubes(direct_tubes, degrees, tubes):
-                    continue
-                upgrade_cost, upgrades = self.path_upgrade_plan(path, direct_tubes, tubes, edge_schedule)
-                cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in direct_tubes) + POD_COST + upgrade_cost
-                if cost > budget:
-                    continue
-                score = 0
-                delivered_total = 0
-                services = []
-                period = len(path) - 1
-                for stop_index, (astronaut_type, count, module) in enumerate(ordered, 1):
-                    first_day = 2 * stop_index - 1
-                    delivered = monthly_pod_deliveries(count, first_day, 1, period)
-                    score += monthly_score(delivered, first_day, module_load[module.id], period=period) * self.months_left()
-                    delivered_total += delivered
-                    services.append((pad.id, astronaut_type, module.id, delivered))
-                first_type, _, first_module = ordered[0]
-                candidate = Candidate(score, cost, pad.id, first_module.id, first_type, path, direct_tubes, upgrades, delivered=delivered_total,
-                                      services=services)
-                candidates.append(candidate)
+                    star_path.extend([module.id, pad.id])
+                chain_path = loop_path([pad.id] + [module.id for _, _, module in ordered])
+                for path, first_days in ((star_path, [2 * index - 1 for index in range(1, size + 1)]), (chain_path, list(range(1, size + 1)))):
+                    new_tubes = unique_new_tubes(path, tubes)
+                    if not self.can_add_tubes(new_tubes, degrees, tubes):
+                        continue
+                    upgrade_cost, upgrades = self.path_upgrade_plan(path, new_tubes, tubes, edge_schedule)
+                    cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in new_tubes) + POD_COST + upgrade_cost
+                    if cost > budget:
+                        continue
+                    score = 0
+                    delivered_total = 0
+                    services = []
+                    period = len(path) - 1
+                    for first_day, (astronaut_type, count, module) in zip(first_days, ordered):
+                        delivered = monthly_pod_deliveries(count, first_day, 1, period)
+                        score += monthly_score(delivered, first_day, module_load[module.id], period=period) * self.months_left()
+                        delivered_total += delivered
+                        services.append((pad.id, astronaut_type, module.id, delivered))
+                    first_type, _, first_module = ordered[0]
+                    candidate = Candidate(score, cost, pad.id, first_module.id, first_type, path, new_tubes, upgrades, delivered=delivered_total,
+                                          services=services)
+                    candidates.append(candidate)
         return candidates
 
     def service_candidates(self, pad: Building, module: Building, astronaut_type: int, count: int, current_load: int, degrees: Counter[int],
@@ -1110,6 +1116,18 @@ def format_items(items: list[str], limit: int = DEBUG_LIST_LIMIT) -> str:
         return "none"
     suffix = "" if len(items) <= limit else f",...(+{len(items) - limit})"
     return ",".join(items[:limit]) + suffix
+
+
+def unique_new_tubes(path: list[int], tubes: dict[tuple[int, int], int]) -> list[tuple[int, int]]:
+    """Gets unique tube segments from a path that are not already present."""
+    new_tubes = []
+    seen = set()
+    for a, b in zip(path, path[1:]):
+        key = route_key(a, b)
+        if key not in tubes and key not in seen:
+            new_tubes.append((a, b))
+            seen.add(key)
+    return new_tubes
 
 
 def route_key(a: int, b: int) -> tuple[int, int]:

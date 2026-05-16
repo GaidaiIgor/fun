@@ -129,6 +129,7 @@ class Planner:
         teleport_used = self.get_teleport_used_buildings()
         teleported_pairs = self.get_teleported_pairs()
         pod_ids = set(self.pods)
+        planned_pods = {pod_id: pod.path[:] for pod_id, pod in self.pods.items()}
         tubes = dict(self.tubes)
         direct_pod_counts = self.get_direct_service_pod_counts()
         edge_schedule = self.get_edge_schedule()
@@ -157,7 +158,7 @@ class Planner:
             else:
                 print(f"{prefix} choose best={describe_candidate(candidate)}", file=sys.stderr)
                 budget = self.apply_candidate("service", candidate, actions, serviced, service_counts, module_load, degrees, teleport_used, tubes,
-                                              direct_pod_counts, edge_schedule, dedicated_edge_counts, budget, pod_ids)
+                                              direct_pod_counts, edge_schedule, dedicated_edge_counts, planned_pods, budget, pod_ids)
                 if candidate.reroute_pod_id is not None:
                     rerouted_pod_ids.add(candidate.reroute_pod_id)
                 if candidate.teleport is not None:
@@ -165,7 +166,7 @@ class Planner:
 
         speed_round = 0
         while True:
-            budget = self.destroy_obsolete_pods(actions, service_counts, edge_schedule, rerouted_pod_ids, retired_pod_ids, budget, pod_ids)
+            budget = self.destroy_obsolete_pods(actions, service_counts, edge_schedule, planned_pods, rerouted_pod_ids, retired_pod_ids, budget, pod_ids)
             speed_pick = self.best_speed_candidate(serviced, tubes, direct_pod_counts, edge_schedule, dedicated_edge_counts, rerouted_pod_ids,
                                                    teleport_used, teleported_pairs, budget, pod_ids)
             if speed_pick is None:
@@ -178,24 +179,27 @@ class Planner:
             speed_round += 1
             print(f"[M{self.month + 1:02d}] speed choose reason={reason} round={speed_round} best={describe_candidate(candidate)}", file=sys.stderr)
             budget = self.apply_candidate(reason, candidate, actions, serviced, service_counts, module_load, degrees, teleport_used, tubes,
-                                          direct_pod_counts, edge_schedule, dedicated_edge_counts, budget, pod_ids)
+                                          direct_pod_counts, edge_schedule, dedicated_edge_counts, planned_pods, budget, pod_ids)
             if candidate.reroute_pod_id is not None:
                 rerouted_pod_ids.add(candidate.reroute_pod_id)
             if candidate.teleport is not None:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
         action_line = ";".join(actions) or "WAIT"
+        self.debug_node_waits(self.node_waits_from_pods(planned_pods))
         print(f"[M{self.month + 1:02d}] output resources={self.resources} spent={self.resources - budget} remaining={budget}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] output actions={len(actions)} line={action_line}", file=sys.stderr)
         return actions
 
     def destroy_obsolete_pods(self, actions: list[str], service_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
-                              rerouted_pod_ids: set[int], retired_pod_ids: set[int], budget: int, pod_ids: set[int]) -> int:
+                              planned_pods: dict[int, list[int]], rerouted_pod_ids: set[int], retired_pod_ids: set[int], budget: int,
+                              pod_ids: set[int]) -> int:
         """Destroys current multi-service pods whose served demands are covered by other routes and returns the updated budget."""
         while obsolete_pod := self.obsolete_pod(service_counts, rerouted_pod_ids | retired_pod_ids):
             actions.append(f"DESTROY {obsolete_pod.id}")
             retired_pod_ids.add(obsolete_pod.id)
             pod_ids.discard(obsolete_pod.id)
+            del planned_pods[obsolete_pod.id]
             for edge, day in path_edge_days(obsolete_pod.path):
                 edge_schedule[(edge, day)] -= 1
                 if edge_schedule[(edge, day)] <= 0:
@@ -267,14 +271,22 @@ class Planner:
         print(f"[M{self.month + 1:02d}] plan tube_degrees={format_counter(degrees)}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] plan direct_pods={format_pair_counter(direct_pod_counts)}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] plan edge_schedule={format_edge_schedule(edge_schedule)}", file=sys.stderr)
-        node_waits = self.current_node_waits()
+
+    def debug_node_waits(self, node_waits: Counter[int]):
+        """Prints per-building passenger-days spent waiting after planned actions are applied."""
         print(f"[M{self.month + 1:02d}] plan wait_total={sum(node_waits.values())} wait_max={max(node_waits.values(), default=0)}", file=sys.stderr)
         for building_id in sorted(self.buildings):
             print(f"[M{self.month + 1:02d}] plan node_wait ({building_id}) -> {node_waits[building_id]}", file=sys.stderr)
 
-    def current_node_waits(self) -> Counter[int]:
-        """Estimates per-building passenger-days spent waiting under the current pod schedule."""
-        return self.waiting_pressure_metrics(self.get_directed_edge_schedule())[2]
+    def node_waits_from_pods(self, planned_pods: dict[int, list[int]]) -> Counter[int]:
+        """Estimates per-building passenger-days spent waiting under a planned pod network."""
+        service_paths = self.service_paths_from_adjacency(self.adjacency_from_paths(list(planned_pods.values())))
+        node_waits = self.waiting_pressure_metrics(self.directed_schedule_from_paths(list(planned_pods.values())), service_paths)[2]
+        for pad in self.get_landing_pads():
+            for astronaut_type, count in pad.demand.items():
+                if (pad.id, astronaut_type) not in service_paths:
+                    node_waits[pad.id] += count * MONTH_DAYS
+        return node_waits
 
     def get_serviced_pairs(self) -> set[tuple[int, int]]:
         """Gets landing-pad and astronaut-type pairs already served by teleporters or pods."""
@@ -328,9 +340,14 @@ class Planner:
 
     def get_pod_adjacency(self, skip_pod_id: int | None = None) -> dict[int, list[int]]:
         """Builds directed pod and teleporter reachability between buildings, optionally omitting one pod."""
+        return self.adjacency_from_paths([pod.path for pod in self.pods.values() if pod.id != skip_pod_id])
+
+    def adjacency_from_paths(self, paths: list[list[int]]) -> dict[int, list[int]]:
+        """Builds directed pod and teleporter reachability from explicit pod paths."""
         adjacency = {}
-        for a, b in self.get_pod_directed_edges(skip_pod_id):
-            adjacency.setdefault(a, []).append(b)
+        for path in paths:
+            for a, b in zip(path, path[1:]):
+                adjacency.setdefault(a, []).append(b)
         for a, b in self.teleports.items():
             adjacency.setdefault(a, []).append(b)
         return adjacency
@@ -392,9 +409,13 @@ class Planner:
 
     def get_directed_edge_schedule(self) -> Counter[tuple[tuple[int, int], int]]:
         """Counts pods departing through each directed tube edge on each day of the lunar month."""
+        return self.directed_schedule_from_paths([pod.path for pod in self.pods.values()])
+
+    def directed_schedule_from_paths(self, paths: list[list[int]]) -> Counter[tuple[tuple[int, int], int]]:
+        """Counts explicit pod paths departing through each directed tube edge on each day of the lunar month."""
         schedule = Counter()
-        for pod in self.pods.values():
-            for edge, day in directed_path_edge_days(pod.path):
+        for path in paths:
+            for edge, day in directed_path_edge_days(path):
                 schedule[(edge, day)] += 1
         return schedule
 
@@ -822,11 +843,12 @@ class Planner:
                 if pressure > old_node_pressure[node_id]:
                     candidate.pressure_gain = min(candidate.pressure_gain, -1)
 
-    def waiting_pressure_metrics(self, directed_schedule: Counter[tuple[tuple[int, int], int]]) -> tuple[int, int, Counter[int]]:
+    def waiting_pressure_metrics(self, directed_schedule: Counter[tuple[tuple[int, int], int]],
+                                 service_paths: dict[tuple[int, int], list[int]] | None = None) -> tuple[int, int, Counter[int]]:
         """Estimates maximum, total, and per-building passenger-days spent waiting for pod departures."""
         node_pressure = Counter()
         pod_edges = {edge for edge, _ in directed_schedule}
-        for (pad_id, astronaut_type), path in self.get_service_paths().items():
+        for (pad_id, astronaut_type), path in (self.get_service_paths() if service_paths is None else service_paths).items():
             queues = [0] * len(path)
             queues[0] = self.buildings[pad_id].demand[astronaut_type]
             for day in range(MONTH_DAYS):
@@ -857,7 +879,10 @@ class Planner:
 
     def get_service_paths(self) -> dict[tuple[int, int], list[int]]:
         """Maps each served landing-pad demand to the shortest current pod or teleporter building path."""
-        adjacency = self.get_pod_adjacency()
+        return self.service_paths_from_adjacency(self.get_pod_adjacency())
+
+    def service_paths_from_adjacency(self, adjacency: dict[int, list[int]]) -> dict[tuple[int, int], list[int]]:
+        """Maps each served landing-pad demand to the shortest path through explicit reachability."""
         paths = {}
         for pad in self.get_landing_pads():
             queue = deque([pad.id])
@@ -989,13 +1014,14 @@ class Planner:
     def apply_candidate(self, reason: str, candidate: Candidate, actions: list[str], serviced: set[tuple[int, int]],
                         service_counts: Counter[tuple[int, int]], module_load: Counter[int], degrees: Counter[int], teleport_used: set[int],
                         tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]],
-                        edge_schedule: Counter[tuple[tuple[int, int], int]], dedicated_edge_counts: Counter[tuple[int, int]], budget: int,
-                        pod_ids: set[int]) -> int:
+                        edge_schedule: Counter[tuple[tuple[int, int], int]], dedicated_edge_counts: Counter[tuple[int, int]],
+                        planned_pods: dict[int, list[int]], budget: int, pod_ids: set[int]) -> int:
         """Appends a chosen candidate to the action list, updates planned state, and returns the remaining budget."""
         action_start = len(actions)
         if candidate.reroute_pod_id is not None:
             old_pod = self.pods[candidate.reroute_pod_id]
             actions.append(f"DESTROY {candidate.reroute_pod_id}")
+            del planned_pods[candidate.reroute_pod_id]
             if len(old_pod.path) == 3 and old_pod.path[0] == old_pod.path[2]:
                 if self.buildings[old_pod.path[0]].kind == 0 and self.buildings[old_pod.path[1]].kind > 0:
                     direct_pod_counts[(old_pod.path[0], old_pod.path[1])] -= 1
@@ -1028,6 +1054,7 @@ class Planner:
         if candidate.path:
             pod_id = candidate.reroute_pod_id if candidate.reroute_pod_id is not None else next_pod_id(pod_ids)
             pod_ids.add(pod_id)
+            planned_pods[pod_id] = candidate.path[:]
             actions.append("POD {} {}".format(pod_id, " ".join(map(str, candidate.path))))
             if len(candidate.path) == 3 and candidate.path[0] == candidate.path[2]:
                 if self.buildings[candidate.path[0]].kind == 0 and self.buildings[candidate.path[1]].kind > 0:

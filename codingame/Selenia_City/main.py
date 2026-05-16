@@ -845,25 +845,41 @@ class Planner:
 
     def waiting_pressure_metrics(self, directed_schedule: Counter[tuple[tuple[int, int], int]],
                                  service_paths: dict[tuple[int, int], list[int]] | None = None) -> tuple[int, int, Counter[int]]:
-        """Estimates maximum, total, and per-building passenger-days spent waiting for pod departures."""
-        node_pressure = Counter()
+        """Estimates maximum, total, and per-building passenger-days left waiting after daily pod boarding."""
+        paths = self.get_service_paths() if service_paths is None else service_paths
         pod_edges = {edge for edge, _ in directed_schedule}
-        for (pad_id, astronaut_type), path in (self.get_service_paths() if service_paths is None else service_paths).items():
-            queues = [0] * len(path)
-            queues[0] = self.buildings[pad_id].demand[astronaut_type]
-            for day in range(MONTH_DAYS):
-                self.apply_instant_edges(path, queues, pod_edges)
-                for index, waiting in enumerate(queues[:-1]):
+        queues = {}
+        for (pad_id, astronaut_type), path in paths.items():
+            counts = [0] * len(path)
+            counts[0] = self.buildings[pad_id].demand[astronaut_type]
+            queues[(pad_id, astronaut_type)] = counts
+        node_pressure = Counter()
+        for day in range(MONTH_DAYS):
+            for pair, path in paths.items():
+                self.apply_instant_edges(path, queues[pair], pod_edges)
+            moved = {pair: [0] * len(path) for pair, path in paths.items()}
+            edge_waiters = {}
+            for pair, path in paths.items():
+                for index, waiting in enumerate(queues[pair][:-1]):
+                    edge = (path[index], path[index + 1])
+                    if waiting and edge in pod_edges:
+                        edge_waiters.setdefault(edge, []).append((pair, index))
+            for edge, waiters in edge_waiters.items():
+                capacity = 10 * directed_schedule[(edge, day)]
+                for pair, index in sorted(waiters):
+                    boarded = min(queues[pair][index], capacity)
+                    queues[pair][index] -= boarded
+                    moved[pair][index + 1] += boarded
+                    capacity -= boarded
+                    if capacity <= 0:
+                        break
+            for pair, path in paths.items():
+                for index, waiting in enumerate(queues[pair][:-1]):
                     if waiting and (path[index], path[index + 1]) in pod_edges:
                         node_pressure[path[index]] += waiting
-                moved = [0] * len(path)
-                for index, waiting in enumerate(queues[:-1]):
-                    edge = (path[index], path[index + 1])
-                    boarded = min(waiting, 10 * directed_schedule[(edge, day)]) if edge in pod_edges else 0
-                    queues[index] -= boarded
-                    moved[index + 1] += boarded
-                for index, count in enumerate(moved):
-                    queues[index] += count
+            for pair, path in paths.items():
+                for index, count in enumerate(moved[pair]):
+                    queues[pair][index] += count
         return max(node_pressure.values(), default=0), sum(node_pressure.values()), node_pressure
 
     def apply_instant_edges(self, path: list[int], queues: list[int], pod_edges: set[tuple[int, int]]):

@@ -133,6 +133,7 @@ class Planner:
         direct_pod_counts = self.get_direct_service_pod_counts()
         edge_schedule = self.get_edge_schedule()
         rerouted_pod_ids = set()
+        retired_pod_ids = set()
         budget = self.resources
         modules_by_type = self.get_modules_by_type()
         unserved_demands = self.get_unserved_demands(serviced)
@@ -163,6 +164,7 @@ class Planner:
 
         speed_round = 0
         while True:
+            budget = self.destroy_obsolete_pods(actions, service_counts, edge_schedule, rerouted_pod_ids, retired_pod_ids, budget, pod_ids)
             speed_pick = self.best_speed_candidate(serviced, tubes, direct_pod_counts, edge_schedule, rerouted_pod_ids, teleport_used, teleported_pairs,
                                                    budget, pod_ids)
             if speed_pick is None:
@@ -185,6 +187,36 @@ class Planner:
         print(f"[M{self.month + 1:02d}] output resources={self.resources} spent={self.resources - budget} remaining={budget}", file=sys.stderr)
         print(f"[M{self.month + 1:02d}] output actions={len(actions)} line={action_line}", file=sys.stderr)
         return actions
+
+    def destroy_obsolete_pods(self, actions: list[str], service_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
+                              rerouted_pod_ids: set[int], retired_pod_ids: set[int], budget: int, pod_ids: set[int]) -> int:
+        """Destroys current multi-service pods whose served demands are covered by other routes and returns the updated budget."""
+        while obsolete_pod := self.obsolete_pod(service_counts, rerouted_pod_ids | retired_pod_ids):
+            actions.append(f"DESTROY {obsolete_pod.id}")
+            retired_pod_ids.add(obsolete_pod.id)
+            pod_ids.discard(obsolete_pod.id)
+            for edge, day in path_edge_days(obsolete_pod.path):
+                edge_schedule[(edge, day)] -= 1
+                if edge_schedule[(edge, day)] <= 0:
+                    del edge_schedule[(edge, day)]
+            services = self.pod_services(obsolete_pod)
+            for pad_id, astronaut_type, _, _ in services:
+                service_counts[(pad_id, astronaut_type)] -= 1
+            budget += POD_REFUND
+            message = f"[M{self.month + 1:02d}] cleanup destroy_obsolete pod={obsolete_pod.id} refund={POD_REFUND} budget={budget} "
+            message += f"services={format_services(services)} path={format_path(obsolete_pod.path)}"
+            print(message, file=sys.stderr)
+        return budget
+
+    def obsolete_pod(self, service_counts: Counter[tuple[int, int]], blocked_pod_ids: set[int]) -> Pod | None:
+        """Finds one current non-dedicated pod whose landing-pad services remain covered if it is removed."""
+        for pod in sorted(self.pods.values(), key=lambda item: item.id):
+            if pod.id in blocked_pod_ids or len(pod.path) == 3 and pod.path[0] == pod.path[2]:
+                continue
+            services = self.pod_services(pod)
+            if services and all(service_counts[(pad_id, astronaut_type)] > 1 for pad_id, astronaut_type, _, _ in services):
+                return pod
+        return None
 
     def debug_month_input(self, route_count: int, pod_count: int, new_buildings: list[Building]):
         """Prints the parsed monthly input snapshot to the debug log."""
@@ -950,7 +982,7 @@ class Planner:
                 serviced.add((pad_id, astronaut_type))
                 service_counts[(pad_id, astronaut_type)] += 1
                 module_load[module_id] += delivered
-        elif candidate.path and reason == "capacity":
+        elif candidate.path and reason in ("baseline_pod", "capacity"):
             serviced.add((candidate.pad_id, candidate.astronaut_type))
             service_counts[(candidate.pad_id, candidate.astronaut_type)] += 1
         new_budget = budget - candidate.cost

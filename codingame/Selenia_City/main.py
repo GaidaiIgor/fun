@@ -54,6 +54,7 @@ class Candidate:
     lost_score: int = 0
     pressure_gain: int = 0
     max_pressure_gain: int = 0
+    extra_paths: list[list[int]] = field(default_factory=list)
 
     @property
     def efficiency(self) -> float:
@@ -168,8 +169,8 @@ class Planner:
         speed_round = 0
         while True:
             budget = self.destroy_obsolete_pods(actions, service_counts, edge_schedule, planned_pods, rerouted_pod_ids, retired_pod_ids, budget, pod_ids)
-            speed_pick = self.best_speed_candidate(serviced, tubes, direct_pod_counts, edge_schedule, dedicated_edge_counts, rerouted_pod_ids,
-                                                   teleport_used, teleported_pairs, budget, pod_ids)
+            speed_pick = self.best_speed_candidate(serviced, service_counts, tubes, direct_pod_counts, edge_schedule, dedicated_edge_counts, planned_pods,
+                                                   rerouted_pod_ids, teleport_used, teleported_pairs, budget, pod_ids)
             if speed_pick is None:
                 print(f"[M{self.month + 1:02d}] speed stop no_candidate budget={budget} rounds={speed_round}", file=sys.stderr)
                 break
@@ -979,12 +980,75 @@ class Planner:
                     best = candidate
         return best
 
-    def best_speed_candidate(self, serviced: set[tuple[int, int]], tubes: dict[tuple[int, int], int], direct_counts: Counter[tuple[int, int]],
-                             edge_schedule: Counter[tuple[tuple[int, int], int]], dedicated_edge_counts: Counter[tuple[int, int]],
-                             rerouted_pod_ids: set[int], teleport_used: set[int], teleported_pairs: set[tuple[int, int]], budget: int,
-                             pod_ids: set[int]) -> tuple[str, Candidate] | None:
+    def best_baseline_replacement_candidate(self, dedicated_edge_counts: Counter[tuple[int, int]], planned_pods: dict[int, list[int]],
+                                            service_counts: Counter[tuple[int, int]], teleported_pairs: set[tuple[int, int]], budget: int,
+                                            pod_ids: set[int], rerouted_pod_ids: set[int]) -> Candidate | None:
+        """Finds the best bundle replacing one shared pod with missing dedicated edge shuttles."""
+        best = None
+        old_node_waits = self.node_waits_from_pods(planned_pods)
+        old_total = sum(old_node_waits.values())
+        old_max = max(old_node_waits.values(), default=0)
+        best_key = None
+        for pod_id, path in planned_pods.items():
+            if pod_id not in self.pods or pod_id in rerouted_pod_ids or len(path) == 3 and path[0] == path[2]:
+                continue
+            services = self.pod_services(Pod(pod_id, path))
+            if not services or any((pad_id, astronaut_type) in teleported_pairs for pad_id, astronaut_type, _, _ in services):
+                continue
+            seen_edges = set()
+            missing_paths = []
+            for a, b in zip(path, path[1:]):
+                edge = route_key(a, b)
+                if edge in seen_edges:
+                    continue
+                seen_edges.add(edge)
+                if dedicated_edge_counts[edge] <= 0:
+                    missing_paths.append([a, b, a])
+            if not missing_paths or len(pod_ids) - 1 + len(missing_paths) > MAX_PODS:
+                continue
+            cost = REROUTE_COST + POD_COST * (len(missing_paths) - 1)
+            if cost > budget:
+                continue
+            new_pods = {current_id: current_path[:] for current_id, current_path in planned_pods.items() if current_id != pod_id}
+            for fake_id, missing_path in enumerate(missing_paths, MAX_PODS + 1):
+                new_pods[fake_id] = missing_path
+            new_service_paths = self.service_paths_from_adjacency(self.adjacency_from_paths(list(new_pods.values())))
+            if any((pad_id, astronaut_type) not in new_service_paths for pad_id, astronaut_type, _, _ in services):
+                continue
+            new_node_waits = self.node_waits_from_pods(new_pods)
+            pressure_gain = old_total - sum(new_node_waits.values())
+            max_pressure_gain = old_max - max(new_node_waits.values(), default=0)
+            restored_services = []
+            for pad_id, astronaut_type, _, _ in services:
+                if service_counts[(pad_id, astronaut_type)] <= 1:
+                    restored_services.append((pad_id, astronaut_type, new_service_paths[(pad_id, astronaut_type)][-1],
+                                              self.buildings[pad_id].demand[astronaut_type]))
+            if restored_services:
+                pad_id, astronaut_type, module_id, _ = restored_services[0]
+                delivered = sum(service[3] for service in restored_services)
+            else:
+                pad_id, astronaut_type, module_id, _ = services[0]
+                delivered = sum(self.buildings[service[0]].demand[service[1]] for service in services)
+            score = (delivered * len(missing_paths) + max(0, pressure_gain)) * self.months_left()
+            candidate = Candidate(score, cost, pad_id, module_id, astronaut_type, missing_paths[0], delivered=delivered, services=restored_services,
+                                  reroute_pod_id=pod_id, pressure_gain=pressure_gain, max_pressure_gain=max_pressure_gain,
+                                  extra_paths=missing_paths[1:])
+            candidate_key = (len(missing_paths), pressure_gain, max_pressure_gain, candidate.efficiency)
+            if best is None or candidate_key > best_key:
+                best = candidate
+                best_key = candidate_key
+        return best
+
+    def best_speed_candidate(self, serviced: set[tuple[int, int]], service_counts: Counter[tuple[int, int]], tubes: dict[tuple[int, int], int],
+                             direct_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
+                             dedicated_edge_counts: Counter[tuple[int, int]], planned_pods: dict[int, list[int]], rerouted_pod_ids: set[int],
+                             teleport_used: set[int], teleported_pairs: set[tuple[int, int]], budget: int, pod_ids: set[int]) -> tuple[str, Candidate] | None:
         """Finds the best currently affordable speed improvement candidate."""
         candidates = []
+        replacement_candidate = self.best_baseline_replacement_candidate(dedicated_edge_counts, planned_pods, service_counts, teleported_pairs, budget,
+                                                                        pod_ids, rerouted_pod_ids)
+        if replacement_candidate is not None:
+            candidates.append(("baseline_replace", replacement_candidate))
         baseline_candidate = self.best_baseline_direct_candidate(serviced, tubes, dedicated_edge_counts, teleported_pairs, budget, pod_ids)
         if baseline_candidate is not None:
             candidates.append(("baseline_pod", baseline_candidate))
@@ -992,7 +1056,7 @@ class Planner:
         if path_candidate is not None:
             candidates.append(("baseline_pod", path_candidate))
         if candidates:
-            return max(candidates, key=lambda item: (item[1].score, item[1].efficiency))
+            return max(candidates, key=lambda item: (item[0] == "baseline_replace", item[1].score, item[1].efficiency))
         capacity_candidate = self.best_capacity_candidate(serviced, tubes, direct_counts, edge_schedule, rerouted_pod_ids, teleported_pairs, budget, pod_ids)
         if capacity_candidate is not None:
             candidates.append(("capacity", capacity_candidate))
@@ -1069,16 +1133,17 @@ class Planner:
             actions.append(f"TELEPORT {a} {b}")
             teleport_used.add(a)
             teleport_used.add(b)
-        if candidate.path:
-            pod_id = candidate.reroute_pod_id if candidate.reroute_pod_id is not None else next_pod_id(pod_ids)
+        created_paths = [candidate.path] + candidate.extra_paths if candidate.path else candidate.extra_paths
+        for index, path in enumerate(created_paths):
+            pod_id = candidate.reroute_pod_id if index == 0 and candidate.reroute_pod_id is not None else next_pod_id(pod_ids)
             pod_ids.add(pod_id)
-            planned_pods[pod_id] = candidate.path[:]
-            actions.append("POD {} {}".format(pod_id, " ".join(map(str, candidate.path))))
-            if len(candidate.path) == 3 and candidate.path[0] == candidate.path[2]:
-                if self.buildings[candidate.path[0]].kind == 0 and self.buildings[candidate.path[1]].kind > 0:
-                    direct_pod_counts[(candidate.path[0], candidate.path[1])] += 1
-                dedicated_edge_counts[route_key(candidate.path[0], candidate.path[1])] += 1
-            for edge, day in path_edge_days(candidate.path):
+            planned_pods[pod_id] = path[:]
+            actions.append("POD {} {}".format(pod_id, " ".join(map(str, path))))
+            if len(path) == 3 and path[0] == path[2]:
+                if self.buildings[path[0]].kind == 0 and self.buildings[path[1]].kind > 0:
+                    direct_pod_counts[(path[0], path[1])] += 1
+                dedicated_edge_counts[route_key(path[0], path[1])] += 1
+            for edge, day in path_edge_days(path):
                 edge_schedule[(edge, day)] += 1
         if reason == "service":
             for pad_id, astronaut_type, module_id, delivered in candidate.services or [(candidate.pad_id, candidate.astronaut_type, candidate.module_id,
@@ -1086,9 +1151,14 @@ class Planner:
                 serviced.add((pad_id, astronaut_type))
                 service_counts[(pad_id, astronaut_type)] += 1
                 module_load[module_id] += delivered
-        elif candidate.path and reason in ("baseline_pod", "capacity"):
-            serviced.add((candidate.pad_id, candidate.astronaut_type))
-            service_counts[(candidate.pad_id, candidate.astronaut_type)] += 1
+        elif candidate.path and reason in ("baseline_pod", "baseline_replace", "capacity"):
+            for pad_id, astronaut_type, module_id, delivered in candidate.services or [(candidate.pad_id, candidate.astronaut_type, candidate.module_id,
+                                                                                        candidate.delivered)]:
+                was_serviced = (pad_id, astronaut_type) in serviced
+                serviced.add((pad_id, astronaut_type))
+                service_counts[(pad_id, astronaut_type)] += 1
+                if not was_serviced:
+                    module_load[module_id] += delivered
         new_budget = budget - candidate.cost
         message = f"[M{self.month + 1:02d}] apply {reason} budget={budget}->{new_budget} "
         message += f"actions={format_items(actions[action_start:], 10)} candidate={describe_candidate(candidate)}"
@@ -1153,6 +1223,8 @@ def describe_candidate(candidate: Candidate) -> str:
         parts.append(f"upgrades={format_edges(candidate.upgrades)}")
     if candidate.path:
         parts.append(f"path={format_path(candidate.path)}")
+    if candidate.extra_paths:
+        parts.append("extra_paths={}".format(",".join(format_path(path) for path in candidate.extra_paths)))
     return " ".join(parts)
 
 

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import sys
 from collections import Counter
+from pathlib import Path
 
+if not __package__:
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
 from Selenia_City.main import MAX_PODS, POD_COST, POD_REFUND, TELEPORT_COST, Building, Planner, Pod, route_key, tube_cost
 
 TURN_STATE = \
@@ -18,13 +22,13 @@ OUTPUT_COMMAND = "TUBE 1 0;POD 1 1 0 1;TUBE 2 0;TUBE 0 3;POD 2 2 0 2;POD 3 3 0 3
 
 
 def print_score_after_command():
-    """Prints the planner-estimated score after applying OUTPUT_COMMAND to TURN_STATE."""
+    """Prints the main-style resource and score line after applying OUTPUT_COMMAND to TURN_STATE."""
     planner = parse_turn_state(TURN_STATE)
+    starting_resources = planner.resources
     apply_actions(planner, OUTPUT_COMMAND)
-    score, speed, diversity, delivered, _, _ = planner.score_from_pods({pod_id: pod.path[:] for pod_id, pod in planner.pods.items()},
-                                                                       dict(planner.teleports))
-    demand = sum(sum(building.demand.values()) for building in planner.buildings.values() if building.kind == 0)
-    print(f"score_after total {score} speed {speed} diversity {diversity} delivered {delivered}/{demand} stranded {demand - delivered}")
+    planned_pods = {pod_id: pod.path[:] for pod_id, pod in planner.pods.items()}
+    score_text = planner.score_debug_text("after", planned_pods, dict(planner.teleports))
+    print(f"resources_after {planner.resources} spent {starting_resources - planner.resources} {score_text}")
 
 
 def parse_turn_state(text: str) -> Planner:

@@ -474,11 +474,14 @@ class Planner:
         """Finds the strongest affordable service candidate for one pad demand, using current planned routes and remaining budget."""
         best = None
         best_key = None
-        planned_adjacency = self.adjacency_from_paths(list(planned_pods.values()))
-        for module in self.best_modules(modules_by_type[astronaut_type], pad, module_load):
-            candidates = self.service_candidates(pad, module, astronaut_type, count, module_load[module.id], module_load, degrees, teleport_used, tubes,
-                                                 edge_schedule, service_counts, planned_pods, planned_teleports, planned_adjacency, rerouted_pod_ids, budget,
-                                                 pod_ids)
+        planned_adjacency = self.adjacency_from_paths(list(planned_pods.values()), planned_teleports)
+        targets = [(module, module_load[module.id]) for module in self.best_modules(modules_by_type[astronaut_type], pad, module_load)]
+        for entrance_id, exit_id in planned_teleports.items():
+            if self.buildings[exit_id].kind == astronaut_type and entrance_id != pad.id:
+                targets.append((self.buildings[entrance_id], module_load[exit_id]))
+        for module, current_load in targets:
+            candidates = self.service_candidates(pad, module, astronaut_type, count, current_load, module_load, degrees, teleport_used, tubes, edge_schedule,
+                                                 service_counts, planned_pods, planned_teleports, planned_adjacency, rerouted_pod_ids, budget, pod_ids)
             for candidate in candidates:
                 candidate_key = (candidate.score, candidate.delivered, len(candidate.services) or 1, candidate.efficiency)
                 if best is None or candidate_key > best_key:

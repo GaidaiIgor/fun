@@ -17,7 +17,6 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 DEBUG_PAIR_COST_LIMIT = 60
-DEBUG_SCORE_DETAIL_LIMIT = 40
 
 
 @dataclass(slots=True)
@@ -220,10 +219,8 @@ class Planner:
         self.debug_pair_costs(new_buildings)
         for pod_id in sorted(self.pods):
             path = self.pods[pod_id].path
-            path_text = " ".join(map(str, path))
-            print(f"[M{self.month + 1:02d}] input pod {pod_id} {len(path)} {path_text}", file=sys.stderr)
-        for building in new_buildings:
-            print(f"[M{self.month + 1:02d}] input new {format_raw_building(building)}", file=sys.stderr)
+            path_text = "-".join(map(str, path))
+            print(f"[M{self.month + 1:02d}] input pod_route id={pod_id} path={path_text}", file=sys.stderr)
 
     def debug_pair_costs(self, new_buildings: list[Building]):
         """Prints a bounded set of construction or upgrade costs for unordered building pairs."""
@@ -266,15 +263,11 @@ class Planner:
 
     def debug_scores(self, label: str, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int]):
         """Prints estimated score details for a named planning snapshot."""
-        score, speed, balance, delivered, _, _, service_details = self.score_from_pods(planned_pods, planned_teleports)
+        score, speed, balance, delivered, _, _ = self.score_from_pods(planned_pods, planned_teleports)
         demand = sum(sum(pad.demand.values()) for pad in self.get_landing_pads())
         message = f"[M{self.month + 1:02d}] plan score_{label}_total={score} speed={speed} diversity={balance} "
         message += f"delivered={delivered}/{demand} stranded={demand - delivered}"
         print(message, file=sys.stderr)
-        for service_detail in service_details[:DEBUG_SCORE_DETAIL_LIMIT]:
-            print(f"[M{self.month + 1:02d}] plan score_{label}_service {service_detail}", file=sys.stderr)
-        if len(service_details) > DEBUG_SCORE_DETAIL_LIMIT:
-            print(f"[M{self.month + 1:02d}] plan score_{label}_service omitted={len(service_details) - DEBUG_SCORE_DETAIL_LIMIT}", file=sys.stderr)
 
     def score_from_pods(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int] | None = None) -> tuple:
         """Estimates monthly score, score components, module arrivals, and service details from a planned pod network."""
@@ -317,21 +310,10 @@ class Planner:
                     queues[pair][index] += count
             self.settle_score_arrivals(day + 1, service_paths, queues, module_arrivals, module_balance, service_delivered, service_speed, service_balance)
 
-        service_details = []
-        for pad in self.get_landing_pads():
-            for astronaut_type in sorted(pad.demand):
-                pair = (pad.id, astronaut_type)
-                if pair in service_paths:
-                    module_id = service_paths[pair][-1]
-                    detail = f"pad={pad.id} type={astronaut_type} module={module_id} delivered={service_delivered[pair]}/{pad.demand[astronaut_type]} "
-                    detail += f"speed={service_speed[pair]} diversity={service_balance[pair]} path={format_path(service_paths[pair])}"
-                else:
-                    detail = f"pad={pad.id} type={astronaut_type} module=none delivered=0/{pad.demand[astronaut_type]} speed=0 diversity=0 path=none"
-                service_details.append(detail)
         speed = sum(service_speed.values())
         balance = sum(service_balance.values())
         delivered = sum(service_delivered.values())
-        return speed + balance, speed, balance, delivered, service_delivered, service_paths, service_details
+        return speed + balance, speed, balance, delivered, service_delivered, service_paths
 
     def settle_score_arrivals(self, day: int, service_paths: dict[tuple[int, int], list[int]], queues: dict[tuple[int, int], list[int]],
                               module_arrivals: Counter[int], module_balance: Counter[int], service_delivered: Counter[tuple[int, int]],
@@ -664,7 +646,7 @@ class Planner:
                         new_pods[old_pod.id] = replacement_path[:]
                         for fake_id, route_path in enumerate(route_paths, MAX_PODS + 1):
                             new_pods[fake_id] = route_path[:]
-                        new_score, _, _, _, service_delivered, service_paths, _ = self.score_from_pods(new_pods)
+                        new_score, _, _, _, service_delivered, service_paths = self.score_from_pods(new_pods)
                         if (pad.id, required_type) not in service_paths:
                             continue
                         score_gain = (new_score - old_score) * self.months_left()
@@ -1367,22 +1349,6 @@ class Planner:
         if self.month <= 10:
             return 70
         return 90
-
-
-def format_raw_building(building: Building) -> str:
-    """Formats one building in a compact input-like shape."""
-    if building.kind == 0:
-        astronauts = [str(astronaut_type) for astronaut_type in sorted(building.demand) for _ in range(building.demand[astronaut_type])]
-        astronaut_text = " ".join(astronauts)
-        return f"0 {building.id} {building.x} {building.y} {len(astronauts)} {astronaut_text}"
-    return f"{building.kind} {building.id} {building.x} {building.y}"
-
-
-def format_path(path: list[int]) -> str:
-    """Formats a pod path, shortening very long itineraries."""
-    if len(path) <= 9:
-        return "-".join(map(str, path))
-    return "{}-...-{}".format("-".join(map(str, path[:5])), "-".join(map(str, path[-3:])))
 
 
 def unique_new_tubes(path: list[int], tubes: dict[tuple[int, int], int]) -> list[tuple[int, int]]:

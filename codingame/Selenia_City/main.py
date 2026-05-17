@@ -17,7 +17,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 DEBUG_LIST_LIMIT = 18
-ScoreEstimate = tuple[int, int, int, int, Counter[int], Counter[int], Counter[tuple[int, int]], dict[tuple[int, int], list[int]], list[str]]
+DEBUG_PAIR_COST_LIMIT = 80
+DEBUG_SCORE_DETAIL_LIMIT = 60
 
 
 @dataclass(slots=True)
@@ -239,29 +240,54 @@ class Planner:
         print(f"[M{self.month + 1:02d}] input modules_by_type={format_counter(module_counts)}", file=sys.stderr)
         if self.tubes:
             print(f"[M{self.month + 1:02d}] input tubes={format_tubes(self.tubes)}", file=sys.stderr)
-        self.debug_pair_costs()
+        self.debug_pair_costs(new_buildings)
         if self.teleports:
             print(f"[M{self.month + 1:02d}] input teleports={format_teleports(self.teleports)}", file=sys.stderr)
         if self.pods:
             print(f"[M{self.month + 1:02d}] input pods={format_pods(self.pods)}", file=sys.stderr)
-        for building in new_buildings:
+        for building in new_buildings[:DEBUG_LIST_LIMIT]:
             print(f"[M{self.month + 1:02d}] input new {describe_building(building)}", file=sys.stderr)
+        if len(new_buildings) > DEBUG_LIST_LIMIT:
+            print(f"[M{self.month + 1:02d}] input new omitted={len(new_buildings) - DEBUG_LIST_LIMIT}", file=sys.stderr)
 
-    def debug_pair_costs(self):
-        """Prints construction or upgrade costs for every unordered building pair."""
+    def debug_pair_costs(self, new_buildings: list[Building]):
+        """Prints a bounded set of construction or upgrade costs for unordered building pairs."""
         degrees = self.get_tube_degrees()
         building_ids = sorted(self.buildings)
-        for index, a in enumerate(building_ids):
-            for b in building_ids[index + 1:]:
-                key = route_key(a, b)
-                if key in self.tubes:
-                    capacity = self.tubes[key]
-                    cost = tube_cost(self.buildings[a], self.buildings[b]) * (capacity + 1)
-                    print(f"[M{self.month + 1:02d}] input pair_cost ({a}, {b}) -> {cost}", file=sys.stderr)
-                elif degrees[a] >= MAX_TUBES_PER_BUILDING or degrees[b] >= MAX_TUBES_PER_BUILDING or not self.can_build_tube(a, b, self.tubes, []):
-                    print(f"[M{self.month + 1:02d}] input pair_cost ({a}, {b}) -> impossible", file=sys.stderr)
-                else:
-                    print(f"[M{self.month + 1:02d}] input pair_cost ({a}, {b}) -> {tube_cost(self.buildings[a], self.buildings[b])}", file=sys.stderr)
+        new_ids = {building.id for building in new_buildings}
+        total_pairs = len(building_ids) * (len(building_ids) - 1) // 2
+        printed = set()
+        if total_pairs <= DEBUG_PAIR_COST_LIMIT:
+            pair_keys = [route_key(a, b) for index, a in enumerate(building_ids) for b in building_ids[index + 1:]]
+        else:
+            message = f"[M{self.month + 1:02d}] input pair_cost summary total={total_pairs} limit={DEBUG_PAIR_COST_LIMIT} "
+            message += "policy=existing,new,cheapest"
+            print(message, file=sys.stderr)
+            cheapest = sorted((tube_cost(self.buildings[a], self.buildings[b]), route_key(a, b)) for index, a in enumerate(building_ids)
+                              for b in building_ids[index + 1:] if route_key(a, b) not in self.tubes)
+            pair_keys = sorted(self.tubes) + [route_key(new_id, building_id) for new_id in sorted(new_ids) for building_id in building_ids
+                                             if building_id != new_id] + [key for _, key in cheapest]
+        for a, b in pair_keys:
+            if (a, b) in printed:
+                continue
+            cost = self.debug_pair_cost_text(a, b, degrees)
+            if total_pairs > DEBUG_PAIR_COST_LIMIT and cost == "impossible" and (a, b) not in self.tubes and not ({a, b} & new_ids):
+                continue
+            printed.add((a, b))
+            print(f"[M{self.month + 1:02d}] input pair_cost ({a}, {b}) -> {cost}", file=sys.stderr)
+            if len(printed) >= DEBUG_PAIR_COST_LIMIT:
+                break
+        if total_pairs > len(printed):
+            print(f"[M{self.month + 1:02d}] input pair_cost omitted={total_pairs - len(printed)}", file=sys.stderr)
+
+    def debug_pair_cost_text(self, a: int, b: int, degrees: Counter[int]) -> str:
+        """Formats one pair cost as a build cost, upgrade cost, or impossible marker."""
+        key = route_key(a, b)
+        if key in self.tubes:
+            return str(tube_cost(self.buildings[a], self.buildings[b]) * (self.tubes[key] + 1))
+        if degrees[a] >= MAX_TUBES_PER_BUILDING or degrees[b] >= MAX_TUBES_PER_BUILDING or not self.can_build_tube(a, b, self.tubes, []):
+            return "impossible"
+        return str(tube_cost(self.buildings[a], self.buildings[b]))
 
     def debug_plan_start(self, serviced: set[tuple[int, int]], service_counts: Counter[tuple[int, int]], module_load: Counter[int], degrees: Counter[int],
                          direct_pod_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
@@ -283,14 +309,22 @@ class Planner:
         message = f"[M{self.month + 1:02d}] plan score_{label}_total={score} speed={speed} diversity={balance} "
         message += f"delivered={delivered}/{demand} stranded={demand - delivered}"
         print(message, file=sys.stderr)
-        for module in sorted((building for building in self.buildings.values() if building.kind > 0), key=lambda building: building.id):
+        modules = sorted((building for building in self.buildings.values() if building.kind > 0), key=lambda building: building.id)
+        shown_modules = modules if len(modules) <= DEBUG_SCORE_DETAIL_LIMIT else \
+            sorted([module for module in modules if module_arrivals[module.id] or module_balance[module.id]],
+                   key=lambda module: (-module_arrivals[module.id], module.id))[:DEBUG_SCORE_DETAIL_LIMIT]
+        for module in shown_modules:
             message = f"[M{self.month + 1:02d}] plan score_{label}_module ({module.id}) -> "
             message += f"arrivals={module_arrivals[module.id]} diversity={module_balance[module.id]}"
             print(message, file=sys.stderr)
-        for service_detail in service_details:
+        if len(shown_modules) < len(modules):
+            print(f"[M{self.month + 1:02d}] plan score_{label}_module omitted={len(modules) - len(shown_modules)}", file=sys.stderr)
+        for service_detail in service_details[:DEBUG_SCORE_DETAIL_LIMIT]:
             print(f"[M{self.month + 1:02d}] plan score_{label}_service {service_detail}", file=sys.stderr)
+        if len(service_details) > DEBUG_SCORE_DETAIL_LIMIT:
+            print(f"[M{self.month + 1:02d}] plan score_{label}_service omitted={len(service_details) - DEBUG_SCORE_DETAIL_LIMIT}", file=sys.stderr)
 
-    def score_from_pods(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int] | None = None) -> ScoreEstimate:
+    def score_from_pods(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int] | None = None) -> tuple:
         """Estimates monthly score, score components, module arrivals, and service details from a planned pod network."""
         service_paths = self.service_paths_from_adjacency(self.adjacency_from_paths(list(planned_pods.values()), planned_teleports))
         directed_schedule = self.directed_schedule_from_paths(list(planned_pods.values()))

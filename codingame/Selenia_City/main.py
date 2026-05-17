@@ -66,6 +66,7 @@ class Planner:
     buildings: dict[int, Building]
     month: int
     resources: int
+    score_so_far: int
     tubes: dict[tuple[int, int], int]
     teleports: dict[int, int]
     pods: dict[int, Pod]
@@ -75,6 +76,7 @@ class Planner:
         self.buildings = {}
         self.month = 0
         self.resources = 0
+        self.score_so_far = 0
         self.tubes = {}
         self.teleports = {}
         self.pods = {}
@@ -174,6 +176,7 @@ class Planner:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
         after_score = self.score_debug_text("after", planned_pods, planned_teleports)
+        self.score_so_far += self.score_from_pods(planned_pods, planned_teleports)[0]
         print(f"resources_after {budget} spent {self.resources - budget} {after_score}", file=sys.stderr)
         return actions
 
@@ -266,7 +269,8 @@ class Planner:
         """Formats estimated score details for a named planning snapshot."""
         score, speed, balance, delivered, _, _ = self.score_from_pods(planned_pods, planned_teleports)
         demand = sum(sum(pad.demand.values()) for pad in self.get_landing_pads())
-        return f"score_{label} total {score} speed {speed} diversity {balance} delivered {delivered}/{demand} stranded {demand - delivered}"
+        return f"score_{label} month {score} total_so_far {self.score_so_far + score} speed {speed} diversity {balance} " \
+            f"delivered {delivered}/{demand} stranded {demand - delivered}"
 
     def score_from_pods(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int] | None = None) -> tuple:
         """Estimates monthly score, score components, module arrivals, and service details from a planned pod network."""

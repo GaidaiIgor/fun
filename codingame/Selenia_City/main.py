@@ -1545,4 +1545,5 @@ def next_pod_id(used_ids: set[int]) -> int:
     raise RuntimeError("No pod identifiers remain")
 
 
-Planner().play()
+if __name__ == "__main__":
+    Planner().play()

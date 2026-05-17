@@ -173,8 +173,8 @@ class Planner:
             if candidate.teleport is not None:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
-        print(f"resources_after {budget} spent {self.resources - budget}", file=sys.stderr)
-        self.debug_scores("after", planned_pods, planned_teleports)
+        after_score = self.score_debug_text("after", planned_pods, planned_teleports)
+        print(f"resources_after {budget} spent {self.resources - budget} {after_score}", file=sys.stderr)
         return actions
 
     def destroy_obsolete_pods(self, actions: list[str], service_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
@@ -260,10 +260,13 @@ class Planner:
 
     def debug_scores(self, label: str, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int]):
         """Prints estimated score details for a named planning snapshot."""
+        print(self.score_debug_text(label, planned_pods, planned_teleports), file=sys.stderr)
+
+    def score_debug_text(self, label: str, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int]) -> str:
+        """Formats estimated score details for a named planning snapshot."""
         score, speed, balance, delivered, _, _ = self.score_from_pods(planned_pods, planned_teleports)
         demand = sum(sum(pad.demand.values()) for pad in self.get_landing_pads())
-        message = f"score_{label} total {score} speed {speed} diversity {balance} delivered {delivered}/{demand} stranded {demand - delivered}"
-        print(message, file=sys.stderr)
+        return f"score_{label} total {score} speed {speed} diversity {balance} delivered {delivered}/{demand} stranded {demand - delivered}"
 
     def score_from_pods(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int] | None = None) -> tuple:
         """Estimates monthly score, score components, module arrivals, and service details from a planned pod network."""

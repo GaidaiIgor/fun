@@ -856,7 +856,8 @@ class Planner:
             candidates.extend(self.reroute_candidates(pad, module, astronaut_type, count, current_load, tubes, edge_schedule, rerouted_pod_ids,
                                                       route_options, budget))
 
-        if count >= self.teleport_threshold() and pad.id not in teleport_used and module.id not in teleport_used and TELEPORT_COST <= budget:
+        if (count >= self.teleport_threshold() or not candidates) and pad.id not in teleport_used and module.id not in teleport_used \
+                and TELEPORT_COST <= budget:
             score = monthly_teleport_score(count, current_load) * self.months_left()
             candidates.append(Candidate(score, TELEPORT_COST, pad.id, module.id, astronaut_type, teleport=(pad.id, module.id), delivered=count))
         return candidates

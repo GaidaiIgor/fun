@@ -8,7 +8,7 @@ from pathlib import Path
 
 if not __package__:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
-from Selenia_City.main import MAX_PODS, POD_COST, POD_REFUND, TELEPORT_COST, Building, Planner, Pod, route_key, tube_cost
+from Selenia_City.main import MAX_PODS, MAX_TUBES_PER_BUILDING, POD_COST, POD_REFUND, TELEPORT_COST, Building, Planner, Pod, route_key, tube_cost
 
 TURN_STATE = \
 """
@@ -25,7 +25,9 @@ def print_score_after_command():
     """Prints the main-style resource and score line after applying OUTPUT_COMMAND to TURN_STATE."""
     planner = parse_turn_state(TURN_STATE)
     starting_resources = planner.resources
-    apply_actions(planner, OUTPUT_COMMAND)
+    if not apply_actions(planner, OUTPUT_COMMAND):
+        print("impossible")
+        return
     planned_pods = {pod_id: pod.path[:] for pod_id, pod in planner.pods.items()}
     score_text = planner.score_debug_text("after", planned_pods, dict(planner.teleports))
     print(f"resources_after {planner.resources} spent {starting_resources - planner.resources} {score_text}")
@@ -66,7 +68,7 @@ def parse_demand(text: str) -> Counter[int]:
     return demand
 
 
-def apply_actions(planner: Planner, text: str):
+def apply_actions(planner: Planner, text: str) -> bool:
     """Applies a semicolon-separated output command to the planner state."""
     for action in text.split(";"):
         parts = action.strip().split()
@@ -74,55 +76,75 @@ def apply_actions(planner: Planner, text: str):
             continue
         match parts[0]:
             case "TUBE":
-                apply_tube(planner, int(parts[1]), int(parts[2]))
+                ok = apply_tube(planner, int(parts[1]), int(parts[2]))
             case "UPGRADE":
-                apply_upgrade(planner, int(parts[1]), int(parts[2]))
+                ok = apply_upgrade(planner, int(parts[1]), int(parts[2]))
             case "TELEPORT":
-                apply_teleport(planner, int(parts[1]), int(parts[2]))
+                ok = apply_teleport(planner, int(parts[1]), int(parts[2]))
             case "POD":
-                apply_pod(planner, int(parts[1]), [int(item) for item in parts[2:]])
+                ok = apply_pod(planner, int(parts[1]), [int(item) for item in parts[2:]])
             case "DESTROY":
-                apply_destroy(planner, int(parts[1]))
+                ok = apply_destroy(planner, int(parts[1]))
+            case _:
+                return False
+        if not ok:
+            return False
+    return True
 
 
-def apply_tube(planner: Planner, a: int, b: int):
+def apply_tube(planner: Planner, a: int, b: int) -> bool:
     """Builds one tube if main planner rules consider it valid and affordable."""
     cost = tube_cost(planner.buildings[a], planner.buildings[b])
-    if cost <= planner.resources and planner.can_build_tube(a, b, planner.tubes, []):
-        planner.resources -= cost
-        planner.tubes[route_key(a, b)] = 1
+    degrees = planner.get_tube_degrees()
+    if cost > planner.resources or degrees[a] >= MAX_TUBES_PER_BUILDING or degrees[b] >= MAX_TUBES_PER_BUILDING \
+            or not planner.can_build_tube(a, b, planner.tubes, []):
+        return False
+    planner.resources -= cost
+    planner.tubes[route_key(a, b)] = 1
+    return True
 
 
-def apply_upgrade(planner: Planner, a: int, b: int):
+def apply_upgrade(planner: Planner, a: int, b: int) -> bool:
     """Upgrades one existing tube if it is affordable."""
     key = route_key(a, b)
-    if key in planner.tubes:
-        cost = tube_cost(planner.buildings[a], planner.buildings[b]) * (planner.tubes[key] + 1)
-        if cost <= planner.resources:
-            planner.resources -= cost
-            planner.tubes[key] += 1
+    if key not in planner.tubes:
+        return False
+    cost = tube_cost(planner.buildings[a], planner.buildings[b]) * (planner.tubes[key] + 1)
+    if cost > planner.resources:
+        return False
+    planner.resources -= cost
+    planner.tubes[key] += 1
+    return True
 
 
-def apply_teleport(planner: Planner, a: int, b: int):
+def apply_teleport(planner: Planner, a: int, b: int) -> bool:
     """Builds one teleporter if its endpoints are free and affordable."""
     used = planner.get_teleport_used_buildings()
-    if TELEPORT_COST <= planner.resources and a not in used and b not in used:
-        planner.resources -= TELEPORT_COST
-        planner.teleports[a] = b
+    if a == b or TELEPORT_COST > planner.resources or a in used or b in used:
+        return False
+    planner.resources -= TELEPORT_COST
+    planner.teleports[a] = b
+    return True
 
 
-def apply_pod(planner: Planner, pod_id: int, path: list[int]):
-    """Builds or replaces one pod if the itinerary uses existing tubes and is affordable."""
-    if POD_COST <= planner.resources and 1 <= pod_id <= MAX_PODS and all(route_key(a, b) in planner.tubes for a, b in zip(path, path[1:])):
-        planner.resources -= POD_COST
-        planner.pods[pod_id] = Pod(pod_id, path)
+def apply_pod(planner: Planner, pod_id: int, path: list[int]) -> bool:
+    """Builds one pod if the itinerary uses existing tubes and is affordable."""
+    if POD_COST > planner.resources or not 1 <= pod_id <= MAX_PODS or pod_id in planner.pods or len(path) < 2:
+        return False
+    if not all(route_key(a, b) in planner.tubes for a, b in zip(path, path[1:])):
+        return False
+    planner.resources -= POD_COST
+    planner.pods[pod_id] = Pod(pod_id, path)
+    return True
 
 
-def apply_destroy(planner: Planner, pod_id: int):
+def apply_destroy(planner: Planner, pod_id: int) -> bool:
     """Destroys one existing pod and refunds resources."""
-    if pod_id in planner.pods:
-        del planner.pods[pod_id]
-        planner.resources += POD_REFUND
+    if pod_id not in planner.pods:
+        return False
+    del planner.pods[pod_id]
+    planner.resources += POD_REFUND
+    return True
 
 
 if __name__ == "__main__":

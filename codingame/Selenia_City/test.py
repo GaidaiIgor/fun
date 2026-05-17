@@ -6,8 +6,15 @@ from collections import Counter
 
 from Selenia_City.main import MAX_PODS, POD_COST, POD_REFUND, TELEPORT_COST, Building, Planner, Pod, route_key, tube_cost
 
-TURN_STATE = """resources 0"""
-OUTPUT_COMMAND = "WAIT"
+TURN_STATE = \
+"""
+resources 5000
+module 0 2 80 75
+landing 1 80 15 2:50
+landing 2 110 45 1:50
+module 3 1 50 45
+"""
+OUTPUT_COMMAND = "TUBE 1 0;POD 1 1 0 1;TUBE 2 0;TUBE 0 3;POD 2 2 0 2;POD 3 3 0 3"
 
 
 def print_score_after_command():

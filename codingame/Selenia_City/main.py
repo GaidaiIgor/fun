@@ -208,6 +208,7 @@ class Planner:
 
     def debug_month_input(self, new_buildings: list[Building]):
         """Prints the parsed monthly input snapshot to the debug log."""
+        print(f"month {self.month + 1}", file=sys.stderr)
         print(f"resources {self.resources}", file=sys.stderr)
         for building in sorted(self.buildings.values(), key=lambda item: item.id):
             print(format_debug_node(building), file=sys.stderr)

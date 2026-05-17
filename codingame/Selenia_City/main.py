@@ -1170,59 +1170,61 @@ class Planner:
                     best = candidate
         return best
 
-    def best_baseline_replacement_candidate(self, dedicated_edge_counts: Counter[tuple[int, int]], planned_pods: dict[int, list[int]],
-                                            service_counts: Counter[tuple[int, int]], teleported_pairs: set[tuple[int, int]], budget: int,
-                                            pod_ids: set[int], rerouted_pod_ids: set[int]) -> Candidate | None:
+    def best_baseline_replacement_candidate(self, dedicated_edge_counts: Counter[tuple[int, int]],
+                                            edge_schedule: Counter[tuple[tuple[int, int], int]], planned_pods: dict[int, list[int]],
+                                            planned_teleports: dict[int, int], tubes: dict[tuple[int, int], int], service_counts: Counter[tuple[int, int]],
+                                            teleported_pairs: set[tuple[int, int]], budget: int, pod_ids: set[int],
+                                            rerouted_pod_ids: set[int]) -> Candidate | None:
         """Finds the best bundle replacing one shared pod with missing dedicated edge shuttles."""
         best = None
-        old_score = self.score_from_pods(planned_pods)[0]
+        old_score = self.score_from_pods(planned_pods, planned_teleports)[0]
+        old_service_paths = self.service_paths_from_adjacency(self.adjacency_from_paths(list(planned_pods.values()), planned_teleports))
         best_key = None
         for pod_id, path in planned_pods.items():
             if pod_id not in self.pods or pod_id in rerouted_pod_ids or len(path) == 3 and path[0] == path[2]:
                 continue
-            services = self.pod_services(Pod(pod_id, path))
+            services = [service for service in self.pod_services(Pod(pod_id, path)) if (service[0], service[1]) in old_service_paths]
             if not services or any((pad_id, astronaut_type) in teleported_pairs for pad_id, astronaut_type, _, _ in services):
-                continue
+                services = []
             seen_edges = set()
-            missing_paths = []
+            path_options = []
             for a, b in zip(path, path[1:]):
                 edge = route_key(a, b)
                 if edge in seen_edges:
                     continue
                 seen_edges.add(edge)
                 if dedicated_edge_counts[edge] <= 0:
-                    missing_paths.append([a, b, a])
-            if not missing_paths or len(pod_ids) - 1 + len(missing_paths) > MAX_PODS:
+                    path_options.append(([a, b, a], [b, a, b]))
+            if not path_options or len(pod_ids) - 1 + len(path_options) > MAX_PODS:
                 continue
-            cost = REROUTE_COST + POD_COST * (len(missing_paths) - 1)
-            if cost > budget:
-                continue
-            new_pods = {current_id: current_path[:] for current_id, current_path in planned_pods.items() if current_id != pod_id}
-            for fake_id, missing_path in enumerate(missing_paths, MAX_PODS + 1):
-                new_pods[fake_id] = missing_path
-            new_service_paths = self.service_paths_from_adjacency(self.adjacency_from_paths(list(new_pods.values())))
-            if any((pad_id, astronaut_type) not in new_service_paths for pad_id, astronaut_type, _, _ in services):
-                continue
-            score = (self.score_from_pods(new_pods)[0] - old_score) * self.months_left()
-            if score <= 0:
-                continue
-            restored_services = []
-            for pad_id, astronaut_type, _, _ in services:
-                if service_counts[(pad_id, astronaut_type)] <= 1:
-                    restored_services.append((pad_id, astronaut_type, new_service_paths[(pad_id, astronaut_type)][-1],
-                                              self.buildings[pad_id].demand[astronaut_type]))
-            if restored_services:
-                pad_id, astronaut_type, module_id, _ = restored_services[0]
-                delivered = sum(service[3] for service in restored_services)
-            else:
-                pad_id, astronaut_type, module_id, _ = services[0]
-                delivered = sum(self.buildings[service[0]].demand[service[1]] for service in services)
-            candidate = Candidate(score, cost, pad_id, module_id, astronaut_type, missing_paths[0], delivered=delivered, services=restored_services,
-                                  reroute_pod_id=pod_id, extra_paths=missing_paths[1:])
-            candidate_key = (candidate.score, len(missing_paths), candidate.efficiency)
-            if best is None or candidate_key > best_key:
-                best = candidate
-                best_key = candidate_key
+            for selected_paths in product(*path_options):
+                upgrade_cost, upgrades = self.combined_upgrade_plan(list(selected_paths), self.pods[pod_id], [], tubes, edge_schedule)
+                cost = REROUTE_COST + POD_COST * (len(selected_paths) - 1) + upgrade_cost
+                if cost > budget:
+                    continue
+                new_pods = {current_id: current_path[:] for current_id, current_path in planned_pods.items() if current_id != pod_id}
+                for fake_id, missing_path in enumerate(selected_paths, MAX_PODS + 1):
+                    new_pods[fake_id] = missing_path
+                new_score, _, _, _, _, new_service_paths = self.score_from_pods(new_pods, planned_teleports)
+                score = (new_score - old_score) * self.months_left()
+                if score <= 0:
+                    continue
+                restored_services = []
+                for pad_id, astronaut_type, _, _ in services:
+                    if service_counts[(pad_id, astronaut_type)] <= 1 and (pad_id, astronaut_type) in new_service_paths:
+                        restored_services.append((pad_id, astronaut_type, new_service_paths[(pad_id, astronaut_type)][-1],
+                                                  self.buildings[pad_id].demand[astronaut_type]))
+                if restored_services:
+                    pad_id, astronaut_type, module_id, _ = restored_services[0]
+                    delivered = sum(service[3] for service in restored_services)
+                else:
+                    pad_id, astronaut_type, module_id, delivered = 0, 0, 0, 0
+                candidate = Candidate(score, cost, pad_id, module_id, astronaut_type, list(selected_paths[0]), upgrades=upgrades, delivered=delivered,
+                                      services=restored_services, reroute_pod_id=pod_id, extra_paths=[list(item) for item in selected_paths[1:]])
+                candidate_key = (candidate.score, len(selected_paths), candidate.efficiency)
+                if best is None or candidate_key > best_key:
+                    best = candidate
+                    best_key = candidate_key
         return best
 
     def best_speed_candidate(self, serviced: set[tuple[int, int]], service_counts: Counter[tuple[int, int]], tubes: dict[tuple[int, int], int],
@@ -1232,8 +1234,8 @@ class Planner:
                              teleported_pairs: set[tuple[int, int]], budget: int, pod_ids: set[int]) -> tuple[str, Candidate] | None:
         """Finds the best currently affordable speed improvement candidate."""
         candidates = []
-        replacement_candidate = self.best_baseline_replacement_candidate(dedicated_edge_counts, planned_pods, service_counts, teleported_pairs, budget,
-                                                                        pod_ids, rerouted_pod_ids)
+        replacement_candidate = self.best_baseline_replacement_candidate(dedicated_edge_counts, edge_schedule, planned_pods, planned_teleports, tubes,
+                                                                        service_counts, teleported_pairs, budget, pod_ids, rerouted_pod_ids)
         if replacement_candidate is not None:
             candidates.append(("baseline_replace", replacement_candidate))
         baseline_candidate = self.best_baseline_direct_candidate(serviced, tubes, dedicated_edge_counts, edge_schedule, planned_pods, planned_teleports,
@@ -1352,8 +1354,13 @@ class Planner:
                 service_counts[(pad_id, astronaut_type)] += 1
                 module_load[module_id] += delivered
         elif candidate.path and reason in ("baseline_pod", "baseline_replace", "capacity"):
-            for pad_id, astronaut_type, module_id, delivered in candidate.services or [(candidate.pad_id, candidate.astronaut_type, candidate.module_id,
-                                                                                        candidate.delivered)]:
+            if candidate.services:
+                services = candidate.services
+            elif reason in ("baseline_pod", "capacity"):
+                services = [(candidate.pad_id, candidate.astronaut_type, candidate.module_id, candidate.delivered)]
+            else:
+                services = []
+            for pad_id, astronaut_type, module_id, delivered in services:
                 was_serviced = (pad_id, astronaut_type) in serviced
                 serviced.add((pad_id, astronaut_type))
                 service_counts[(pad_id, astronaut_type)] += 1

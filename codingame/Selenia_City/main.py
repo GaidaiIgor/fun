@@ -688,12 +688,14 @@ class Planner:
                 route = [pad.id, first.id, second.id, module.id]
                 if len(set(route)) < len(route):
                     continue
-                new_tubes = unique_new_tubes_for_paths([[pad.id, first.id, pad.id], [first.id, second.id, module.id, second.id, first.id]], tubes)
-                if not new_tubes:
-                    continue
-                options.append([[pad.id, first.id, pad.id], [first.id, second.id, module.id, second.id, first.id]])
-                if len(options) >= 80:
-                    return options
+                first_path = [pad.id, first.id, pad.id]
+                for second_path in ([first.id, second.id, module.id, second.id, first.id], [second.id, first.id, second.id, module.id, second.id]):
+                    new_tubes = unique_new_tubes_for_paths([first_path, second_path], tubes)
+                    if not new_tubes:
+                        continue
+                    options.append([first_path, second_path])
+                    if len(options) >= 80:
+                        return options
         return options
 
     def services_lost_by_removing_pod(self, old_pod: Pod, planned_pods: dict[int, list[int]], base_paths: dict[tuple[int, int], list[int]],

@@ -212,10 +212,12 @@ class Planner:
         message += f"teleports={len(self.teleports)} pod_lines={pod_count} pods={len(self.pods)} new_buildings={len(new_buildings)} "
         message += f"total_buildings={len(self.buildings)} pads={len(pads)} total_monthly_demand={total_demand}"
         print(message, file=sys.stderr)
+        for building in sorted(self.buildings.values(), key=lambda item: item.id):
+            print(f"[M{self.month + 1:02d}] input node {format_debug_node(building)}", file=sys.stderr)
         for a, b in sorted(self.tubes):
-            print(f"[M{self.month + 1:02d}] input route {a} {b} {self.tubes[(a, b)]}", file=sys.stderr)
+            print(f"[M{self.month + 1:02d}] input tube a={a} b={b} capacity={self.tubes[(a, b)]}", file=sys.stderr)
         for a in sorted(self.teleports):
-            print(f"[M{self.month + 1:02d}] input route {a} {self.teleports[a]} 0", file=sys.stderr)
+            print(f"[M{self.month + 1:02d}] input teleport in={a} out={self.teleports[a]}", file=sys.stderr)
         self.debug_pair_costs(new_buildings)
         for pod_id in sorted(self.pods):
             path = self.pods[pod_id].path
@@ -1349,6 +1351,14 @@ class Planner:
         if self.month <= 10:
             return 70
         return 90
+
+
+def format_debug_node(building: Building) -> str:
+    """Formats one building with type, coordinates, and landing-pad demand."""
+    if building.kind == 0:
+        demand = ",".join(f"{astronaut_type}:{building.demand[astronaut_type]}" for astronaut_type in sorted(building.demand)) or "none"
+        return f"id={building.id} kind=landing x={building.x} y={building.y} demand={demand} total={sum(building.demand.values())}"
+    return f"id={building.id} kind=module module_type={building.kind} x={building.x} y={building.y}"
 
 
 def unique_new_tubes(path: list[int], tubes: dict[tuple[int, int], int]) -> list[tuple[int, int]]:

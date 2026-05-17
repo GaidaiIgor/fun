@@ -16,9 +16,8 @@ POD_COST = 1000
 POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
-DEBUG_LIST_LIMIT = 18
-DEBUG_PAIR_COST_LIMIT = 80
-DEBUG_SCORE_DETAIL_LIMIT = 60
+DEBUG_PAIR_COST_LIMIT = 60
+DEBUG_SCORE_DETAIL_LIMIT = 40
 
 
 @dataclass(slots=True)
@@ -143,24 +142,14 @@ class Planner:
         modules_by_type = self.get_modules_by_type()
         unserved_demands = self.get_unserved_demands(serviced)
         min_efficiency = self.min_efficiency()
-        self.debug_plan_start(serviced, service_counts, module_load, degrees, direct_pod_counts, edge_schedule, unserved_demands, min_efficiency)
         self.debug_scores("before", planned_pods, planned_teleports)
 
-        for demand_ind, (pad, astronaut_type, count) in enumerate(unserved_demands, 1):
+        for pad, astronaut_type, count in unserved_demands:
             if (pad.id, astronaut_type) in serviced:
-                message = f"[M{self.month + 1:02d}] demand {demand_ind}/{len(unserved_demands)} skip already_serviced "
-                message += describe_demand(pad, astronaut_type, count)
-                print(message, file=sys.stderr)
                 continue
             candidate = self.best_service_candidate(pad, astronaut_type, count, modules_by_type, module_load, degrees, teleport_used, tubes, edge_schedule,
                                                     service_counts, planned_pods, rerouted_pod_ids, budget, pod_ids)
-            prefix = f"[M{self.month + 1:02d}] demand {demand_ind}/{len(unserved_demands)} {describe_demand(pad, astronaut_type, count)}"
-            if candidate is None:
-                print(f"{prefix} no_candidate budget={budget}", file=sys.stderr)
-            elif candidate.efficiency < min_efficiency:
-                print(f"{prefix} skip best={describe_candidate(candidate)} min_eff={min_efficiency:.2f}", file=sys.stderr)
-            else:
-                print(f"{prefix} choose best={describe_candidate(candidate)}", file=sys.stderr)
+            if candidate is not None and candidate.efficiency >= min_efficiency:
                 budget = self.apply_candidate("service", candidate, actions, serviced, service_counts, module_load, degrees, teleport_used,
                                               planned_teleports, tubes,
                                               direct_pod_counts, edge_schedule, dedicated_edge_counts, planned_pods, budget, pod_ids)
@@ -169,20 +158,15 @@ class Planner:
                 if candidate.teleport is not None:
                     teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
-        speed_round = 0
         while True:
             budget = self.destroy_obsolete_pods(actions, service_counts, edge_schedule, planned_pods, rerouted_pod_ids, retired_pod_ids, budget, pod_ids)
             speed_pick = self.best_speed_candidate(serviced, service_counts, tubes, direct_pod_counts, edge_schedule, dedicated_edge_counts, planned_pods,
                                                    rerouted_pod_ids, teleport_used, teleported_pairs, budget, pod_ids)
             if speed_pick is None:
-                print(f"[M{self.month + 1:02d}] speed stop no_candidate budget={budget} rounds={speed_round}", file=sys.stderr)
                 break
             reason, candidate = speed_pick
             if candidate.score <= 0:
-                print(f"[M{self.month + 1:02d}] speed stop non_positive best={describe_candidate(candidate)}", file=sys.stderr)
                 break
-            speed_round += 1
-            print(f"[M{self.month + 1:02d}] speed choose reason={reason} round={speed_round} best={describe_candidate(candidate)}", file=sys.stderr)
             budget = self.apply_candidate(reason, candidate, actions, serviced, service_counts, module_load, degrees, teleport_used, planned_teleports, tubes,
                                           direct_pod_counts, edge_schedule, dedicated_edge_counts, planned_pods, budget, pod_ids)
             if candidate.reroute_pod_id is not None:
@@ -190,10 +174,6 @@ class Planner:
             if candidate.teleport is not None:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
-        action_line = ";".join(actions) or "WAIT"
-        self.debug_scores("after", planned_pods, planned_teleports)
-        print(f"[M{self.month + 1:02d}] output resources={self.resources} spent={self.resources - budget} remaining={budget}", file=sys.stderr)
-        print(f"[M{self.month + 1:02d}] output actions={len(actions)} line={action_line}", file=sys.stderr)
         return actions
 
     def destroy_obsolete_pods(self, actions: list[str], service_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
@@ -213,9 +193,6 @@ class Planner:
             for pad_id, astronaut_type, _, _ in services:
                 service_counts[(pad_id, astronaut_type)] -= 1
             budget += POD_REFUND
-            message = f"[M{self.month + 1:02d}] cleanup destroy_obsolete pod={obsolete_pod.id} refund={POD_REFUND} budget={budget} "
-            message += f"services={format_services(services)} path={format_path(obsolete_pod.path)}"
-            print(message, file=sys.stderr)
         return budget
 
     def obsolete_pod(self, service_counts: Counter[tuple[int, int]], blocked_pod_ids: set[int]) -> Pod | None:
@@ -230,25 +207,23 @@ class Planner:
 
     def debug_month_input(self, route_count: int, pod_count: int, new_buildings: list[Building]):
         """Prints the parsed monthly input snapshot to the debug log."""
-        module_counts = Counter(building.kind for building in self.buildings.values() if building.kind > 0)
         pads = self.get_landing_pads()
         total_demand = sum(sum(pad.demand.values()) for pad in pads)
         message = f"[M{self.month + 1:02d}] input resources={self.resources} route_lines={route_count} tubes={len(self.tubes)} "
         message += f"teleports={len(self.teleports)} pod_lines={pod_count} pods={len(self.pods)} new_buildings={len(new_buildings)} "
-        message += f"total_buildings={len(self.buildings)} pads={len(pads)} modules={sum(module_counts.values())} total_monthly_demand={total_demand}"
+        message += f"total_buildings={len(self.buildings)} pads={len(pads)} total_monthly_demand={total_demand}"
         print(message, file=sys.stderr)
-        print(f"[M{self.month + 1:02d}] input modules_by_type={format_counter(module_counts)}", file=sys.stderr)
-        if self.tubes:
-            print(f"[M{self.month + 1:02d}] input tubes={format_tubes(self.tubes)}", file=sys.stderr)
+        for a, b in sorted(self.tubes):
+            print(f"[M{self.month + 1:02d}] input route {a} {b} {self.tubes[(a, b)]}", file=sys.stderr)
+        for a in sorted(self.teleports):
+            print(f"[M{self.month + 1:02d}] input route {a} {self.teleports[a]} 0", file=sys.stderr)
         self.debug_pair_costs(new_buildings)
-        if self.teleports:
-            print(f"[M{self.month + 1:02d}] input teleports={format_teleports(self.teleports)}", file=sys.stderr)
-        if self.pods:
-            print(f"[M{self.month + 1:02d}] input pods={format_pods(self.pods)}", file=sys.stderr)
-        for building in new_buildings[:DEBUG_LIST_LIMIT]:
-            print(f"[M{self.month + 1:02d}] input new {describe_building(building)}", file=sys.stderr)
-        if len(new_buildings) > DEBUG_LIST_LIMIT:
-            print(f"[M{self.month + 1:02d}] input new omitted={len(new_buildings) - DEBUG_LIST_LIMIT}", file=sys.stderr)
+        for pod_id in sorted(self.pods):
+            path = self.pods[pod_id].path
+            path_text = " ".join(map(str, path))
+            print(f"[M{self.month + 1:02d}] input pod {pod_id} {len(path)} {path_text}", file=sys.stderr)
+        for building in new_buildings:
+            print(f"[M{self.month + 1:02d}] input new {format_raw_building(building)}", file=sys.stderr)
 
     def debug_pair_costs(self, new_buildings: list[Building]):
         """Prints a bounded set of construction or upgrade costs for unordered building pairs."""
@@ -271,7 +246,7 @@ class Planner:
             if (a, b) in printed:
                 continue
             cost = self.debug_pair_cost_text(a, b, degrees)
-            if total_pairs > DEBUG_PAIR_COST_LIMIT and cost == "impossible" and (a, b) not in self.tubes and not ({a, b} & new_ids):
+            if cost is None:
                 continue
             printed.add((a, b))
             print(f"[M{self.month + 1:02d}] input pair_cost ({a}, {b}) -> {cost}", file=sys.stderr)
@@ -280,45 +255,22 @@ class Planner:
         if total_pairs > len(printed):
             print(f"[M{self.month + 1:02d}] input pair_cost omitted={total_pairs - len(printed)}", file=sys.stderr)
 
-    def debug_pair_cost_text(self, a: int, b: int, degrees: Counter[int]) -> str:
+    def debug_pair_cost_text(self, a: int, b: int, degrees: Counter[int]) -> str | None:
         """Formats one pair cost as a build cost, upgrade cost, or impossible marker."""
         key = route_key(a, b)
         if key in self.tubes:
             return str(tube_cost(self.buildings[a], self.buildings[b]) * (self.tubes[key] + 1))
         if degrees[a] >= MAX_TUBES_PER_BUILDING or degrees[b] >= MAX_TUBES_PER_BUILDING or not self.can_build_tube(a, b, self.tubes, []):
-            return "impossible"
+            return None
         return str(tube_cost(self.buildings[a], self.buildings[b]))
-
-    def debug_plan_start(self, serviced: set[tuple[int, int]], service_counts: Counter[tuple[int, int]], module_load: Counter[int], degrees: Counter[int],
-                         direct_pod_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
-                         demands: list[tuple[Building, int, int]], min_efficiency: float):
-        """Prints the planning state before candidate selection starts."""
-        message = f"[M{self.month + 1:02d}] plan start months_left={self.months_left()} min_eff={min_efficiency:.2f} "
-        message += f"teleport_threshold={self.teleport_threshold()} serviced_pairs={len(serviced)} unserved_demands={len(demands)}"
-        print(message, file=sys.stderr)
-        print(f"[M{self.month + 1:02d}] plan service_counts={format_pair_counter(service_counts)}", file=sys.stderr)
-        print(f"[M{self.month + 1:02d}] plan module_load={format_counter(module_load)}", file=sys.stderr)
-        print(f"[M{self.month + 1:02d}] plan tube_degrees={format_counter(degrees)}", file=sys.stderr)
-        print(f"[M{self.month + 1:02d}] plan direct_pods={format_pair_counter(direct_pod_counts)}", file=sys.stderr)
-        print(f"[M{self.month + 1:02d}] plan edge_schedule={format_edge_schedule(edge_schedule)}", file=sys.stderr)
 
     def debug_scores(self, label: str, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int]):
         """Prints estimated score details for a named planning snapshot."""
-        score, speed, balance, delivered, module_arrivals, module_balance, _, _, service_details = self.score_from_pods(planned_pods, planned_teleports)
+        score, speed, balance, delivered, _, _, service_details = self.score_from_pods(planned_pods, planned_teleports)
         demand = sum(sum(pad.demand.values()) for pad in self.get_landing_pads())
         message = f"[M{self.month + 1:02d}] plan score_{label}_total={score} speed={speed} diversity={balance} "
         message += f"delivered={delivered}/{demand} stranded={demand - delivered}"
         print(message, file=sys.stderr)
-        modules = sorted((building for building in self.buildings.values() if building.kind > 0), key=lambda building: building.id)
-        shown_modules = modules if len(modules) <= DEBUG_SCORE_DETAIL_LIMIT else \
-            sorted([module for module in modules if module_arrivals[module.id] or module_balance[module.id]],
-                   key=lambda module: (-module_arrivals[module.id], module.id))[:DEBUG_SCORE_DETAIL_LIMIT]
-        for module in shown_modules:
-            message = f"[M{self.month + 1:02d}] plan score_{label}_module ({module.id}) -> "
-            message += f"arrivals={module_arrivals[module.id]} diversity={module_balance[module.id]}"
-            print(message, file=sys.stderr)
-        if len(shown_modules) < len(modules):
-            print(f"[M{self.month + 1:02d}] plan score_{label}_module omitted={len(modules) - len(shown_modules)}", file=sys.stderr)
         for service_detail in service_details[:DEBUG_SCORE_DETAIL_LIMIT]:
             print(f"[M{self.month + 1:02d}] plan score_{label}_service {service_detail}", file=sys.stderr)
         if len(service_details) > DEBUG_SCORE_DETAIL_LIMIT:
@@ -379,7 +331,7 @@ class Planner:
         speed = sum(service_speed.values())
         balance = sum(service_balance.values())
         delivered = sum(service_delivered.values())
-        return speed + balance, speed, balance, delivered, module_arrivals, module_balance, service_delivered, service_paths, service_details
+        return speed + balance, speed, balance, delivered, service_delivered, service_paths, service_details
 
     def settle_score_arrivals(self, day: int, service_paths: dict[tuple[int, int], list[int]], queues: dict[tuple[int, int], list[int]],
                               module_arrivals: Counter[int], module_balance: Counter[int], service_delivered: Counter[tuple[int, int]],
@@ -712,7 +664,7 @@ class Planner:
                         new_pods[old_pod.id] = replacement_path[:]
                         for fake_id, route_path in enumerate(route_paths, MAX_PODS + 1):
                             new_pods[fake_id] = route_path[:]
-                        new_score, _, _, _, _, _, service_delivered, service_paths, _ = self.score_from_pods(new_pods)
+                        new_score, _, _, _, service_delivered, service_paths, _ = self.score_from_pods(new_pods)
                         if (pad.id, required_type) not in service_paths:
                             continue
                         score_gain = (new_score - old_score) * self.months_left()
@@ -1326,9 +1278,8 @@ class Planner:
                         service_counts: Counter[tuple[int, int]], module_load: Counter[int], degrees: Counter[int], teleport_used: set[int],
                         planned_teleports: dict[int, int], tubes: dict[tuple[int, int], int], direct_pod_counts: Counter[tuple[int, int]],
                         edge_schedule: Counter[tuple[tuple[int, int], int]], dedicated_edge_counts: Counter[tuple[int, int]],
-                        planned_pods: dict[int, list[int]], budget: int, pod_ids: set[int]) -> int:
+        planned_pods: dict[int, list[int]], budget: int, pod_ids: set[int]) -> int:
         """Appends a chosen candidate to the action list, updates planned state, and returns the remaining budget."""
-        action_start = len(actions)
         if candidate.reroute_pod_id is not None:
             old_pod = self.pods[candidate.reroute_pod_id]
             removed_pairs = set()
@@ -1399,11 +1350,7 @@ class Planner:
                 service_counts[(pad_id, astronaut_type)] += 1
                 if not was_serviced:
                     module_load[module_id] += delivered
-        new_budget = budget - candidate.cost
-        message = f"[M{self.month + 1:02d}] apply {reason} budget={budget}->{new_budget} "
-        message += f"actions={format_items(actions[action_start:], 10)} candidate={describe_candidate(candidate)}"
-        print(message, file=sys.stderr)
-        return new_budget
+        return budget - candidate.cost
 
     def months_left(self) -> int:
         """Returns the number of lunar months that can still benefit from new construction."""
@@ -1422,94 +1369,13 @@ class Planner:
         return 90
 
 
-def describe_building(building: Building) -> str:
-    """Formats one building for the debug log."""
+def format_raw_building(building: Building) -> str:
+    """Formats one building in a compact input-like shape."""
     if building.kind == 0:
-        return f"pad id={building.id} xy=({building.x},{building.y}) demand={format_counter(building.demand)} total={sum(building.demand.values())}"
-    return f"module id={building.id} type={building.kind} xy=({building.x},{building.y})"
-
-
-def describe_demand(pad: Building, astronaut_type: int, count: int) -> str:
-    """Formats one landing-pad demand for the debug log."""
-    return f"pad={pad.id} xy=({pad.x},{pad.y}) type={astronaut_type} count={count}"
-
-
-def describe_candidate(candidate: Candidate) -> str:
-    """Formats one candidate with its cost, score, and route details for the debug log."""
-    mode = "teleport" if candidate.teleport is not None else "pod"
-    parts = [
-        f"mode={mode}",
-        f"pad={candidate.pad_id}",
-        f"type={candidate.astronaut_type}",
-        f"module={candidate.module_id}",
-        f"cost={candidate.cost}",
-        f"score={candidate.score}",
-        f"eff={candidate.efficiency:.2f}",
-        f"delivered={candidate.delivered}"]
-    if candidate.teleport is not None:
-        parts.append(f"teleport={candidate.teleport[0]}->{candidate.teleport[1]}")
-    if candidate.services:
-        parts.append(f"services={format_services(candidate.services)}")
-    if candidate.replaced_services:
-        parts.append(f"replaces={format_services(candidate.replaced_services)}")
-    if candidate.reroute_pod_id is not None:
-        parts.append(f"reroute_pod={candidate.reroute_pod_id}")
-    if candidate.lost_score:
-        parts.append(f"lost_score={candidate.lost_score}")
-    if candidate.tubes:
-        parts.append(f"tubes={format_edges(candidate.tubes)}")
-    if candidate.upgrades:
-        parts.append(f"upgrades={format_edges(candidate.upgrades)}")
-    if candidate.path:
-        parts.append(f"path={format_path(candidate.path)}")
-    if candidate.extra_paths:
-        parts.append("extra_paths={}".format(",".join(format_path(path) for path in candidate.extra_paths)))
-    return " ".join(parts)
-
-
-def format_counter(counter: Counter[int]) -> str:
-    """Formats an integer counter as compact key-value text."""
-    items = [f"{key}:{counter[key]}" for key in sorted(counter) if counter[key] > 0]
-    return format_items(items)
-
-
-def format_pair_counter(counter: Counter[tuple[int, int]]) -> str:
-    """Formats a pair-keyed counter as compact key-value text."""
-    items = [f"{a}->{b}:{counter[(a, b)]}" for a, b in sorted(counter) if counter[(a, b)] > 0]
-    return format_items(items)
-
-
-def format_edge_schedule(schedule: Counter[tuple[tuple[int, int], int]]) -> str:
-    """Formats maximum scheduled pod occupancy for each edge."""
-    max_by_edge = Counter()
-    for edge, day in schedule:
-        max_by_edge[edge] = max(max_by_edge[edge], schedule[(edge, day)])
-    return format_pair_counter(max_by_edge)
-
-
-def format_tubes(tubes: dict[tuple[int, int], int]) -> str:
-    """Formats tube capacities as compact route text."""
-    return format_items([f"{a}-{b}:c{tubes[(a, b)]}" for a, b in sorted(tubes)])
-
-
-def format_teleports(teleports: dict[int, int]) -> str:
-    """Formats teleporters as compact directed route text."""
-    return format_items([f"{entrance}->{teleports[entrance]}" for entrance in sorted(teleports)])
-
-
-def format_pods(pods: dict[int, Pod]) -> str:
-    """Formats pod paths as compact itinerary text."""
-    return format_items([f"{pod_id}:{format_path(pods[pod_id].path)}" for pod_id in sorted(pods)])
-
-
-def format_edges(edges: list[tuple[int, int]]) -> str:
-    """Formats endpoint pairs as compact undirected edge text."""
-    return format_items([f"{a}-{b}" for a, b in edges])
-
-
-def format_services(services: list[tuple[int, int, int, int]]) -> str:
-    """Formats grouped pad, astronaut type, module, and delivered-count service details."""
-    return format_items([f"{pad_id}:t{astronaut_type}->m{module_id}/{delivered}" for pad_id, astronaut_type, module_id, delivered in services])
+        astronauts = [str(astronaut_type) for astronaut_type in sorted(building.demand) for _ in range(building.demand[astronaut_type])]
+        astronaut_text = " ".join(astronauts)
+        return f"0 {building.id} {building.x} {building.y} {len(astronauts)} {astronaut_text}"
+    return f"{building.kind} {building.id} {building.x} {building.y}"
 
 
 def format_path(path: list[int]) -> str:
@@ -1517,14 +1383,6 @@ def format_path(path: list[int]) -> str:
     if len(path) <= 9:
         return "-".join(map(str, path))
     return "{}-...-{}".format("-".join(map(str, path[:5])), "-".join(map(str, path[-3:])))
-
-
-def format_items(items: list[str], limit: int = DEBUG_LIST_LIMIT) -> str:
-    """Formats a bounded comma-separated item list for debug output."""
-    if not items:
-        return "none"
-    suffix = "" if len(items) <= limit else f",...(+{len(items) - limit})"
-    return ",".join(items[:limit]) + suffix
 
 
 def unique_new_tubes(path: list[int], tubes: dict[tuple[int, int], int]) -> list[tuple[int, int]]:

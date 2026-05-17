@@ -117,7 +117,7 @@ class Planner:
                 building = Building(parts[1], parts[0], parts[2], parts[3])
             self.buildings[building.id] = building
             new_buildings.append(building)
-        self.debug_month_input(route_count, pod_count, new_buildings)
+        self.debug_month_input(new_buildings)
 
     def choose_actions(self) -> list[str]:
         """Chooses and returns semicolon-separated action fragments for the current month."""
@@ -173,7 +173,7 @@ class Planner:
             if candidate.teleport is not None:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
-        print(f"[M{self.month + 1:02d}] plan resources_after={budget} spent={self.resources - budget}", file=sys.stderr)
+        print(f"resources_after {budget} spent {self.resources - budget}", file=sys.stderr)
         self.debug_scores("after", planned_pods, planned_teleports)
         return actions
 
@@ -206,24 +206,19 @@ class Planner:
                 return pod
         return None
 
-    def debug_month_input(self, route_count: int, pod_count: int, new_buildings: list[Building]):
+    def debug_month_input(self, new_buildings: list[Building]):
         """Prints the parsed monthly input snapshot to the debug log."""
-        pads = self.get_landing_pads()
-        total_demand = sum(sum(pad.demand.values()) for pad in pads)
-        message = f"[M{self.month + 1:02d}] input resources={self.resources} route_lines={route_count} tubes={len(self.tubes)} "
-        message += f"teleports={len(self.teleports)} pod_lines={pod_count} pods={len(self.pods)} new_buildings={len(new_buildings)} "
-        message += f"total_buildings={len(self.buildings)} pads={len(pads)} total_monthly_demand={total_demand}"
-        print(message, file=sys.stderr)
+        print(f"resources {self.resources}", file=sys.stderr)
         for building in sorted(self.buildings.values(), key=lambda item: item.id):
-            print(f"[M{self.month + 1:02d}] input node {format_debug_node(building)}", file=sys.stderr)
+            print(format_debug_node(building), file=sys.stderr)
         for a, b in sorted(self.tubes):
-            print(f"[M{self.month + 1:02d}] input tube a={a} b={b} capacity={self.tubes[(a, b)]}", file=sys.stderr)
+            print(f"tube {a} {b} {self.tubes[(a, b)]}", file=sys.stderr)
         for a in sorted(self.teleports):
-            print(f"[M{self.month + 1:02d}] input teleport in={a} out={self.teleports[a]}", file=sys.stderr)
+            print(f"teleport {a} {self.teleports[a]}", file=sys.stderr)
         for pod_id in sorted(self.pods):
             path = self.pods[pod_id].path
             path_text = "-".join(map(str, path))
-            print(f"[M{self.month + 1:02d}] input pod_route id={pod_id} path={path_text}", file=sys.stderr)
+            print(f"pod {pod_id} {path_text}", file=sys.stderr)
         self.debug_pair_costs(new_buildings)
 
     def debug_pair_costs(self, new_buildings: list[Building]):
@@ -236,9 +231,6 @@ class Planner:
         if total_pairs <= DEBUG_PAIR_COST_LIMIT:
             pair_keys = [route_key(a, b) for index, a in enumerate(building_ids) for b in building_ids[index + 1:]]
         else:
-            message = f"[M{self.month + 1:02d}] input pair_cost summary total={total_pairs} limit={DEBUG_PAIR_COST_LIMIT} "
-            message += "policy=existing,new,cheapest"
-            print(message, file=sys.stderr)
             cheapest = sorted((tube_cost(self.buildings[a], self.buildings[b]), route_key(a, b)) for index, a in enumerate(building_ids)
                               for b in building_ids[index + 1:] if route_key(a, b) not in self.tubes)
             pair_keys = sorted(self.tubes) + [route_key(new_id, building_id) for new_id in sorted(new_ids) for building_id in building_ids
@@ -250,11 +242,11 @@ class Planner:
             if cost is None:
                 continue
             printed.add((a, b))
-            print(f"[M{self.month + 1:02d}] input pair_cost ({a}, {b}) -> {cost}", file=sys.stderr)
+            print(f"pair_cost ({a}, {b}) -> {cost}", file=sys.stderr)
             if len(printed) >= DEBUG_PAIR_COST_LIMIT:
                 break
         if total_pairs > len(printed):
-            print(f"[M{self.month + 1:02d}] input pair_cost omitted={total_pairs - len(printed)}", file=sys.stderr)
+            print(f"pair_cost omitted {total_pairs - len(printed)}", file=sys.stderr)
 
     def debug_pair_cost_text(self, a: int, b: int, degrees: Counter[int]) -> str | None:
         """Formats one pair cost as a build cost, upgrade cost, or impossible marker."""
@@ -269,8 +261,7 @@ class Planner:
         """Prints estimated score details for a named planning snapshot."""
         score, speed, balance, delivered, _, _ = self.score_from_pods(planned_pods, planned_teleports)
         demand = sum(sum(pad.demand.values()) for pad in self.get_landing_pads())
-        message = f"[M{self.month + 1:02d}] plan score_{label}_total={score} speed={speed} diversity={balance} "
-        message += f"delivered={delivered}/{demand} stranded={demand - delivered}"
+        message = f"score_{label} total {score} speed {speed} diversity {balance} delivered {delivered}/{demand} stranded {demand - delivered}"
         print(message, file=sys.stderr)
 
     def score_from_pods(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int] | None = None) -> tuple:
@@ -1419,8 +1410,8 @@ def format_debug_node(building: Building) -> str:
     """Formats one building with type, coordinates, and landing-pad demand."""
     if building.kind == 0:
         demand = ",".join(f"{astronaut_type}:{building.demand[astronaut_type]}" for astronaut_type in sorted(building.demand)) or "none"
-        return f"id={building.id} kind=landing x={building.x} y={building.y} demand={demand} total={sum(building.demand.values())}"
-    return f"id={building.id} kind=module module_type={building.kind} x={building.x} y={building.y}"
+        return f"landing {building.id} {building.x} {building.y} {demand}"
+    return f"module {building.id} {building.kind} {building.x} {building.y}"
 
 
 def unique_new_tubes(path: list[int], tubes: dict[tuple[int, int], int]) -> list[tuple[int, int]]:

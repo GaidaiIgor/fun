@@ -173,6 +173,8 @@ class Planner:
             if candidate.teleport is not None:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
+        print(f"[M{self.month + 1:02d}] plan resources_after={budget} spent={self.resources - budget}", file=sys.stderr)
+        self.debug_scores("after", planned_pods, planned_teleports)
         return actions
 
     def destroy_obsolete_pods(self, actions: list[str], service_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],

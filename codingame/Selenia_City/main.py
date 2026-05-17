@@ -1260,7 +1260,7 @@ class Planner:
                                                           budget, pod_ids)
         if capacity_candidate is not None:
             candidates.append(("capacity", capacity_candidate))
-        teleport_candidate = self.best_teleport_speed_candidate(serviced, direct_counts, teleport_used, budget)
+        teleport_candidate = self.best_teleport_speed_candidate(planned_pods, planned_teleports, teleport_used, budget)
         if teleport_candidate is not None:
             candidates.append(("speed_teleport", teleport_candidate))
         if not candidates:
@@ -1269,28 +1269,26 @@ class Planner:
             return max(candidates, key=lambda item: (item[1].score, item[1].efficiency))
         return max(candidates, key=lambda item: (item[1].efficiency, item[1].score))
 
-    def best_teleport_speed_candidate(self, serviced: set[tuple[int, int]], direct_counts: Counter[tuple[int, int]], teleport_used: set[int],
+    def best_teleport_speed_candidate(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int], teleport_used: set[int],
                                       budget: int) -> Candidate | None:
-        """Finds the best teleporter that speeds up an already served direct route."""
+        """Finds the best teleporter that improves an already served route in the planned network."""
         if budget < TELEPORT_COST:
             return None
         best = None
-        for pad in self.get_landing_pads():
-            if pad.id in teleport_used:
+        old_score, _, _, _, _, service_paths = self.score_from_pods(planned_pods, planned_teleports)
+        for (pad_id, astronaut_type), _ in service_paths.items():
+            if pad_id in teleport_used:
                 continue
-            for astronaut_type, count in pad.demand.items():
-                if (pad.id, astronaut_type) not in serviced:
+            for module in self.get_modules_by_type()[astronaut_type]:
+                if module.id in teleport_used:
                     continue
-                for module in self.get_modules_by_type()[astronaut_type]:
-                    pod_count = direct_counts[(pad.id, module.id)]
-                    if pod_count <= 0 or module.id in teleport_used:
-                        continue
-                    old_score = monthly_score(count, 1, 0, pod_count)
-                    new_score = monthly_teleport_score(count, 0)
-                    candidate = Candidate((new_score - old_score) * self.months_left(), TELEPORT_COST, pad.id, module.id, astronaut_type,
-                                          teleport=(pad.id, module.id), delivered=count)
-                    if best is None or candidate.score > best.score:
-                        best = candidate
+                new_teleports = dict(planned_teleports)
+                new_teleports[pad_id] = module.id
+                new_score = self.score_from_pods(planned_pods, new_teleports)[0]
+                candidate = Candidate((new_score - old_score) * self.months_left(), TELEPORT_COST, pad_id, module.id, astronaut_type,
+                                      teleport=(pad_id, module.id), delivered=self.buildings[pad_id].demand[astronaut_type])
+                if candidate.score > 0 and (best is None or candidate.score > best.score):
+                    best = candidate
         return best
 
     def apply_candidate(self, reason: str, candidate: Candidate, actions: list[str], serviced: set[tuple[int, int]],

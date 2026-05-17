@@ -278,6 +278,7 @@ class Planner:
         service_paths = self.service_paths_from_adjacency(self.adjacency_from_paths(list(planned_pods.values()), planned_teleports))
         directed_schedule = self.directed_schedule_from_paths(list(planned_pods.values()))
         pod_edges = {edge for edge, _ in directed_schedule}
+        teleport_edges = set((self.teleports if planned_teleports is None else planned_teleports).items())
         queues = {}
         for (pad_id, astronaut_type), path in service_paths.items():
             counts = [0] * len(path)
@@ -291,7 +292,7 @@ class Planner:
 
         for day in range(MONTH_DAYS):
             for pair, path in service_paths.items():
-                self.apply_instant_edges(path, queues[pair], pod_edges)
+                self.apply_instant_edges(path, queues[pair], pod_edges, teleport_edges)
             self.settle_score_arrivals(day, service_paths, queues, module_arrivals, module_balance, service_delivered, service_speed, service_balance)
             moved = {pair: [0] * len(path) for pair, path in service_paths.items()}
             edge_waiters = {}
@@ -1083,13 +1084,14 @@ class Planner:
                             best = candidate
         return best
 
-    def apply_instant_edges(self, path: list[int], queues: list[int], pod_edges: set[tuple[int, int]]):
+    def apply_instant_edges(self, path: list[int], queues: list[int], pod_edges: set[tuple[int, int]], teleport_edges: set[tuple[int, int]]):
         """Moves queued passengers through non-pod path edges before daily waiting is measured."""
         changed = True
         while changed:
             changed = False
             for index, waiting in enumerate(queues[:-1]):
-                if waiting and (path[index], path[index + 1]) not in pod_edges:
+                edge = (path[index], path[index + 1])
+                if waiting and (edge in teleport_edges or edge not in pod_edges):
                     queues[index + 1] += waiting
                     queues[index] = 0
                     changed = True

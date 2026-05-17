@@ -220,11 +220,11 @@ class Planner:
             print(f"[M{self.month + 1:02d}] input tube a={a} b={b} capacity={self.tubes[(a, b)]}", file=sys.stderr)
         for a in sorted(self.teleports):
             print(f"[M{self.month + 1:02d}] input teleport in={a} out={self.teleports[a]}", file=sys.stderr)
-        self.debug_pair_costs(new_buildings)
         for pod_id in sorted(self.pods):
             path = self.pods[pod_id].path
             path_text = "-".join(map(str, path))
             print(f"[M{self.month + 1:02d}] input pod_route id={pod_id} path={path_text}", file=sys.stderr)
+        self.debug_pair_costs(new_buildings)
 
     def debug_pair_costs(self, new_buildings: list[Building]):
         """Prints a bounded set of construction or upgrade costs for unordered building pairs."""

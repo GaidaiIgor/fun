@@ -143,6 +143,7 @@ class Planner:
         modules_by_type = self.get_modules_by_type()
         unserved_demands = self.get_unserved_demands(serviced)
         min_efficiency = self.min_efficiency()
+        baseline_score = self.actual_score_from_pods(planned_pods, planned_teleports, tubes)[0]
         print(self.score_debug_text("before", planned_pods, planned_teleports, tubes), file=sys.stderr)
 
         exact_actions = []
@@ -186,6 +187,13 @@ class Planner:
         if (exact_score, exact_budget or 0) > (chosen_score, budget):
             actions, planned_pods, planned_teleports = exact_actions, exact_pods, exact_teleports
             tubes, budget, chosen_score = exact_tubes, exact_budget, exact_score
+        if (chosen_score, budget) <= (baseline_score, self.resources):
+            actions = []
+            planned_pods = {pod_id: pod.path[:] for pod_id, pod in self.pods.items()}
+            planned_teleports = dict(self.teleports)
+            tubes = dict(self.tubes)
+            budget = self.resources
+            chosen_score = baseline_score
         after_score = self.score_debug_text("after", planned_pods, planned_teleports, tubes)
         self.score_so_far += chosen_score
         print(f"resources_after {budget} spent {self.resources - budget} {after_score}", file=sys.stderr)

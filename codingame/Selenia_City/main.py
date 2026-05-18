@@ -17,6 +17,9 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 DEBUG_PAIR_COST_LIMIT = 60
+EXACT_PATH_SHORTLIST = 4
+EXACT_ROUTE_LIMIT = 48
+EXACT_SEARCH_ROUNDS = 8
 
 
 @dataclass(slots=True)
@@ -216,7 +219,7 @@ class Planner:
         teleport_used.update(planned_teleports.values())
         destroyed_pod_ids = set()
         budget = self.exact_direct_teleports(actions, planned_pods, planned_teleports, tubes, teleport_used, budget)
-        for _ in range(32):
+        for _ in range(EXACT_SEARCH_ROUNDS):
             candidate = self.best_exact_path_candidate(planned_pods, planned_teleports, tubes, degrees, edge_schedule, budget, pod_ids)
             if candidate is None:
                 old_budget = budget
@@ -290,7 +293,9 @@ class Planner:
         if len(pod_ids) >= MAX_PODS or budget < POD_COST:
             return None
         score = self.actual_score_from_pods
+        fast_old_score = self.score_from_pods(planned_pods, planned_teleports)[0]
         old_score = score(planned_pods, planned_teleports, tubes)[0]
+        shortlist = []
         best = None
         for path in self.exact_path_options(tubes):
             new_tubes = unique_new_tubes(path, tubes)
@@ -300,6 +305,12 @@ class Planner:
             cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in new_tubes) + POD_COST + upgrade_cost
             if cost > budget:
                 continue
+            new_pods = {pod_id: pod_path[:] for pod_id, pod_path in planned_pods.items()}
+            new_pods[MAX_PODS + 1] = path[:]
+            fast_gain = self.score_from_pods(new_pods, planned_teleports)[0] - fast_old_score
+            if fast_gain > 0:
+                shortlist.append((fast_gain, -cost, path, new_tubes, upgrades, cost))
+        for _, _, path, new_tubes, upgrades, cost in sorted(shortlist, reverse=True)[:EXACT_PATH_SHORTLIST]:
             new_pods = {pod_id: pod_path[:] for pod_id, pod_path in planned_pods.items()}
             new_pods[MAX_PODS + 1] = path[:]
             new_tube_state = dict(tubes)
@@ -330,27 +341,32 @@ class Planner:
                     if tuple(path) not in seen:
                         paths.append(path)
                         seen.add(tuple(path))
-            for astronaut_type in pad.demand:
-                for module in sorted(modules_by_type[astronaut_type], key=lambda item: tube_cost(pad, item))[:3]:
-                    path = [pad.id, module.id, pad.id]
+                    path = loop_path([pad.id, *ordered])
                     if tuple(path) not in seen:
                         paths.append(path)
                         seen.add(tuple(path))
-                    for via in sorted((building for building in self.buildings.values() if building.id not in (pad.id, module.id)),
-                                      key=lambda item: tube_cost(pad, item) + tube_cost(item, module))[:5]:
-                        path = [pad.id, via.id, module.id, via.id, pad.id]
-                        if tuple(path) not in seen:
-                            paths.append(path)
-                            seen.add(tuple(path))
         building_ids = sorted(self.buildings)
         cheap_pairs = sorted((tube_cost(self.buildings[a], self.buildings[b]), route_key(a, b)) for index, a in enumerate(building_ids)
-                             for b in building_ids[index + 1:] if route_key(a, b) not in tubes)[:40]
+                             for b in building_ids[index + 1:] if route_key(a, b) not in tubes)[:24]
         for a, b in list(tubes) + [pair for _, pair in cheap_pairs]:
             for path in ([a, b, a], [b, a, b]):
                 if tuple(path) not in seen:
                     paths.append(path)
                     seen.add(tuple(path))
-        return paths[:180]
+        for pad in self.get_landing_pads():
+            for astronaut_type in pad.demand:
+                for module in sorted(modules_by_type[astronaut_type], key=lambda item: tube_cost(pad, item))[:2]:
+                    path = [pad.id, module.id, pad.id]
+                    if tuple(path) not in seen:
+                        paths.append(path)
+                        seen.add(tuple(path))
+                    for via in sorted((building for building in self.buildings.values() if building.id not in (pad.id, module.id)),
+                                      key=lambda item: tube_cost(pad, item) + tube_cost(item, module))[:2]:
+                        path = [pad.id, via.id, module.id, via.id, pad.id]
+                        if tuple(path) not in seen:
+                            paths.append(path)
+                            seen.add(tuple(path))
+        return paths[:EXACT_ROUTE_LIMIT]
 
     def apply_exact_path(self, candidate: Candidate, actions: list[str], planned_pods: dict[int, list[int]], tubes: dict[tuple[int, int], int],
                          degrees: Counter[int], edge_schedule: Counter[tuple[tuple[int, int], int]], pod_ids: set[int], budget: int) -> int:

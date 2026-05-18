@@ -145,13 +145,12 @@ class Planner:
         min_efficiency = self.min_efficiency()
         print(self.score_debug_text("before", planned_pods, planned_teleports, tubes), file=sys.stderr)
 
-        exact_budget = self.exact_plan(actions, planned_pods, planned_teleports, tubes, budget, pod_ids)
-        if exact_budget is not None:
-            budget = exact_budget
-            after_score = self.score_debug_text("after", planned_pods, planned_teleports, tubes)
-            self.score_so_far += self.actual_score_from_pods(planned_pods, planned_teleports, tubes)[0]
-            print(f"resources_after {budget} spent {self.resources - budget} {after_score}", file=sys.stderr)
-            return actions
+        exact_actions = []
+        exact_pods = {pod_id: path[:] for pod_id, path in planned_pods.items()}
+        exact_teleports = dict(planned_teleports)
+        exact_tubes = dict(tubes)
+        exact_budget = self.exact_plan(exact_actions, exact_pods, exact_teleports, exact_tubes, budget, set(pod_ids))
+        exact_score = -1 if exact_budget is None else self.actual_score_from_pods(exact_pods, exact_teleports, exact_tubes)[0]
 
         for pad, astronaut_type, count in unserved_demands:
             if (pad.id, astronaut_type) in serviced:
@@ -183,8 +182,12 @@ class Planner:
             if candidate.teleport is not None:
                 teleported_pairs.add((candidate.pad_id, candidate.astronaut_type))
 
+        chosen_score = self.actual_score_from_pods(planned_pods, planned_teleports, tubes)[0]
+        if (exact_score, exact_budget or 0) > (chosen_score, budget):
+            actions, planned_pods, planned_teleports = exact_actions, exact_pods, exact_teleports
+            tubes, budget, chosen_score = exact_tubes, exact_budget, exact_score
         after_score = self.score_debug_text("after", planned_pods, planned_teleports, tubes)
-        self.score_so_far += self.actual_score_from_pods(planned_pods, planned_teleports, tubes)[0]
+        self.score_so_far += chosen_score
         print(f"resources_after {budget} spent {self.resources - budget} {after_score}", file=sys.stderr)
         return actions
 

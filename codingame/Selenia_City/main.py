@@ -20,6 +20,7 @@ DEBUG_PAIR_COST_LIMIT = 60
 EXACT_PATH_SHORTLIST = 4
 EXACT_ROUTE_LIMIT = 48
 EXACT_SEARCH_ROUNDS = 8
+EXACT_BULK_PODS = 5
 
 
 @dataclass(slots=True)
@@ -301,18 +302,24 @@ class Planner:
             new_tubes = unique_new_tubes(path, tubes)
             if not self.can_add_tubes(new_tubes, degrees, tubes):
                 continue
-            upgrade_cost, upgrades = self.path_upgrade_plan(path, new_tubes, tubes, edge_schedule)
-            cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in new_tubes) + POD_COST + upgrade_cost
-            if cost > budget:
-                continue
+            path_groups = [[path]]
+            if len(path) == 3 and path[0] == path[2]:
+                path_groups += [[path] * count for count in (3, EXACT_BULK_PODS) if len(pod_ids) + count <= MAX_PODS]
+            for paths in path_groups:
+                upgrade_cost, upgrades = self.bundle_upgrade_plan(paths, new_tubes, tubes, edge_schedule)
+                cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in new_tubes) + POD_COST * len(paths) + upgrade_cost
+                if cost > budget:
+                    continue
+                new_pods = {pod_id: pod_path[:] for pod_id, pod_path in planned_pods.items()}
+                for fake_id, added_path in enumerate(paths, MAX_PODS + 1):
+                    new_pods[fake_id] = added_path[:]
+                fast_gain = self.score_from_pods(new_pods, planned_teleports)[0] - fast_old_score
+                if fast_gain > 0:
+                    shortlist.append((fast_gain, -cost, paths, new_tubes, upgrades, cost))
+        for _, _, paths, new_tubes, upgrades, cost in sorted(shortlist, reverse=True)[:EXACT_PATH_SHORTLIST]:
             new_pods = {pod_id: pod_path[:] for pod_id, pod_path in planned_pods.items()}
-            new_pods[MAX_PODS + 1] = path[:]
-            fast_gain = self.score_from_pods(new_pods, planned_teleports)[0] - fast_old_score
-            if fast_gain > 0:
-                shortlist.append((fast_gain, -cost, path, new_tubes, upgrades, cost))
-        for _, _, path, new_tubes, upgrades, cost in sorted(shortlist, reverse=True)[:EXACT_PATH_SHORTLIST]:
-            new_pods = {pod_id: pod_path[:] for pod_id, pod_path in planned_pods.items()}
-            new_pods[MAX_PODS + 1] = path[:]
+            for fake_id, path in enumerate(paths, MAX_PODS + 1):
+                new_pods[fake_id] = path[:]
             new_tube_state = dict(tubes)
             for a, b in new_tubes:
                 new_tube_state[route_key(a, b)] = 1
@@ -321,10 +328,30 @@ class Planner:
             gain = score(new_pods, planned_teleports, new_tube_state)[0] - old_score
             if gain <= 0:
                 continue
-            candidate = Candidate(gain, cost, 0, 0, 0, path, new_tubes, upgrades)
+            candidate = Candidate(gain, cost, 0, 0, 0, paths[0], new_tubes, upgrades, extra_paths=[path[:] for path in paths[1:]])
             if best is None or (candidate.score, -candidate.cost) > (best.score, -best.cost):
                 best = candidate
         return best
+
+    def bundle_upgrade_plan(self, paths: list[list[int]], new_tubes: list[tuple[int, int]], tubes: dict[tuple[int, int], int],
+                            edge_schedule: Counter[tuple[tuple[int, int], int]]) -> tuple[int, list[tuple[int, int]]]:
+        """Gets tube upgrades required for adding several pod paths at once."""
+        new_keys = {route_key(a, b) for a, b in new_tubes}
+        added_schedule = Counter()
+        required_capacities = Counter()
+        for path in paths:
+            for edge, day in path_edge_days(path):
+                added_schedule[(edge, day)] += 1
+                required_capacities[edge] = max(required_capacities[edge], edge_schedule[(edge, day)] + added_schedule[(edge, day)])
+        cost = 0
+        upgrades = []
+        for edge, required_capacity in required_capacities.items():
+            capacity = 1 if edge in new_keys else tubes[edge]
+            for new_capacity in range(capacity + 1, required_capacity + 1):
+                a, b = edge
+                cost += tube_cost(self.buildings[a], self.buildings[b]) * new_capacity
+                upgrades.append(edge)
+        return cost, upgrades
 
     def exact_path_options(self, tubes: dict[tuple[int, int], int]) -> list[list[int]]:
         """Lists bounded pod routes used by exact search."""
@@ -379,12 +406,13 @@ class Planner:
         for a, b in candidate.upgrades:
             actions.append(f"UPGRADE {a} {b}")
             tubes[route_key(a, b)] += 1
-        pod_id = next_pod_id(pod_ids)
-        pod_ids.add(pod_id)
-        planned_pods[pod_id] = candidate.path[:]
-        actions.append("POD {} {}".format(pod_id, " ".join(map(str, candidate.path))))
-        for edge, day in path_edge_days(candidate.path):
-            edge_schedule[(edge, day)] += 1
+        for path in [candidate.path] + candidate.extra_paths:
+            pod_id = next_pod_id(pod_ids)
+            pod_ids.add(pod_id)
+            planned_pods[pod_id] = path[:]
+            actions.append("POD {} {}".format(pod_id, " ".join(map(str, path))))
+            for edge, day in path_edge_days(path):
+                edge_schedule[(edge, day)] += 1
         return budget - candidate.cost
 
     def destroy_obsolete_pods(self, actions: list[str], service_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],

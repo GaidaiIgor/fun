@@ -13,13 +13,23 @@ from Selenia_City.main import Building, Planner, Pod, point_on_segment, route_ke
 
 TURN_STATE = \
 """
-resources 5000
+month 6
+resources 5886
 module 0 2 80 75
 landing 1 80 15 2:50
 landing 2 110 45 1:50
 module 3 1 50 45
+landing 4 59 66 3:50
+module 5 3 101 24
+tube 0 1 1
+tube 0 2 1
+tube 0 3 1
+pod 1 1-0-1
+pod 2 2-0-2
+pod 3 3-0-3
 """
-OUTPUT_COMMAND = "TUBE 1 0;POD 1 1 0 1;TUBE 2 0;TUBE 0 3;POD 2 2 0 2;POD 3 3 0 3"
+OUTPUT_COMMAND = "TUBE 0 4; TUBE 0 5; POD 4 4 0 4; POD 5 5 0 5; UPGRADE 0 1; POD 6 1 0 1"
+# OUTPUT_COMMAND = "DESTROY 1; DESTROY 6; TELEPORT 4 5; TELEPORT 2 3; TELEPORT 1 0; TUBE 1 8; UPGRADE 1 8; UPGRADE 1 8; UPGRADE 1 8; UPGRADE 1 8; UPGRADE 1 8; UPGRADE 1 8; UPGRADE 1 8; POD 7 8 1 8; POD 8 8 1 8; POD 9 8 1 8; POD 10 8 1 8; POD 11 8 1 8; POD 12 8 1 8; POD 13 8 1 8; POD 14 8 1 8; TUBE 5 8; UPGRADE 5 8; UPGRADE 5 8; POD 15 8 5 8; POD 16 8 5 8; POD 17 8 5 8; TUBE 1 7; UPGRADE 1 7; UPGRADE 1 7; POD 18 7 1 7; POD 19 7 1 7; POD 20 7 1 7; UPGRADE 0 3; UPGRADE 0 3; POD 21 3 0 3; POD 22 3 0 3"
 
 
 def print_score_after_command():

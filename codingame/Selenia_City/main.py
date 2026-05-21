@@ -4,44 +4,33 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+
 import numpy as np
 from numpy.typing import NDArray
 
 
+@dataclass(slots=True)
 class GameState:
     """Stores the complete current game snapshot while reading monthly input.
     Buildings keeps every known building. Resources, magnetic tubes, pods, and teleports are refreshed each month."""
-    month: int
-    resources: int
-    buildings: dict[int, Building]
-    tubes: list[Tube]
-    pods: dict[int, list[int]]
+    month: int = -1
+    resources: int = 0
+    buildings: dict[int, Building] = field(default_factory=dict)
+    tubes: list[Tube] = field(default_factory=list)
+    pods: dict[int, list[int]] = field(default_factory=dict)
 
-    def __init__(self):
-        """Initializes empty city memory before the first month is parsed."""
-        self.month = 0
-        self.resources = 0
-        self.buildings = {}
-        self.tubes = []
-        self.pods = {}
-
-
-    def play(self):
-        """Runs the interactive game loop until the input stream ends."""
-        while True:
-            self.read_month()
-            print(self.choose_actions())
-            self.month += 1
-
-    def read_month(self):
-        """Reads one complete monthly input snapshot into the game state."""
-        self.resources = int(input())
-        for building in self.buildings.values():
-            building.tubes.clear()
-            building.teleport = (-1, -1)
-        self.tubes = self.read_tubes()
-        self.pods = self.read_pods()
-        self.read_buildings()
+    @staticmethod
+    def read_month(previous: GameState) -> GameState:
+        """Reads one complete monthly input snapshot into a fresh game state.
+        Returns the parsed state for the next month."""
+        state = GameState()
+        state.month = previous.month + 1
+        state.buildings = {id: building.copy_building_only() for id, building in previous.buildings.items()}
+        state.resources = int(input())
+        state.tubes = state.read_tubes()
+        state.pods = state.read_pods()
+        state.read_buildings()
+        return state
 
     def read_tubes(self) -> list[Tube]:
         """Reads current route input and returns only magnetic tubes."""
@@ -64,28 +53,18 @@ class GameState:
         pods = {}
         for _ in range(int(input())):
             values = list(map(int, input().split()))
-            pods[values[0]] = values[2:2 + values[1]]
+            pods[values[0]] = values[2:]
         return pods
 
     def read_buildings(self):
         """Reads buildings constructed for the current month."""
         for _ in range(int(input())):
-            building = self.parse_building(list(map(int, input().split())))
+            values = list(map(int, input().split()))
+            astronaut_types = {}
+            if values[0] == 0:
+                astronaut_types = dict(Counter(values[5:]))
+            building = Building(values[1], values[0], np.array((values[2], values[3]), dtype=int), astronaut_types=astronaut_types)
             self.buildings[building.id] = building
-
-    def parse_building(self, values: list[int]) -> Building:
-        """Builds a typed building object from one input line.
-        Values are integer tokens from a landing pad or module description. Returns the parsed building description."""
-        if values[0] == 0:
-            astronaut_types = dict(Counter(values[5:5 + values[4]]))
-            return Building(values[1], 0, np.array((values[2], values[3]), dtype=int), astronaut_types=astronaut_types)
-        return Building(values[1], values[0], np.array((values[2], values[3]), dtype=int))
-
-    def choose_actions(self) -> str:
-        """Chooses the action line for the current month.
-        Returns a valid action string for CodinGame."""
-        return "WAIT"
-
 
 @dataclass(slots=True)
 class Building:
@@ -99,6 +78,10 @@ class Building:
     teleport: tuple[int, int] = (-1, -1)
     astronaut_types: dict[int, int] = field(default_factory=dict)
 
+    def copy_building_only(self) -> Building:
+        """Copies persistent building fields without current-month routes."""
+        return Building(self.id, self.kind, self.coords, astronaut_types=self.astronaut_types)
+
 
 @dataclass(slots=True)
 class Tube:
@@ -108,5 +91,19 @@ class Tube:
     capacity: int
 
 
+def play():
+    """Runs the interactive game loop."""
+    state = GameState()
+    while True:
+        state = GameState.read_month(state)
+        print(choose_action(state))
+
+
+def choose_action(state: GameState) -> str:
+    """Chooses the action line for the current month.
+    Returns a valid action string for CodinGame."""
+    return "WAIT"
+
+
 if __name__ == "__main__":
-    GameState().play()
+    play()

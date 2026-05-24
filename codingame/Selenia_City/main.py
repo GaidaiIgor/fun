@@ -68,20 +68,24 @@ class GameState:
             building = Building(values[1], values[0], np.array((values[2], values[3]), dtype=int), astronaut_types=astronaut_types)
             self.buildings[building.id] = building
 
-    def calculate_score_gain(self) -> int:
-        """Calculates the score earned by self before the current month ends.
-        Returns the total score gained from astronauts who reach matching modules."""
+    def simulate_month(self) -> SimulationSummary:
+        """Simulates astronaut movement before the current month ends.
+        Returns a SimulationSummary containing score and per-building wait_times."""
         distance_matrix = self.all_distances()
         terminals = self.init_groups(distance_matrix)
-        score = 0
+        summary = SimulationSummary()
         module_load = {}
         pods = {pod_id: Pod(pod_id, path) for pod_id, path in self.pod_routes.items()}
         for day in range(MONTH_DAYS):
             self.process_teleport_phase(terminals, distance_matrix)
-            score += self.settle_arrivals(day, module_load, terminals, queue="departing")
+            summary.score += self.settle_arrivals(day, module_load, terminals, queue="departing")
             self.process_tube_phase(terminals, pods, distance_matrix)
-            score += self.settle_arrivals(day + 1, module_load, terminals, queue="arriving")
-        return score
+            for terminal in terminals.values():
+                wait_time = sum(group.size for group in terminal.departing.groups)
+                if wait_time > 0:
+                    summary.wait_times[terminal.building_id] = summary.wait_times.get(terminal.building_id, 0) + wait_time
+            summary.score += self.settle_arrivals(day + 1, module_load, terminals, queue="arriving")
+        return summary
 
     def init_groups(self, distance_matrix: NDArray[int]) -> dict[int, Terminal]:
         """Initializes monthly astronaut groups at landing pad terminals.
@@ -180,7 +184,7 @@ class GameState:
     def settle_arrivals(day: int, module_load: dict[int, int], terminals: dict[int, Terminal], queue: str) -> int:
         """Scores groups already standing in matching modules.
         day determines the speed score. module_load stores arrivals by module id. terminals provides queues to inspect.
-        queue_name selects whether departing or arriving queues are checked.
+        queue selects whether departing or arriving queues are checked.
         Returns the score gained from groups settled by this call."""
         score_gain = 0
         for terminal in terminals.values():
@@ -291,6 +295,14 @@ class SubTerminal:
         group is the astronaut group that should wait in this subterminal."""
         group.sub_terminal = self
         self.groups.append(group)
+
+
+@dataclass(slots=True)
+class SimulationSummary:
+    """Stores the result of one monthly movement simulation.
+    score is the total score earned during the month. wait_times maps building id to the total person-days spent waiting there."""
+    score: int = 0
+    wait_times: dict[int, int] = field(default_factory=dict)
 
 
 def play():

@@ -1,4 +1,4 @@
-"""Builds a heuristic transport network for Selenia City."""
+"""Plans transport."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ EXACT_PATH_SHORTLIST = 4
 EXACT_ROUTE_LIMIT = 48
 EXACT_SEARCH_ROUNDS = 8
 EXACT_BULK_PODS = 5
+OVERRIDE_MONTH = -1
+OVERRIDE_COMMAND = ""
 
 
 @dataclass(slots=True)
@@ -125,6 +127,8 @@ class Planner:
 
     def choose_actions(self) -> list[str]:
         """Chooses action fragments for the current month."""
+        if OVERRIDE_MONTH == self.month + 1:
+            return [action.strip() for action in OVERRIDE_COMMAND.split(";") if action.strip() and action.strip() != "WAIT"]
         actions = []
         serviced = self.get_serviced_pairs()
         service_counts = self.get_service_counts()

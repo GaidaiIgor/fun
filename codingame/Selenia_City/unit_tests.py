@@ -47,6 +47,27 @@ pod 1 0-1-0-1-0-1-0-1-0-1-2-1-2-1-2
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
+    def test_loaded_shared_module_should_not_receive_balanced_extra_load(self):
+        """Verifies route cadence accounts for load already assigned to a shared module."""
+        state = """
+month 1
+resources 5000
+module 0 1 20 15
+module 1 2 140 15
+landing 2 40 45 1:50
+landing 3 80 45 1:25,2:25
+landing 4 120 45 2:50
+module 5 2 20 75
+module 6 1 140 75
+"""
+        existing_move = "TUBE 2 0;POD 1 2 0 2;TUBE 4 1;POD 2 4 1 4;TUBE 3 5;TUBE 3 2;POD 3 3 5 3 2 3"
+        benchmark_move = "TUBE 2 0; POD 1 2 0 2; TUBE 4 1; POD 2 4 1 4; TUBE 3 5; TUBE 3 2; POD 3 3 5 3 5 3 5 3 2 3 2 3 2"
+        self.assertEqual(score_command(state, existing_move), 10080)
+        benchmark_score = 10120
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
 
 def choose_planner_command(state: str) -> str:
     """Returns the planner command for a compact turn-state string."""

@@ -111,7 +111,19 @@ def choose_planner_command(state: str) -> str:
     planner = parse_turn_state(state)
     with redirect_stderr(StringIO()):
         actions = planner.choose_actions()
-    return ";".join(actions) or "WAIT"
+    command = ";".join(actions) or "WAIT"
+    assert_looped_planner_pods(command)
+    return command
+
+
+def assert_looped_planner_pods(command: str):
+    """Checks every planner-created pod route ends at its starting node."""
+    for action in command.split(";"):
+        parts = action.strip().split()
+        if parts and parts[0] == "POD":
+            path = [int(item) for item in parts[2:]]
+            if path[0] != path[-1]:
+                raise AssertionError(f"unlooped planner pod route: {action}")
 
 
 def score_command(state: str, command: str) -> int:

@@ -456,6 +456,7 @@ class Planner:
             actions.append(f"UPGRADE {a} {b}")
             tubes[route_key(a, b)] += 1
         for index, path in enumerate([candidate.path] + candidate.extra_paths):
+            path = close_pod_path(path)
             pod_id = candidate.reroute_pod_id if index == 0 and candidate.reroute_pod_id is not None else next_pod_id(pod_ids)
             pod_ids.add(pod_id)
             planned_pods[pod_id] = path[:]
@@ -1586,6 +1587,7 @@ class Planner:
             teleport_used.add(b)
         created_paths = [candidate.path] + candidate.extra_paths if candidate.path else candidate.extra_paths
         for index, path in enumerate(created_paths):
+            path = close_pod_path(path)
             pod_id = candidate.reroute_pod_id if index == 0 and candidate.reroute_pod_id is not None else next_pod_id(pod_ids)
             pod_ids.add(pod_id)
             planned_pods[pod_id] = path[:]
@@ -1693,6 +1695,11 @@ def orientation(a: Building, b: Building, c: Building) -> int:
 def loop_path(path: list[int]) -> list[int]:
     """Returns a round-trip loop path from a one-way building path."""
     return path + path[-2::-1]
+
+
+def close_pod_path(path: list[int]) -> list[int]:
+    """Closes pod path."""
+    return path[:] if not path or path[0] == path[-1] else path + path[-2::-1]
 
 
 def path_edge_days(path: list[int]) -> list[tuple[tuple[int, int], int]]:

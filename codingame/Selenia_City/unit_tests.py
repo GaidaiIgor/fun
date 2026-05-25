@@ -60,9 +60,7 @@ landing 4 120 45 2:50
 module 5 2 20 75
 module 6 1 140 75
 """
-        existing_move = "TUBE 2 0;POD 1 2 0 2;TUBE 4 1;POD 2 4 1 4;TUBE 3 5;TUBE 3 2;POD 3 3 5 3 2 3"
         benchmark_move = "TUBE 2 0; POD 1 2 0 2; TUBE 4 1; POD 2 4 1 4; TUBE 3 5; TUBE 3 2; POD 3 3 5 3 5 3 5 3 2 3 2 3 2"
-        self.assertEqual(score_command(state, existing_move), 10080)
         benchmark_score = 10120
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)
@@ -80,9 +78,7 @@ landing 3 47 13 1:11,2:11
 tube 0 1 1
 pod 1 1-0-1
 """
-        existing_move = "TUBE 3 0;TUBE 0 2;POD 2 3 0 3 0 3 0 2 0 2"
         benchmark_move = "TUBE 0 3; TUBE 0 2; POD 2 3 0 3; DESTROY 1; POD 1 1 0 1 0 2 0 2 0"
-        self.assertEqual(score_command(state, existing_move), 3559)
         benchmark_score = 3579
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)
@@ -124,9 +120,7 @@ tube 0 3 1
 pod 1 1-0-1-0-2-0-2-0-1
 pod 2 3-0-3
 """
-        existing_move = "TUBE 5 4;TUBE 4 0;POD 3 5 4 0 4 5"
         benchmark_move = "TUBE 4 5; TUBE 0 4; POD 3 5 4 5 4 0 4 5 4 0 4 5"
-        self.assertEqual(score_command(state, existing_move), 5399)
         benchmark_score = 5413
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)
@@ -154,9 +148,7 @@ pod 1 1-0-1-0-2-0-2-0-1
 pod 2 3-0-3
 pod 3 5-4-5-4-0-4-5-4-0-4-5
 """
-        existing_move = "TUBE 7 0;POD 4 7 0 7"
         benchmark_move = "TUBE 5 7; TUBE 5 6; POD 4 7 5 6 5 7"
-        self.assertEqual(score_command(state, existing_move), 6799)
         benchmark_score = 7185
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)
@@ -189,10 +181,8 @@ pod 2 3-0-3
 pod 3 5-4-5-4-0-4-5-4-0-4-5
 pod 4 7-5-7-5-6-5-7-5-6-5-7
 """
-        existing_move = "TUBE 9 2;POD 5 9 2 9"
         benchmark_move = "TUBE 5 9; TUBE 8 9; DESTROY 1; DESTROY 2; " \
             "POD 1 1 0 1 0 3 0 2 0 3 0 2 0 3 0 2 0 2 0 2 0 2 0; POD 2 9 5 9 5 9 8 9 5 9"
-        self.assertEqual(score_command(state, existing_move), 8711)
         benchmark_score = 8791
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)

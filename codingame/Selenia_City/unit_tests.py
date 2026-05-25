@@ -68,6 +68,26 @@ module 6 1 140 75
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
+    def test_reroutes_idle_existing_pod_to_downstream_transfer(self):
+        """Verifies an existing pod can be rerouted to share downstream transfer work."""
+        state = """
+month 2
+resources 2502
+module 0 1 106 9
+landing 1 104 37 1:20
+module 2 2 148 10
+landing 3 47 13 1:11,2:11
+tube 0 1 1
+pod 1 1-0-1
+"""
+        existing_move = "TUBE 3 0;TUBE 0 2;POD 2 3 0 3 0 3 0 2 0 2"
+        benchmark_move = "TUBE 0 3; TUBE 0 2; POD 2 3 0 3; DESTROY 1; POD 1 1 0 1 0 2 0 2 0"
+        self.assertEqual(score_command(state, existing_move), 3559)
+        benchmark_score = 3579
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
 
 def choose_planner_command(state: str) -> str:
     """Returns the planner command for a compact turn-state string."""

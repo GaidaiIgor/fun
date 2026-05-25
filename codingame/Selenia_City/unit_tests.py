@@ -88,6 +88,25 @@ pod 1 1-0-1
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
+    def test_loop_closure_uses_shortest_return_path(self):
+        """Verifies loop closure does not repeat useful work after the last delivery."""
+        state = """
+month 2
+resources 2502
+module 0 1 106 9
+landing 1 104 37 1:20
+module 2 2 148 10
+landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
+tube 0 1 1
+pod 1 1-0-1
+"""
+        benchmark_move = "DESTROY 1;TUBE 0 2;TUBE 3 0;POD 1 1 0 1 0 2 0 2 0 1;POD 2 3 0 3"
+        benchmark_score = score_command(state, benchmark_move)
+        planner_move = choose_planner_command(state)
+        self.assertIn("POD 1 1 0 1 0 2 0 2 0 1", planner_move)
+        self.assertNotIn("POD 1 1 0 1 0 2 0 2 0 2 0 2 0 1 0 1", planner_move)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
     def test_same_pad_boarding_uses_input_passenger_order(self):
         """Verifies same-pad passengers board by input order instead of type order."""
         state = """

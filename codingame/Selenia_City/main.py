@@ -70,7 +70,7 @@ class GameState:
 
     def simulate_month(self) -> SimulationSummary:
         """Simulates astronaut movement before the current month ends.
-        Returns a SimulationSummary containing score and per-building wait_times."""
+        Returns a SimulationSummary containing score and wait_times split by building id and astronaut type."""
         distance_matrix = self.all_distances()
         terminals = self.init_groups(distance_matrix)
         summary = SimulationSummary()
@@ -81,9 +81,10 @@ class GameState:
             summary.score += self.settle_arrivals(day, module_load, terminals, queue="departing")
             self.process_tube_phase(terminals, pods, distance_matrix)
             for terminal in terminals.values():
-                wait_time = sum(group.size for group in terminal.departing.groups)
-                if wait_time > 0:
-                    summary.wait_times[terminal.building_id] = summary.wait_times.get(terminal.building_id, 0) + wait_time
+                if terminal.departing.groups:
+                    wait_times = summary.wait_times.setdefault(terminal.building_id, {})
+                    for group in terminal.departing.groups:
+                        wait_times[group.kind] = wait_times.get(group.kind, 0) + group.size
             summary.score += self.settle_arrivals(day + 1, module_load, terminals, queue="arriving")
         return summary
 
@@ -96,7 +97,7 @@ class GameState:
                 for astronaut_type, count in building.astronaut_types.items():
                     target_ids = [target.id for target in self.buildings.values() if target.kind == astronaut_type]
                     sub_terminal = terminals[building.id].departing
-                    sub_terminal.add_group(AstronautGroup.make_group(sub_terminal, target_ids, count, distance_matrix))
+                    sub_terminal.add_group(AstronautGroup.make_group(sub_terminal, astronaut_type, target_ids, count, distance_matrix))
         return terminals
 
     def process_teleport_phase(self, terminals: dict[int, Terminal], distance_matrix: NDArray[int]):
@@ -109,7 +110,7 @@ class GameState:
             group_index = 0
             while group_index < len(terminal.departing.groups):
                 group = terminal.departing.groups[group_index]
-                new_group = AstronautGroup.make_group(terminals[outgoing_id].departing, group.target_building_ids, group.size, distance_matrix)
+                new_group = AstronautGroup.make_group(terminals[outgoing_id].departing, group.kind, group.target_building_ids, group.size, distance_matrix)
                 if new_group.target_distance <= group.target_distance:
                     self.transfer_group(terminal.departing, group_index, new_group)
                 else:
@@ -131,7 +132,8 @@ class GameState:
                 while pod.seats > 0 and group_index < len(departing):
                     group = departing[group_index]
                     boarding_count = min(group.size, pod.seats)
-                    new_group = AstronautGroup.make_group(terminals[destination_id].arriving, group.target_building_ids, boarding_count, distance_matrix)
+                    new_group = \
+                        AstronautGroup.make_group(terminals[destination_id].arriving, group.kind, group.target_building_ids, boarding_count, distance_matrix)
                     if new_group.target_distance < group.target_distance:
                         pod.seats -= boarding_count
                         if boarding_count == group.size:
@@ -250,22 +252,25 @@ class Pod:
 @dataclass(slots=True)
 class AstronautGroup:
     """Stores astronauts moving together during monthly movement simulation.
-    sub_terminal is the queue where the group stands. target_building_ids stores candidate destination modules.
-    target_distance stores the current distance to the nearest candidate target. size stores the number of astronauts in the group."""
+    sub_terminal is the queue where the group stands. kind stores the destination module kind.
+    target_building_ids stores candidate destination modules. target_distance stores the current distance to the nearest candidate target.
+    size stores the number of astronauts in the group."""
     sub_terminal: SubTerminal
+    kind: int
     target_building_ids: list[int]
     target_distance: int
     size: int
 
     @staticmethod
-    def make_group(sub_terminal: SubTerminal, target_building_ids: list[int], size: int, distance_matrix: NDArray[int]) -> AstronautGroup:
+    def make_group(sub_terminal: SubTerminal, astronaut_type: int, target_building_ids: list[int], size: int, distance_matrix: NDArray[int]) -> AstronautGroup:
         """Creates an astronaut group at sub_terminal with only nearest targets retained.
-        sub_terminal is the current queue. target_building_ids are candidate module ids. size is the number of astronauts.
-        distance_matrix gives shortest distances by building id. Returns the new AstronautGroup with target_distance set."""
+        sub_terminal is the current queue. astronaut_type is the destination module kind. target_building_ids are candidate module ids.
+        size is the number of astronauts. distance_matrix gives shortest distances by building id.
+        Returns the new AstronautGroup with target_distance set."""
         building_id = sub_terminal.parent.building_id
         target_distance = min(distance_matrix[building_id, target_id] for target_id in target_building_ids)
         targets = [target_id for target_id in target_building_ids if distance_matrix[building_id, target_id] == target_distance]
-        return AstronautGroup(sub_terminal, targets, target_distance, size)
+        return AstronautGroup(sub_terminal, astronaut_type, targets, target_distance, size)
 
 
 @dataclass(slots=True)
@@ -300,9 +305,9 @@ class SubTerminal:
 @dataclass(slots=True)
 class SimulationSummary:
     """Stores the result of one monthly movement simulation.
-    score is the total score earned during the month. wait_times maps building id to the total person-days spent waiting there."""
+    score is the total score earned during the month. wait_times maps building id to person-days by astronaut type."""
     score: int = 0
-    wait_times: dict[int, int] = field(default_factory=dict)
+    wait_times: dict[int, dict[int, int]] = field(default_factory=dict)
 
 
 def play():

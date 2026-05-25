@@ -18,12 +18,14 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 DEBUG_PAIR_COST_LIMIT = 60
 EXACT_PATH_SHORTLIST = 4
-EXACT_ROUTE_LIMIT = 48
+EXACT_ROUTE_LIMIT = 64
 EXACT_SEARCH_ROUNDS = 8
 EXACT_BULK_PODS = 5
 OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = ""
 Pair = tuple[int, int]
+Pods = dict[int, list[int]]
+Sched = Counter[tuple[Pair, int]]
 
 
 @dataclass(slots=True)
@@ -207,7 +209,7 @@ class Planner:
         print(f"resources_after {budget} spent {self.resources - budget} {after_score}", file=sys.stderr)
         return actions
 
-    def exact_plan(self, actions: list[str], planned_pods: dict[int, list[int]], planned_teleports: dict[int, int],
+    def exact_plan(self, actions: list[str], planned_pods: Pods, planned_teleports: dict[int, int],
                    tubes: dict[Pair, int], budget: int, pod_ids: set[int]) -> int:
         """Finds exact moves and remaining budget."""
         score = self.actual_score_from_pods
@@ -230,7 +232,7 @@ class Planner:
             budget = self.apply_exact_path(candidate, actions, planned_pods, tubes, degrees, edge_schedule, pod_ids, budget)
         return budget if actions and score(planned_pods, planned_teleports, tubes)[0] >= start_score else None
 
-    def exact_direct_teleports(self, actions: list[str], planned_pods: dict[int, list[int]], planned_teleports: dict[int, int],
+    def exact_direct_teleports(self, actions: list[str], planned_pods: Pods, planned_teleports: dict[int, int],
                                tubes: dict[Pair, int], teleport_used: set[int], budget: int) -> int:
         """Adds positive single-type teleports."""
         modules_by_type = self.get_modules_by_type()
@@ -260,8 +262,8 @@ class Planner:
             budget -= TELEPORT_COST
         return budget
 
-    def best_exact_path_candidate(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int], tubes: dict[Pair, int],
-                                  degrees: Counter[int], edge_schedule: Counter[tuple[Pair, int]], budget: int,
+    def best_exact_path_candidate(self, planned_pods: Pods, planned_teleports: dict[int, int], tubes: dict[Pair, int],
+                                  degrees: Counter[int], edge_schedule: Sched, budget: int,
                                   pod_ids: set[int]) -> Candidate:
         """Finds the best exact route bundle."""
         if len(pod_ids) >= MAX_PODS or budget < POD_COST:
@@ -367,7 +369,7 @@ class Planner:
         return best
 
     def bundle_upgrade_plan(self, paths: list[list[int]], new_tubes: list[Pair], tubes: dict[Pair, int],
-                            edge_schedule: Counter[tuple[Pair, int]]) -> tuple[int, list[Pair]]:
+                            edge_schedule: Sched) -> tuple[int, list[Pair]]:
         """Gets upgrades for added paths."""
         new_keys = {route_key(a, b) for a, b in new_tubes}
         added_schedule = Counter()
@@ -416,14 +418,6 @@ class Planner:
                         if tuple(path) not in seen:
                             paths.append(path)
                             seen.add(tuple(path))
-        building_ids = sorted(self.buildings)
-        cheap_pairs = sorted((tube_cost(self.buildings[a], self.buildings[b]), route_key(a, b)) for index, a in enumerate(building_ids)
-                             for b in building_ids[index + 1:] if route_key(a, b) not in tubes)[:24]
-        for a, b in list(tubes) + [pair for _, pair in cheap_pairs]:
-            for path in ([a, b, a], [b, a, b]):
-                if tuple(path) not in seen:
-                    paths.append(path)
-                    seen.add(tuple(path))
         for pad in self.get_landing_pads():
             for astronaut_type in pad.demand:
                 for module in sorted(modules_by_type[astronaut_type], key=lambda item: tube_cost(pad, item))[:2]:
@@ -433,14 +427,22 @@ class Planner:
                         seen.add(tuple(path))
                     for via in sorted((building for building in self.buildings.values() if building.id not in (pad.id, module.id)),
                                       key=lambda item: tube_cost(pad, item) + tube_cost(item, module))[:2]:
-                        path = [pad.id, via.id, module.id, via.id, pad.id]
-                        if tuple(path) not in seen:
-                            paths.append(path)
-                            seen.add(tuple(path))
+                        for path in two_hop_loop_paths(pad.id, via.id, module.id):
+                            if tuple(path) not in seen:
+                                paths.append(path)
+                                seen.add(tuple(path))
+        building_ids = sorted(self.buildings)
+        cheap_pairs = sorted((tube_cost(self.buildings[a], self.buildings[b]), route_key(a, b)) for index, a in enumerate(building_ids)
+                             for b in building_ids[index + 1:] if route_key(a, b) not in tubes)[:24]
+        for a, b in list(tubes) + [pair for _, pair in cheap_pairs]:
+            for path in ([a, b, a], [b, a, b]):
+                if tuple(path) not in seen:
+                    paths.append(path)
+                    seen.add(tuple(path))
         return paths[:EXACT_ROUTE_LIMIT]
 
-    def apply_exact_path(self, candidate: Candidate, actions: list[str], planned_pods: dict[int, list[int]], tubes: dict[Pair, int],
-                         degrees: Counter[int], edge_schedule: Counter[tuple[Pair, int]], pod_ids: set[int], budget: int) -> int:
+    def apply_exact_path(self, candidate: Candidate, actions: list[str], planned_pods: Pods, tubes: dict[Pair, int],
+                         degrees: Counter[int], edge_schedule: Sched, pod_ids: set[int], budget: int) -> int:
         """Applies an exact route bundle."""
         if candidate.reroute_pod_id is not None:
             actions.append(f"DESTROY {candidate.reroute_pod_id}")
@@ -466,8 +468,8 @@ class Planner:
                 edge_schedule[(edge, day)] += 1
         return budget - candidate.cost
 
-    def destroy_obsolete_pods(self, actions: list[str], service_counts: Counter[Pair], edge_schedule: Counter[tuple[Pair, int]],
-                              planned_pods: dict[int, list[int]], rerouted_pod_ids: set[int], retired_pod_ids: set[int], budget: int,
+    def destroy_obsolete_pods(self, actions: list[str], service_counts: Counter[Pair], edge_schedule: Sched,
+                              planned_pods: Pods, rerouted_pod_ids: set[int], retired_pod_ids: set[int], budget: int,
                               pod_ids: set[int]) -> int:
         """Destroys covered pods."""
         while obsolete_pod := self.obsolete_pod(service_counts, rerouted_pod_ids | retired_pod_ids):
@@ -547,7 +549,7 @@ class Planner:
             return None
         return str(tube_cost(self.buildings[a], self.buildings[b]))
 
-    def score_debug_text(self, label: str, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int],
+    def score_debug_text(self, label: str, planned_pods: Pods, planned_teleports: dict[int, int],
                          planned_tubes: dict[Pair, int] = None) -> str:
         """Formats score debug."""
         score, speed, balance, delivered, _, _ = self.actual_score_from_pods(planned_pods, planned_teleports, planned_tubes)
@@ -555,7 +557,7 @@ class Planner:
         return f"score_{label} month {score} total_so_far {self.score_so_far + score} speed {speed} diversity {balance} " \
             f"delivered {delivered}/{demand} stranded {demand - delivered}"
 
-    def actual_score_from_pods(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int] = None,
+    def actual_score_from_pods(self, planned_pods: Pods, planned_teleports: dict[int, int] = None,
                                planned_tubes: dict[Pair, int] = None) -> tuple:
         """Simulates monthly score."""
         teleports = self.teleports if planned_teleports is None else planned_teleports
@@ -648,7 +650,7 @@ class Planner:
             else:
                 del queues[building_id]
 
-    def daily_pod_moves(self, planned_pods: dict[int, list[int]], pod_positions: dict[int, int],
+    def daily_pod_moves(self, planned_pods: Pods, pod_positions: dict[int, int],
                         capacity_tubes: dict[Pair, int]) -> dict[int, Pair]:
         """Allocates daily pods."""
         requests = {}
@@ -672,7 +674,7 @@ class Planner:
         return moves
 
     def launch_pods(self, queues: dict[int, Counter[Pair]], moves: dict[int, Pair], distances: dict[int, dict[int, int]],
-                    pod_positions: dict[int, int], planned_pods: dict[int, list[int]]):
+                    pod_positions: dict[int, int], planned_pods: Pods):
         """Launches pods."""
         onboard = {}
         seats = Counter({pod_id: 10 for pod_id in moves})
@@ -698,7 +700,7 @@ class Planner:
             if pod_positions[pod_id] >= len(planned_pods[pod_id]) - 1 and planned_pods[pod_id][0] == planned_pods[pod_id][-1]:
                 pod_positions[pod_id] = 0
 
-    def score_from_pods(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int] = None) -> tuple:
+    def score_from_pods(self, planned_pods: Pods, planned_teleports: dict[int, int] = None) -> tuple:
         """Estimates monthly score."""
         service_paths = self.service_paths_from_adjacency(self.adjacency_from_paths(list(planned_pods.values()), planned_teleports))
         directed_schedule = self.directed_schedule_from_paths(list(planned_pods.values()))
@@ -824,11 +826,11 @@ class Planner:
                     queue.append(neighbor_id)
         return services
 
-    def get_pod_adjacency(self, skip_pod_id: int = None) -> dict[int, list[int]]:
+    def get_pod_adjacency(self, skip_pod_id: int = None) -> Pods:
         """Builds pod adjacency."""
         return self.adjacency_from_paths([pod.path for pod in self.pods.values() if pod.id != skip_pod_id])
 
-    def adjacency_from_paths(self, paths: list[list[int]], teleports: dict[int, int] = None) -> dict[int, list[int]]:
+    def adjacency_from_paths(self, paths: list[list[int]], teleports: dict[int, int] = None) -> Pods:
         """Builds path adjacency."""
         adjacency = {}
         for path in paths:
@@ -876,7 +878,7 @@ class Planner:
                     counts[(pod.path[0], pod.path[1])] += 1
         return counts
 
-    def get_edge_schedule(self) -> Counter[tuple[Pair, int]]:
+    def get_edge_schedule(self) -> Sched:
         """Counts edge schedule."""
         schedule = Counter()
         for pod in self.pods.values():
@@ -884,7 +886,7 @@ class Planner:
                 schedule[(edge, day)] += 1
         return schedule
 
-    def directed_schedule_from_paths(self, paths: list[list[int]]) -> Counter[tuple[Pair, int]]:
+    def directed_schedule_from_paths(self, paths: list[list[int]]) -> Sched:
         """Counts directed schedule."""
         schedule = Counter()
         for path in paths:
@@ -903,8 +905,8 @@ class Planner:
 
     def best_service_candidate(self, pad: Building, astronaut_type: int, count: int, modules_by_type: dict[int, list[Building]], module_load: Counter[int],
                                degrees: Counter[int], teleport_used: set[int], tubes: dict[Pair, int],
-                               edge_schedule: Counter[tuple[Pair, int]], service_counts: Counter[Pair],
-                               planned_pods: dict[int, list[int]], planned_teleports: dict[int, int], rerouted_pod_ids: set[int], budget: int,
+                               edge_schedule: Sched, service_counts: Counter[Pair],
+                               planned_pods: Pods, planned_teleports: dict[int, int], rerouted_pod_ids: set[int], budget: int,
                                pod_ids: set[int]) -> Candidate:
         """Finds service candidate."""
         best = None
@@ -953,8 +955,8 @@ class Planner:
         return sorted(modules, key=lambda module: (module_load[module.id] // 20, tube_cost(pad, module)))[:4]
 
     def multi_service_candidates(self, pad: Building, required_type: int, modules_by_type: dict[int, list[Building]], module_load: Counter[int],
-                                 degrees: Counter[int], tubes: dict[Pair, int], edge_schedule: Counter[tuple[Pair, int]],
-                                 service_counts: Counter[Pair], planned_pods: dict[int, list[int]],
+                                 degrees: Counter[int], tubes: dict[Pair, int], edge_schedule: Sched,
+                                 service_counts: Counter[Pair], planned_pods: Pods,
                                  planned_teleports: dict[int, int], budget: int, pod_ids: set[int]) -> list[Candidate]:
         """Builds multi-service pods."""
         if len(pod_ids) >= MAX_PODS:
@@ -1002,8 +1004,8 @@ class Planner:
         return candidates
 
     def transfer_service_candidates(self, pad: Building, required_type: int, degrees: Counter[int], tubes: dict[Pair, int],
-                                    edge_schedule: Counter[tuple[Pair, int]], service_counts: Counter[Pair],
-                                    planned_adjacency: dict[int, list[int]], planned_pods: dict[int, list[int]],
+                                    edge_schedule: Sched, service_counts: Counter[Pair],
+                                    planned_adjacency: Pods, planned_pods: Pods,
                                     planned_teleports: dict[int, int], budget: int, pod_ids: set[int]) -> list[Candidate]:
         """Builds transfer candidates."""
         if len(pod_ids) >= MAX_PODS:
@@ -1064,8 +1066,8 @@ class Planner:
 
     def service_candidates(self, pad: Building, module: Building, astronaut_type: int, count: int, current_load: int, module_load: Counter[int],
                            degrees: Counter[int], teleport_used: set[int], tubes: dict[Pair, int],
-                           edge_schedule: Counter[tuple[Pair, int]], service_counts: Counter[Pair],
-                           planned_pods: dict[int, list[int]], planned_teleports: dict[int, int], planned_adjacency: dict[int, list[int]],
+                           edge_schedule: Sched, service_counts: Counter[Pair],
+                           planned_pods: Pods, planned_teleports: dict[int, int], planned_adjacency: Pods,
                            rerouted_pod_ids: set[int], budget: int, pod_ids: set[int]) -> list[Candidate]:
         """Builds service routes."""
         candidates = []
@@ -1120,26 +1122,33 @@ class Planner:
                     continue
                 path = [pad.id, via.id, module.id]
                 two_hop_tubes = [edge for edge in zip(path, path[1:]) if route_key(edge[0], edge[1]) not in tubes]
-                candidate_path = loop_path(path)
                 if not self.can_add_tubes(two_hop_tubes, degrees, tubes):
                     continue
-                route_options.append((candidate_path, two_hop_tubes, 2, 4))
-                two_hop_options += 1
                 added_two_hop = False
-                if len(pod_ids) < MAX_PODS:
+                old_score = self.score_from_pods(planned_pods, planned_teleports)[0]
+                for candidate_path in two_hop_loop_paths(pad.id, via.id, module.id):
+                    entry_day = candidate_path.index(module.id)
+                    route_options.append((candidate_path, two_hop_tubes, entry_day, len(candidate_path) - 1))
+                    if len(pod_ids) >= MAX_PODS:
+                        continue
                     upgrade_cost, upgrades = self.path_upgrade_plan(candidate_path, two_hop_tubes, tubes, edge_schedule)
                     two_hop_cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in two_hop_tubes) + POD_COST + upgrade_cost
-                    if two_hop_cost <= budget:
-                        score, delivered, services = self.entry_service_bundle(pad, module.id, 2, 4, module_load, service_counts, planned_adjacency)
-                        candidate = Candidate(score, two_hop_cost, pad.id, module.id, astronaut_type, candidate_path, two_hop_tubes, upgrades,
-                                              delivered=delivered, services=services)
-                        candidates.append(candidate)
-                        added_two_hop = True
-                    segment_candidate = self.segment_shuttle_candidate(pad, module, astronaut_type, path, two_hop_tubes, tubes, edge_schedule,
-                                                                       planned_pods, planned_teleports, budget, pod_ids)
-                    if segment_candidate is not None:
-                        candidates.append(segment_candidate)
-                        added_two_hop = True
+                    if two_hop_cost > budget:
+                        continue
+                    score = self.score_added_path(planned_pods, planned_teleports, old_score, candidate_path)
+                    if score <= 0:
+                        continue
+                    _, delivered, services = self.entry_service_bundle(pad, module.id, entry_day, len(candidate_path) - 1, module_load, service_counts,
+                                                                       planned_adjacency)
+                    candidate = Candidate(score, two_hop_cost, pad.id, module.id, astronaut_type, candidate_path, two_hop_tubes, upgrades,
+                                          delivered=delivered, services=services)
+                    candidates.append(candidate)
+                    added_two_hop = True
+                segment_candidate = self.segment_shuttle_candidate(pad, module, astronaut_type, path, two_hop_tubes, tubes, edge_schedule,
+                                                                   planned_pods, planned_teleports, budget, pod_ids)
+                if segment_candidate is not None:
+                    candidates.append(segment_candidate)
+                    added_two_hop = True
                 if self.path_has_pod_coverage([pad.id, via.id], planned_pods):
                     transfer_path = [via.id, module.id, via.id]
                     transfer_tubes = [] if route_key(via.id, module.id) in tubes else [(via.id, module.id)]
@@ -1170,8 +1179,8 @@ class Planner:
         return candidates
 
     def segment_shuttle_candidate(self, pad: Building, module: Building, astronaut_type: int, path: list[int], new_tubes: list[Pair],
-                                  tubes: dict[Pair, int], edge_schedule: Counter[tuple[Pair, int]],
-                                  planned_pods: dict[int, list[int]], planned_teleports: dict[int, int], budget: int,
+                                  tubes: dict[Pair, int], edge_schedule: Sched,
+                                  planned_pods: Pods, planned_teleports: dict[int, int], budget: int,
                                   pod_ids: set[int]) -> Candidate:
         """Builds segment shuttles."""
         segment_options = [[[path[0], path[1], path[0]]]]
@@ -1213,7 +1222,7 @@ class Planner:
         return best
 
     def entry_service_bundle(self, pad: Building, entry_id: int, entry_day: int, period: int, module_load: Counter[int],
-                             service_counts: Counter[Pair], planned_adjacency: dict[int, list[int]]) \
+                             service_counts: Counter[Pair], planned_adjacency: Pods) \
             -> tuple[int, int, list[tuple[int, int, int, int]]]:
         """Estimates entry services."""
         score = 0
@@ -1229,7 +1238,7 @@ class Planner:
         return score, delivered_total, services
 
     def reachable_service_entries(self, pad: Building, entry_id: int, service_counts: Counter[Pair],
-                                  adjacency: dict[int, list[int]]) -> list[tuple[int, int, int]]:
+                                  adjacency: Pods) -> list[tuple[int, int, int]]:
         """Lists reachable entries."""
         entries = {}
         queue = deque([entry_id])
@@ -1246,7 +1255,7 @@ class Planner:
                 queue.append(neighbor_id)
         return [(astronaut_type, module_id, distance) for astronaut_type, (module_id, distance) in entries.items()]
 
-    def path_has_pod_coverage(self, path: list[int], planned_pods: dict[int, list[int]]) -> bool:
+    def path_has_pod_coverage(self, path: list[int], planned_pods: Pods) -> bool:
         """Checks directed pod coverage."""
         edges = set()
         for planned_path in planned_pods.values():
@@ -1254,7 +1263,7 @@ class Planner:
         return all((a, b) in edges for a, b in zip(path, path[1:]))
 
     def reroute_candidates(self, pad: Building, module: Building, astronaut_type: int, count: int, current_load: int, tubes: dict[Pair, int],
-                           edge_schedule: Counter[tuple[Pair, int]], rerouted_pod_ids: set[int],
+                           edge_schedule: Sched, rerouted_pod_ids: set[int],
                            route_options: list[tuple[list[int], list[Pair], int, int]], budget: int) -> list[Candidate]:
         """Builds reroute candidates."""
         candidates = []
@@ -1289,7 +1298,7 @@ class Planner:
                 loss += monthly_score(delivered, distance, 0) * self.months_left()
         return loss
 
-    def schedule_without_pod(self, edge_schedule: Counter[tuple[Pair, int]], pod: Pod) -> Counter[tuple[Pair, int]]:
+    def schedule_without_pod(self, edge_schedule: Sched, pod: Pod) -> Sched:
         """Removes pod schedule."""
         schedule = edge_schedule.copy()
         for edge, day in path_edge_days(pod.path):
@@ -1320,7 +1329,7 @@ class Planner:
         return None
 
     def path_upgrade_plan(self, path: list[int], new_tubes: list[Pair], tubes: dict[Pair, int],
-                          edge_schedule: Counter[tuple[Pair, int]]) -> tuple[int, list[Pair]]:
+                          edge_schedule: Sched) -> tuple[int, list[Pair]]:
         """Gets needed path upgrades."""
         new_keys = {route_key(a, b) for a, b in new_tubes}
         required_capacities = Counter()
@@ -1376,14 +1385,14 @@ class Planner:
         """Orders two-hop buildings."""
         return sorted(self.buildings.values(), key=lambda building: tube_cost(pad, building) + tube_cost(building, module))[:20]
 
-    def score_added_path(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int], old_score: int, path: list[int]) -> int:
+    def score_added_path(self, planned_pods: Pods, planned_teleports: dict[int, int], old_score: int, path: list[int]) -> int:
         """Scores one added path."""
         new_pods = {pod_id: pod_path[:] for pod_id, pod_path in planned_pods.items()}
         new_pods[MAX_PODS + 1] = path[:]
         return (self.score_from_pods(new_pods, planned_teleports)[0] - old_score) * self.months_left()
 
     def best_capacity_candidate(self, serviced: set[Pair], tubes: dict[Pair, int], direct_counts: Counter[Pair],
-                                edge_schedule: Counter[tuple[Pair, int]], planned_pods: dict[int, list[int]],
+                                edge_schedule: Sched, planned_pods: Pods,
                                 planned_teleports: dict[int, int], teleported_pairs: set[Pair], budget: int, pod_ids: set[int]) -> Candidate:
         """Finds extra direct capacity."""
         best = None
@@ -1414,7 +1423,7 @@ class Planner:
         """Maps served demands to paths."""
         return self.service_paths_from_adjacency(self.get_pod_adjacency())
 
-    def service_paths_from_adjacency(self, adjacency: dict[int, list[int]]) -> dict[Pair, list[int]]:
+    def service_paths_from_adjacency(self, adjacency: Pods) -> dict[Pair, list[int]]:
         """Maps served demands from adjacency."""
         paths = {}
         for pad in self.get_landing_pads():
@@ -1433,8 +1442,8 @@ class Planner:
         return paths
 
     def best_baseline_direct_candidate(self, serviced: set[Pair], tubes: dict[Pair, int],
-                                       dedicated_edge_counts: Counter[Pair], edge_schedule: Counter[tuple[Pair, int]],
-                                       planned_pods: dict[int, list[int]], planned_teleports: dict[int, int], teleported_pairs: set[Pair],
+                                       dedicated_edge_counts: Counter[Pair], edge_schedule: Sched,
+                                       planned_pods: Pods, planned_teleports: dict[int, int], teleported_pairs: set[Pair],
                                        budget: int, pod_ids: set[int]) -> Candidate:
         """Finds missing direct shuttles."""
         if len(pod_ids) >= MAX_PODS or budget < POD_COST:
@@ -1468,7 +1477,7 @@ class Planner:
         return counts
 
     def best_baseline_path_candidate(self, tubes: dict[Pair, int], dedicated_edge_counts: Counter[Pair],
-                                     edge_schedule: Counter[tuple[Pair, int]], planned_pods: dict[int, list[int]],
+                                     edge_schedule: Sched, planned_pods: Pods,
                                      planned_teleports: dict[int, int], teleported_pairs: set[Pair], budget: int,
                                      pod_ids: set[int]) -> Candidate:
         """Finds missing path shuttles."""
@@ -1495,8 +1504,8 @@ class Planner:
         return best
 
     def best_speed_candidate(self, serviced: set[Pair], service_counts: Counter[Pair], tubes: dict[Pair, int],
-                             direct_counts: Counter[Pair], edge_schedule: Counter[tuple[Pair, int]],
-                             dedicated_edge_counts: Counter[Pair], planned_pods: dict[int, list[int]],
+                             direct_counts: Counter[Pair], edge_schedule: Sched,
+                             dedicated_edge_counts: Counter[Pair], planned_pods: Pods,
                              planned_teleports: dict[int, int], rerouted_pod_ids: set[int], teleport_used: set[int],
                              teleported_pairs: set[Pair], budget: int, pod_ids: set[int]) -> tuple[str, Candidate]:
         """Finds the best currently affordable speed improvement candidate."""
@@ -1524,7 +1533,7 @@ class Planner:
             return max(candidates, key=lambda item: (item[1].score, item[1].efficiency))
         return max(candidates, key=lambda item: (item[1].efficiency, item[1].score))
 
-    def best_teleport_speed_candidate(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int], teleport_used: set[int],
+    def best_teleport_speed_candidate(self, planned_pods: Pods, planned_teleports: dict[int, int], teleport_used: set[int],
                                       budget: int) -> Candidate:
         """Finds speed-up teleporters."""
         if budget < TELEPORT_COST:
@@ -1549,8 +1558,8 @@ class Planner:
     def apply_candidate(self, reason: str, candidate: Candidate, actions: list[str], serviced: set[Pair],
                         service_counts: Counter[Pair], module_load: Counter[int], degrees: Counter[int], teleport_used: set[int],
                         planned_teleports: dict[int, int], tubes: dict[Pair, int], direct_pod_counts: Counter[Pair],
-                        edge_schedule: Counter[tuple[Pair, int]], dedicated_edge_counts: Counter[Pair],
-        planned_pods: dict[int, list[int]], budget: int, pod_ids: set[int]) -> int:
+                        edge_schedule: Sched, dedicated_edge_counts: Counter[Pair],
+        planned_pods: Pods, budget: int, pod_ids: set[int]) -> int:
         """Applies a candidate to planned state and returns the remaining budget."""
         if candidate.reroute_pod_id is not None:
             old_pod = self.pods[candidate.reroute_pod_id]
@@ -1696,6 +1705,14 @@ def orientation(a: Building, b: Building, c: Building) -> int:
 def loop_path(path: list[int]) -> list[int]:
     """Returns a round-trip loop path from a one-way building path."""
     return path + path[-2::-1]
+
+
+def two_hop_loop_paths(a: int, b: int, c: int) -> list[list[int]]:
+    """Lists closed two-hop walks over a, b, and c."""
+    return [
+        [a, b, c, b, a], [a, b, a, b, c, b, a],
+        [a, b, c, b, a, b, c, b, a], [a, b, a, b, c, b, a, b, c, b, a],
+    ]
 
 
 def close_pod_path(path: list[int], tubes: dict[Pair, int]) -> list[int]:

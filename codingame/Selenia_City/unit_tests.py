@@ -107,6 +107,31 @@ pod 1 1-0-1
         self.assertNotIn("POD 1 1 0 1 0 2 0 2 0 2 0 2 0 1 0 1", planner_move)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
+    def test_two_hop_route_bundles_passengers_before_downstream_trip(self):
+        """Verifies two-hop routes can repeat feeder trips to improve pod utilization."""
+        state = """
+month 3
+resources 1865
+module 0 1 106 9
+landing 1 104 37 1:20
+module 2 2 148 10
+landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
+module 4 3 91 19
+landing 5 46 66 1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3
+tube 0 1 1
+tube 0 2 1
+tube 0 3 1
+pod 1 1-0-1-0-2-0-2-0-1
+pod 2 3-0-3
+"""
+        existing_move = "TUBE 5 4;TUBE 4 0;POD 3 5 4 0 4 5"
+        benchmark_move = "TUBE 4 5; TUBE 0 4; POD 3 5 4 5 4 0 4 5 4 0 4 5"
+        self.assertEqual(score_command(state, existing_move), 5399)
+        benchmark_score = 5413
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
     def test_same_pad_boarding_uses_input_passenger_order(self):
         """Verifies same-pad passengers board by input order instead of type order."""
         state = """

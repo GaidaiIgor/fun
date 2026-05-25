@@ -33,6 +33,7 @@ class Building:
     x: int
     y: int
     demand: Counter[int] = field(default_factory=Counter)
+    order: list[int] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -118,7 +119,7 @@ class Planner:
         for _ in range(int(input())):
             parts = list(map(int, input().split()))
             if parts[0] == 0:
-                building = Building(parts[1], 0, parts[2], parts[3], Counter(parts[5:]))
+                building = Building(parts[1], 0, parts[2], parts[3], Counter(parts[5:]), parts[5:])
             else:
                 building = Building(parts[1], parts[0], parts[2], parts[3])
             self.buildings[building.id] = building
@@ -587,8 +588,7 @@ class Planner:
                             queue.append(neighbor_id)
         queues = {}
         for pad in self.get_landing_pads():
-            for astronaut_type, count in pad.demand.items():
-                queues.setdefault(pad.id, Counter())[(pad.id, astronaut_type)] = count
+            queues[pad.id] = [(pad.id, index, astronaut_type) for index, astronaut_type in enumerate(pad.order)]
         module_arrivals = Counter()
         service_delivered = Counter()
         service_speed = Counter()
@@ -607,16 +607,22 @@ class Planner:
         delivered = sum(service_delivered.values())
         return speed + balance, speed, balance, delivered, service_delivered, {}
 
-    def apply_teleport_phase(self, queues: dict[int, Counter[tuple[int, int]]], distances: dict[int, dict[int, int]], teleports: dict[int, int]):
+    def apply_teleport_phase(self, queues: dict[int, list[tuple[int, int, int]]], distances: dict[int, dict[int, int]], teleports: dict[int, int]):
         """Applies teleporters."""
         for entrance_id, exit_id in sorted(teleports.items()):
-            for group, count in list(queues.get(entrance_id, Counter()).items()):
-                _, astronaut_type = group
-                if count and distances[astronaut_type][exit_id] <= distances[astronaut_type][entrance_id]:
-                    queues.setdefault(exit_id, Counter())[group] += count
-                    del queues[entrance_id][group]
+            waiting = []
+            for passenger in queues.get(entrance_id, []):
+                astronaut_type = passenger[2]
+                if distances[astronaut_type][exit_id] <= distances[astronaut_type][entrance_id]:
+                    queues.setdefault(exit_id, []).append(passenger)
+                else:
+                    waiting.append(passenger)
+            if waiting:
+                queues[entrance_id] = waiting
+            elif entrance_id in queues:
+                del queues[entrance_id]
 
-    def settle_node_arrivals(self, day: int, queues: dict[int, Counter[tuple[int, int]]], module_arrivals: Counter[int],
+    def settle_node_arrivals(self, day: int, queues: dict[int, list[tuple[int, int, int]]], module_arrivals: Counter[int],
                              service_delivered: Counter[tuple[int, int]], service_speed: Counter[tuple[int, int]],
                              service_balance: Counter[tuple[int, int]]):
         """Scores module arrivals."""
@@ -624,16 +630,21 @@ class Planner:
             building = self.buildings[building_id]
             if building.kind <= 0:
                 continue
-            for group, count in list(queues[building_id].items()):
-                _, astronaut_type = group
+            waiting = []
+            for passenger in sorted(queues[building_id]):
+                pad_id, _, astronaut_type = passenger
                 if building.kind != astronaut_type:
+                    waiting.append(passenger)
                     continue
-                queues[building_id][group] = 0
-                for _ in range(count):
-                    service_speed[group] += max(0, 50 - day)
-                    service_balance[group] += max(0, 50 - module_arrivals[building_id])
-                    service_delivered[group] += 1
-                    module_arrivals[building_id] += 1
+                group = (pad_id, astronaut_type)
+                service_speed[group] += max(0, 50 - day)
+                service_balance[group] += max(0, 50 - module_arrivals[building_id])
+                service_delivered[group] += 1
+                module_arrivals[building_id] += 1
+            if waiting:
+                queues[building_id] = waiting
+            else:
+                del queues[building_id]
 
     def daily_pod_moves(self, planned_pods: dict[int, list[int]], pod_positions: dict[int, int],
                         capacity_tubes: dict[tuple[int, int], int]) -> dict[int, tuple[int, int]]:
@@ -664,23 +675,23 @@ class Planner:
         onboard = {}
         seats = Counter({pod_id: 10 for pod_id in moves})
         for building_id in sorted(queues):
-            for group in sorted(list(queues[building_id])):
-                _, astronaut_type = group
-                while queues[building_id].get(group, 0) > 0:
-                    options = [pod_id for pod_id, (a, b) in moves.items() if a == building_id and seats[pod_id] > 0
-                               and distances[astronaut_type][b] < distances[astronaut_type][a]]
-                    if not options:
-                        break
-                    pod_id = min(options)
-                    boarded = min(queues[building_id][group], seats[pod_id])
-                    queues[building_id][group] -= boarded
-                    seats[pod_id] -= boarded
-                    onboard.setdefault(pod_id, Counter())[group] += boarded
-                    if queues[building_id][group] <= 0:
-                        del queues[building_id][group]
+            waiting = []
+            for passenger in sorted(queues[building_id]):
+                astronaut_type = passenger[2]
+                options = [pod_id for pod_id, (a, b) in moves.items() if a == building_id and seats[pod_id] > 0
+                           and distances[astronaut_type][b] < distances[astronaut_type][a]]
+                if not options:
+                    waiting.append(passenger)
+                    continue
+                pod_id = min(options)
+                seats[pod_id] -= 1
+                onboard.setdefault(pod_id, []).append(passenger)
+            if waiting:
+                queues[building_id] = waiting
+            else:
+                del queues[building_id]
         for pod_id, (a, b) in moves.items():
-            for group, count in onboard.get(pod_id, Counter()).items():
-                queues.setdefault(b, Counter())[group] += count
+            queues.setdefault(b, []).extend(onboard.get(pod_id, []))
             pod_positions[pod_id] += 1
             if pod_positions[pod_id] >= len(planned_pods[pod_id]) - 1 and planned_pods[pod_id][0] == planned_pods[pod_id][-1]:
                 pod_positions[pod_id] = 0
@@ -1626,7 +1637,10 @@ class Planner:
 def format_debug_node(building: Building) -> str:
     """Formats one building with type, coordinates, and landing-pad demand."""
     if building.kind == 0:
-        demand = ",".join(f"{astronaut_type}:{building.demand[astronaut_type]}" for astronaut_type in sorted(building.demand)) or "none"
+        grouped = [astronaut_type for astronaut_type in sorted(building.demand) for _ in range(building.demand[astronaut_type])]
+        demand = ",".join(f"{astronaut_type}:{building.demand[astronaut_type]}" for astronaut_type in sorted(building.demand)) \
+            if building.order == grouped else ",".join(map(str, building.order))
+        demand = demand or "none"
         return f"landing {building.id} {building.x} {building.y} {demand}"
     return f"module {building.id} {building.kind} {building.x} {building.y}"
 

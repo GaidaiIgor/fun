@@ -88,6 +88,23 @@ pod 1 1-0-1
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
+    def test_same_pad_boarding_uses_input_passenger_order(self):
+        """Verifies same-pad passengers board by input order instead of type order."""
+        state = """
+month 1
+resources 0
+landing 0 0 0 2,2,2,2,2,2,2,2,2,2,1,1,1,1,1,1,1,1,1,1
+module 1 1 20 0
+module 2 2 20 10
+landing 3 10 0 none
+tube 0 3 1
+tube 3 1 1
+tube 3 2 1
+pod 1 0-3-0
+pod 2 3-2-3
+"""
+        self.assertEqual(score_command(state, "WAIT"), 925)
+
 
 def choose_planner_command(state: str) -> str:
     """Returns the planner command for a compact turn-state string."""
@@ -121,7 +138,8 @@ def parse_turn_state(text: str) -> Planner:
             case "module":
                 planner.buildings[int(parts[1])] = Building(int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
             case "landing":
-                planner.buildings[int(parts[1])] = Building(int(parts[1]), 0, int(parts[2]), int(parts[3]), parse_demand(parts[4]))
+                demand, order = parse_demand(parts[4])
+                planner.buildings[int(parts[1])] = Building(int(parts[1]), 0, int(parts[2]), int(parts[3]), demand, order)
             case "tube":
                 planner.tubes[route_key(int(parts[1]), int(parts[2]))] = int(parts[3])
             case "teleport":
@@ -131,15 +149,20 @@ def parse_turn_state(text: str) -> Planner:
     return planner
 
 
-def parse_demand(text: str) -> Counter[int]:
+def parse_demand(text: str) -> tuple[Counter[int], list[int]]:
     """Parses comma-separated astronaut demand into counts by type."""
     demand = Counter()
+    order = []
     if text == "none":
-        return demand
+        return demand, order
     for item in text.split(","):
-        astronaut_type, count = item.split(":")
-        demand[int(astronaut_type)] = int(count)
-    return demand
+        if ":" in item:
+            astronaut_type, count = item.split(":")
+            order.extend([int(astronaut_type)] * int(count))
+        else:
+            order.append(int(item))
+    demand.update(order)
+    return demand, order
 
 
 def apply_actions(planner: Planner, text: str) -> str:

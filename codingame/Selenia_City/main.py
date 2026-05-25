@@ -203,7 +203,7 @@ class Planner:
 
     def exact_plan(self, actions: list[str], planned_pods: dict[int, list[int]], planned_teleports: dict[int, int],
                    tubes: dict[tuple[int, int], int], budget: int, pod_ids: set[int]) -> int | None:
-        """Finds exact-scored moves and returns the remaining budget."""
+        """Finds exact moves and remaining budget."""
         score = self.actual_score_from_pods
         start_score = score(planned_pods, planned_teleports, tubes)[0]
         degrees = Counter()
@@ -216,22 +216,17 @@ class Planner:
                 edge_schedule[(edge, day)] += 1
         teleport_used = set(planned_teleports)
         teleport_used.update(planned_teleports.values())
-        destroyed_pod_ids = set()
         budget = self.exact_direct_teleports(actions, planned_pods, planned_teleports, tubes, teleport_used, budget)
         for _ in range(EXACT_SEARCH_ROUNDS):
             candidate = self.best_exact_path_candidate(planned_pods, planned_teleports, tubes, degrees, edge_schedule, budget, pod_ids)
             if candidate is None:
-                old_budget = budget
-                budget = self.exact_destroy_neutral(actions, planned_pods, tubes, planned_teleports, edge_schedule, pod_ids, destroyed_pod_ids, budget)
-                if budget == old_budget:
-                    break
-                continue
+                break
             budget = self.apply_exact_path(candidate, actions, planned_pods, tubes, degrees, edge_schedule, pod_ids, budget)
         return budget if actions and score(planned_pods, planned_teleports, tubes)[0] >= start_score else None
 
     def exact_direct_teleports(self, actions: list[str], planned_pods: dict[int, list[int]], planned_teleports: dict[int, int],
                                tubes: dict[tuple[int, int], int], teleport_used: set[int], budget: int) -> int:
-        """Adds exact-positive teleports for single-type landing pads."""
+        """Adds positive single-type teleports."""
         modules_by_type = self.get_modules_by_type()
         score = self.actual_score_from_pods
         while budget >= TELEPORT_COST:
@@ -259,36 +254,10 @@ class Planner:
             budget -= TELEPORT_COST
         return budget
 
-    def exact_destroy_neutral(self, actions: list[str], planned_pods: dict[int, list[int]], tubes: dict[tuple[int, int], int],
-                              planned_teleports: dict[int, int], edge_schedule: Counter[tuple[tuple[int, int], int]], pod_ids: set[int],
-                              destroyed_pod_ids: set[int], budget: int) -> int:
-        """Destroys original pods whose removal preserves exact score."""
-        score = self.actual_score_from_pods
-        while True:
-            old_score = score(planned_pods, planned_teleports, tubes)[0]
-            neutral_pod_id = None
-            for pod_id in sorted(set(self.pods) - destroyed_pod_ids):
-                if pod_id not in planned_pods:
-                    continue
-                new_pods = {current_id: path[:] for current_id, path in planned_pods.items() if current_id != pod_id}
-                if score(new_pods, planned_teleports, tubes)[0] >= old_score:
-                    neutral_pod_id = pod_id
-                    break
-            if neutral_pod_id is None:
-                return budget
-            actions.append(f"DESTROY {neutral_pod_id}")
-            destroyed_pod_ids.add(neutral_pod_id)
-            pod_ids.discard(neutral_pod_id)
-            for edge, day in path_edge_days(planned_pods.pop(neutral_pod_id)):
-                edge_schedule[(edge, day)] -= 1
-                if edge_schedule[(edge, day)] <= 0:
-                    del edge_schedule[(edge, day)]
-            budget += POD_REFUND
-
     def best_exact_path_candidate(self, planned_pods: dict[int, list[int]], planned_teleports: dict[int, int], tubes: dict[tuple[int, int], int],
                                   degrees: Counter[int], edge_schedule: Counter[tuple[tuple[int, int], int]], budget: int,
                                   pod_ids: set[int]) -> Candidate | None:
-        """Finds the exact-best affordable service loop or shuttle."""
+        """Finds the best exact route bundle."""
         if len(pod_ids) >= MAX_PODS or budget < POD_COST:
             return None
         score = self.actual_score_from_pods
@@ -313,9 +282,31 @@ class Planner:
                     new_pods[fake_id] = added_path[:]
                 fast_gain = self.score_from_pods(new_pods, planned_teleports)[0] - fast_old_score
                 if fast_gain > 0:
-                    shortlist.append((fast_gain, -cost, paths, new_tubes, upgrades, cost))
-        for _, _, paths, new_tubes, upgrades, cost in sorted(shortlist, reverse=True)[:EXACT_PATH_SHORTLIST]:
-            new_pods = {pod_id: pod_path[:] for pod_id, pod_path in planned_pods.items()}
+                    shortlist.append((fast_gain, -cost, 0, paths, new_tubes, upgrades, cost))
+        for pod_id, old_path in planned_pods.items():
+            if pod_id not in self.pods or len(old_path) <= 3:
+                continue
+            edges = []
+            for a, b in map(route_key, old_path, old_path[1:]):
+                if (a, b) in tubes and (a, b) not in edges:
+                    edges.append((a, b))
+            if not 2 <= len(edges) <= 4 or len(pod_ids) + len(edges) - 1 > MAX_PODS:
+                continue
+            removed_schedule = self.schedule_without_pod(edge_schedule, self.pods[pod_id])
+            for paths in product(*(([a, b, a], [b, a, b]) for a, b in edges)):
+                paths = [path[:] for path in paths]
+                upgrade_cost, upgrades = self.bundle_upgrade_plan(paths, [], tubes, removed_schedule)
+                cost = REROUTE_COST + POD_COST * (len(paths) - 1) + upgrade_cost
+                if cost > budget:
+                    continue
+                new_pods = {current_id: pod_path[:] for current_id, pod_path in planned_pods.items() if current_id != pod_id}
+                for fake_id, added_path in enumerate(paths, MAX_PODS + 1):
+                    new_pods[fake_id] = added_path[:]
+                fast_gain = self.score_from_pods(new_pods, planned_teleports)[0] - fast_old_score
+                if fast_gain > 0:
+                    shortlist.append((fast_gain, -cost, pod_id, paths, [], upgrades, cost))
+        for _, _, replaced_id, paths, new_tubes, upgrades, cost in sorted(shortlist, reverse=True)[:EXACT_PATH_SHORTLIST]:
+            new_pods = {pod_id: pod_path[:] for pod_id, pod_path in planned_pods.items() if pod_id != replaced_id}
             for fake_id, path in enumerate(paths, MAX_PODS + 1):
                 new_pods[fake_id] = path[:]
             new_tube_state = dict(tubes)
@@ -326,14 +317,15 @@ class Planner:
             gain = score(new_pods, planned_teleports, new_tube_state)[0] - old_score
             if gain <= 0:
                 continue
-            candidate = Candidate(gain, cost, 0, 0, 0, paths[0], new_tubes, upgrades, extra_paths=[path[:] for path in paths[1:]])
+            candidate = Candidate(gain, cost, 0, 0, 0, paths[0], new_tubes, upgrades, reroute_pod_id=replaced_id or None,
+                                  extra_paths=[path[:] for path in paths[1:]])
             if best is None or (candidate.score, -candidate.cost) > (best.score, -best.cost):
                 best = candidate
         return best
 
     def bundle_upgrade_plan(self, paths: list[list[int]], new_tubes: list[tuple[int, int]], tubes: dict[tuple[int, int], int],
                             edge_schedule: Counter[tuple[tuple[int, int], int]]) -> tuple[int, list[tuple[int, int]]]:
-        """Gets tube upgrades required for adding several pod paths at once."""
+        """Gets upgrades for added paths."""
         new_keys = {route_key(a, b) for a, b in new_tubes}
         added_schedule = Counter()
         required_capacities = Counter()
@@ -352,7 +344,7 @@ class Planner:
         return cost, upgrades
 
     def exact_path_options(self, tubes: dict[tuple[int, int], int]) -> list[list[int]]:
-        """Lists bounded pod routes used by exact search."""
+        """Lists exact-search routes."""
         paths = []
         seen = set()
         modules_by_type = self.get_modules_by_type()
@@ -406,7 +398,13 @@ class Planner:
 
     def apply_exact_path(self, candidate: Candidate, actions: list[str], planned_pods: dict[int, list[int]], tubes: dict[tuple[int, int], int],
                          degrees: Counter[int], edge_schedule: Counter[tuple[tuple[int, int], int]], pod_ids: set[int], budget: int) -> int:
-        """Applies one exact-scored pod route and returns remaining budget."""
+        """Applies an exact route bundle."""
+        if candidate.reroute_pod_id is not None:
+            actions.append(f"DESTROY {candidate.reroute_pod_id}")
+            for edge, day in path_edge_days(planned_pods.pop(candidate.reroute_pod_id)):
+                edge_schedule[(edge, day)] -= 1
+                if edge_schedule[(edge, day)] <= 0:
+                    del edge_schedule[(edge, day)]
         for a, b in candidate.tubes:
             actions.append(f"TUBE {a} {b}")
             tubes[route_key(a, b)] = 1
@@ -415,8 +413,8 @@ class Planner:
         for a, b in candidate.upgrades:
             actions.append(f"UPGRADE {a} {b}")
             tubes[route_key(a, b)] += 1
-        for path in [candidate.path] + candidate.extra_paths:
-            pod_id = next_pod_id(pod_ids)
+        for index, path in enumerate([candidate.path] + candidate.extra_paths):
+            pod_id = candidate.reroute_pod_id if index == 0 and candidate.reroute_pod_id is not None else next_pod_id(pod_ids)
             pod_ids.add(pod_id)
             planned_pods[pod_id] = path[:]
             actions.append("POD {} {}".format(pod_id, " ".join(map(str, path))))
@@ -427,7 +425,7 @@ class Planner:
     def destroy_obsolete_pods(self, actions: list[str], service_counts: Counter[tuple[int, int]], edge_schedule: Counter[tuple[tuple[int, int], int]],
                               planned_pods: dict[int, list[int]], rerouted_pod_ids: set[int], retired_pod_ids: set[int], budget: int,
                               pod_ids: set[int]) -> int:
-        """Destroys covered multi-service pods and returns the updated budget."""
+        """Destroys covered pods."""
         while obsolete_pod := self.obsolete_pod(service_counts, rerouted_pod_ids | retired_pod_ids):
             actions.append(f"DESTROY {obsolete_pod.id}")
             retired_pod_ids.add(obsolete_pod.id)
@@ -444,7 +442,7 @@ class Planner:
         return budget
 
     def obsolete_pod(self, service_counts: Counter[tuple[int, int]], blocked_pod_ids: set[int]) -> Pod | None:
-        """Finds one non-dedicated pod whose services stay covered after removal."""
+        """Finds one removable pod."""
         for pod in sorted(self.pods.values(), key=lambda item: item.id):
             if pod.id in blocked_pod_ids or len(pod.path) == 3 and pod.path[0] == pod.path[2]:
                 continue

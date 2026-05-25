@@ -29,6 +29,24 @@ module 2 2 130 70
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
+    def test_existing_staged_pod_can_be_split_into_edge_pods(self):
+        """Verifies selling a staged pod can fund more efficient dedicated edge pods."""
+        state = """
+month 2
+resources 1550
+landing 0 30 20 1:25,2:25
+module 1 1 130 20
+module 2 2 130 70
+tube 0 1 1
+tube 1 2 1
+pod 1 0-1-0-1-0-1-0-1-0-1-2-1-2-1-2
+"""
+        benchmark_move = "DESTROY 1; POD 1 0 1 0; POD 2 2 1 2"
+        benchmark_score = 4125
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
 
 def choose_planner_command(state: str) -> str:
     """Returns the planner command for a compact turn-state string."""

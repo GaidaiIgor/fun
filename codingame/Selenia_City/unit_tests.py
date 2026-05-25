@@ -1,0 +1,203 @@
+"""Tests Selenia City planner regressions against benchmark moves."""
+
+from __future__ import annotations
+
+from collections import Counter
+from contextlib import redirect_stderr
+from io import StringIO
+import unittest
+
+from Selenia_City.main import MAX_PODS, MAX_TUBES_PER_BUILDING, POD_COST, POD_REFUND, TELEPORT_COST
+from Selenia_City.main import Building, Planner, Pod, point_on_segment, route_key, segments_intersect, tube_cost
+
+
+class PlannerRegressionTests(unittest.TestCase):
+    """Checks that planner output scores at least as well as known benchmark moves."""
+
+    def test_two_destination_pad_builds_full_initial_service(self):
+        """Verifies a two-type landing pad gets a full-service initial network."""
+        state = """
+month 1
+resources 3000
+landing 0 30 20 1:25,2:25
+module 1 1 130 20
+module 2 2 130 70
+"""
+        benchmark_move = "TUBE 0 1; TUBE 1 2; POD 1 0 1 0 1 0 1 0 1 0 1 2 1 2 1 2"
+        benchmark_score = 4045
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
+
+def choose_planner_command(state: str) -> str:
+    """Returns the planner command for a compact turn-state string."""
+    planner = parse_turn_state(state)
+    with redirect_stderr(StringIO()):
+        actions = planner.choose_actions()
+    return ";".join(actions) or "WAIT"
+
+
+def score_command(state: str, command: str) -> int:
+    """Returns the exact monthly score after applying a command to a compact state."""
+    planner = parse_turn_state(state)
+    error = apply_actions(planner, command)
+    if error is not None:
+        raise AssertionError(error)
+    planned_pods = {pod_id: pod.path[:] for pod_id, pod in planner.pods.items()}
+    return planner.actual_score_from_pods(planned_pods, dict(planner.teleports), dict(planner.tubes))[0]
+
+
+def parse_turn_state(text: str) -> Planner:
+    """Parses compact debug-style turn state into a Planner instance."""
+    planner = Planner()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("month ") or line.startswith("pair_cost ") or line.startswith("score_") or line.startswith("resources_after "):
+            continue
+        parts = line.split()
+        match parts[0]:
+            case "resources":
+                planner.resources = int(parts[1])
+            case "module":
+                planner.buildings[int(parts[1])] = Building(int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
+            case "landing":
+                planner.buildings[int(parts[1])] = Building(int(parts[1]), 0, int(parts[2]), int(parts[3]), parse_demand(parts[4]))
+            case "tube":
+                planner.tubes[route_key(int(parts[1]), int(parts[2]))] = int(parts[3])
+            case "teleport":
+                planner.teleports[int(parts[1])] = int(parts[2])
+            case "pod":
+                planner.pods[int(parts[1])] = Pod(int(parts[1]), [int(item) for item in " ".join(parts[2:]).replace("-", " ").split()])
+    return planner
+
+
+def parse_demand(text: str) -> Counter[int]:
+    """Parses comma-separated astronaut demand into counts by type."""
+    demand = Counter()
+    if text == "none":
+        return demand
+    for item in text.split(","):
+        astronaut_type, count = item.split(":")
+        demand[int(astronaut_type)] = int(count)
+    return demand
+
+
+def apply_actions(planner: Planner, text: str) -> str:
+    """Applies a semicolon-separated command string to planner state."""
+    for action in text.split(";"):
+        cleaned = action.strip()
+        parts = cleaned.split()
+        if not parts or parts[0] == "WAIT":
+            continue
+        match parts[0]:
+            case "TUBE":
+                error = apply_tube(planner, int(parts[1]), int(parts[2]))
+            case "UPGRADE":
+                error = apply_upgrade(planner, int(parts[1]), int(parts[2]))
+            case "TELEPORT":
+                error = apply_teleport(planner, int(parts[1]), int(parts[2]))
+            case "POD":
+                error = apply_pod(planner, int(parts[1]), [int(item) for item in parts[2:]])
+            case "DESTROY":
+                error = apply_destroy(planner, int(parts[1]))
+            case _:
+                return f"{cleaned}: unknown action {parts[0]}"
+        if error is not None:
+            return f"{cleaned}: {error}"
+    return None
+
+
+def apply_tube(planner: Planner, a: int, b: int) -> str:
+    """Builds one tube if geometry, degree, and resource rules allow it."""
+    cost = tube_cost(planner.buildings[a], planner.buildings[b])
+    error = tube_rule_error(planner, a, b)
+    if error is not None:
+        return error
+    if cost > planner.resources:
+        return f"tube costs {cost}, resources {planner.resources}"
+    planner.resources -= cost
+    planner.tubes[route_key(a, b)] = 1
+    return None
+
+
+def tube_rule_error(planner: Planner, a: int, b: int) -> str:
+    """Explains why a tube cannot be built, or returns None when it is legal."""
+    degrees = planner.get_tube_degrees()
+    if a == b:
+        return "tube endpoints are identical"
+    if route_key(a, b) in planner.tubes:
+        return "tube already exists"
+    if degrees[a] >= MAX_TUBES_PER_BUILDING:
+        return f"building {a} already has {MAX_TUBES_PER_BUILDING} tubes"
+    if degrees[b] >= MAX_TUBES_PER_BUILDING:
+        return f"building {b} already has {MAX_TUBES_PER_BUILDING} tubes"
+    first = planner.buildings[a]
+    second = planner.buildings[b]
+    for building in planner.buildings.values():
+        if building.id not in (a, b) and point_on_segment(building, first, second):
+            return f"tube would pass through building {building.id}"
+    for c, d in planner.tubes:
+        if len({a, b, c, d}) == 4 and segments_intersect(first, second, planner.buildings[c], planner.buildings[d]):
+            return f"tube would cross tube {c}-{d}"
+    return None
+
+
+def apply_upgrade(planner: Planner, a: int, b: int) -> str:
+    """Upgrades an existing tube if resources allow it."""
+    key = route_key(a, b)
+    if key not in planner.tubes:
+        return "tube does not exist"
+    cost = tube_cost(planner.buildings[a], planner.buildings[b]) * (planner.tubes[key] + 1)
+    if cost > planner.resources:
+        return f"upgrade costs {cost}, resources {planner.resources}"
+    planner.resources -= cost
+    planner.tubes[key] += 1
+    return None
+
+
+def apply_teleport(planner: Planner, a: int, b: int) -> str:
+    """Builds a teleporter if endpoints and resources allow it."""
+    used = planner.get_teleport_used_buildings()
+    if a == b:
+        return "teleporter endpoints are identical"
+    if a in used:
+        return f"building {a} already has a teleporter"
+    if b in used:
+        return f"building {b} already has a teleporter"
+    if TELEPORT_COST > planner.resources:
+        return f"teleport costs {TELEPORT_COST}, resources {planner.resources}"
+    planner.resources -= TELEPORT_COST
+    planner.teleports[a] = b
+    return None
+
+
+def apply_pod(planner: Planner, pod_id: int, path: list[int]) -> str:
+    """Builds a pod if the id, path, tubes, and resources allow it."""
+    if not 1 <= pod_id <= MAX_PODS:
+        return f"pod id {pod_id} is outside 1..{MAX_PODS}"
+    if pod_id in planner.pods:
+        return f"pod id {pod_id} already exists"
+    if len(path) < 2:
+        return "pod path has fewer than 2 stops"
+    missing = next((route_key(a, b) for a, b in zip(path, path[1:]) if route_key(a, b) not in planner.tubes), None)
+    if missing is not None:
+        return f"missing tube {missing[0]}-{missing[1]}"
+    if POD_COST > planner.resources:
+        return f"pod costs {POD_COST}, resources {planner.resources}"
+    planner.resources -= POD_COST
+    planner.pods[pod_id] = Pod(pod_id, path)
+    return None
+
+
+def apply_destroy(planner: Planner, pod_id: int) -> str:
+    """Destroys an existing pod and refunds resources."""
+    if pod_id not in planner.pods:
+        return f"pod id {pod_id} does not exist"
+    del planner.pods[pod_id]
+    planner.resources += POD_REFUND
+    return None
+
+
+if __name__ == "__main__":
+    unittest.main()

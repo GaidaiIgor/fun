@@ -55,9 +55,7 @@ class Candidate:
     delivered: int = 0
     services: list[tuple[int, int, int, int]] = field(default_factory=list)
     reroute_pod_id: int | None = None
-    lost_score: int = 0
     extra_paths: list[list[int]] = field(default_factory=list)
-    replaced_services: list[tuple[int, int, int, int]] = field(default_factory=list)
 
     @property
     def efficiency(self) -> float:
@@ -359,7 +357,9 @@ class Planner:
         seen = set()
         modules_by_type = self.get_modules_by_type()
         for pad in self.get_landing_pads():
-            module_ids = [min(modules_by_type[astronaut_type], key=lambda item: tube_cost(pad, item)).id for astronaut_type in sorted(pad.demand)]
+            choices = [(astronaut_type, min(modules_by_type[astronaut_type], key=lambda item: tube_cost(pad, item)).id)
+                       for astronaut_type in sorted(pad.demand)]
+            module_ids = [module_id for _, module_id in choices]
             if 1 < len(module_ids) <= 3:
                 for ordered in permutations(module_ids):
                     path = [pad.id]
@@ -372,6 +372,15 @@ class Planner:
                     if tuple(path) not in seen:
                         paths.append(path)
                         seen.add(tuple(path))
+                    if len(ordered) == 2 and ordered[0] != ordered[1]:
+                        module_counts = Counter({module_id: pad.demand[astronaut_type] for astronaut_type, module_id in choices})
+                        first_batches = (sum(pad.demand.values()) + 9) // 10
+                        second_batches = (module_counts[ordered[1]] + 9) // 10
+                        path = [pad.id] + [ordered[0], pad.id] * (first_batches - 1) + [ordered[0]]
+                        path += [ordered[1], ordered[0]] * (second_batches - 1) + [ordered[1]]
+                        if tuple(path) not in seen:
+                            paths.append(path)
+                            seen.add(tuple(path))
         building_ids = sorted(self.buildings)
         cheap_pairs = sorted((tube_cost(self.buildings[a], self.buildings[b]), route_key(a, b)) for index, a in enumerate(building_ids)
                              for b in building_ids[index + 1:] if route_key(a, b) not in tubes)[:24]
@@ -1201,7 +1210,7 @@ class Planner:
                 delivered = monthly_pod_deliveries(count, first_day, 1, period)
                 score = monthly_score(delivered, first_day, current_load, period=period) * self.months_left() - lost_score
                 candidate = Candidate(score, cost, pad.id, module.id, astronaut_type, path, new_tubes, upgrades, delivered=delivered,
-                                      reroute_pod_id=old_pod.id, lost_score=lost_score)
+                                      reroute_pod_id=old_pod.id)
                 candidates.append(candidate)
         return candidates
 
@@ -1486,7 +1495,6 @@ class Planner:
         """Applies a candidate to planned state and returns the remaining budget."""
         if candidate.reroute_pod_id is not None:
             old_pod = self.pods[candidate.reroute_pod_id]
-            removed_pairs = set()
             actions.append(f"DESTROY {candidate.reroute_pod_id}")
             del planned_pods[candidate.reroute_pod_id]
             if len(old_pod.path) == 3 and old_pod.path[0] == old_pod.path[2]:
@@ -1498,20 +1506,11 @@ class Planner:
                 if edge_schedule[(edge, day)] <= 0:
                     del edge_schedule[(edge, day)]
             for pad_id, astronaut_type, module_id, _ in self.pod_services(old_pod):
-                removed_pairs.add((pad_id, astronaut_type))
                 service_counts[(pad_id, astronaut_type)] -= 1
                 if service_counts[(pad_id, astronaut_type)] <= 0:
                     del service_counts[(pad_id, astronaut_type)]
                     serviced.discard((pad_id, astronaut_type))
                     module_load[module_id] -= self.buildings[pad_id].demand[astronaut_type]
-            for pad_id, astronaut_type, module_id, delivered in candidate.replaced_services:
-                if (pad_id, astronaut_type) in removed_pairs or service_counts[(pad_id, astronaut_type)] <= 0:
-                    continue
-                service_counts[(pad_id, astronaut_type)] -= 1
-                if service_counts[(pad_id, astronaut_type)] <= 0:
-                    del service_counts[(pad_id, astronaut_type)]
-                    serviced.discard((pad_id, astronaut_type))
-                    module_load[module_id] -= delivered
         for a, b in candidate.tubes:
             if route_key(a, b) in tubes:
                 continue

@@ -132,6 +132,36 @@ pod 2 3-0-3
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
+    def test_transfer_route_connects_missing_module_type(self):
+        """Verifies one route can connect a pad to existing network and a missing module type."""
+        state = """
+month 4
+resources 2338
+module 0 1 106 9
+landing 1 104 37 1:20
+module 2 2 148 10
+landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
+module 4 3 91 19
+landing 5 46 66 1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3
+module 6 4 110 43
+landing 7 28 10 1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2
+tube 0 1 1
+tube 0 2 1
+tube 0 3 1
+tube 0 4 1
+tube 4 5 1
+pod 1 1-0-1-0-2-0-2-0-1
+pod 2 3-0-3
+pod 3 5-4-5-4-0-4-5-4-0-4-5
+"""
+        existing_move = "TUBE 7 0;POD 4 7 0 7"
+        benchmark_move = "TUBE 5 7; TUBE 5 6; POD 4 7 5 6 5 7"
+        self.assertEqual(score_command(state, existing_move), 6799)
+        benchmark_score = 7185
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
     def test_same_pad_boarding_uses_input_passenger_order(self):
         """Verifies same-pad passengers board by input order instead of type order."""
         state = """

@@ -1,4 +1,4 @@
-"""Plans transport."""
+"""Plans."""
 
 from __future__ import annotations
 
@@ -1019,6 +1019,32 @@ class Planner:
                 entries.append((building, services))
         candidates = []
         old_score = self.score_from_pods(planned_pods, planned_teleports)[0]
+        by_type = self.get_modules_by_type()
+        for entry, entry_services in entries[:8]:
+            served_types = {astronaut_type for astronaut_type, _, _ in entry_services}
+            for missing in pad.demand:
+                if (pad.id, missing) in service_counts or missing in served_types or missing not in by_type:
+                    continue
+                if required_type not in served_types and required_type != missing:
+                    continue
+                for module in sorted(by_type[missing], key=lambda item: tube_cost(entry, item))[:2]:
+                    for path in two_hop_loop_paths(pad.id, entry.id, module.id):
+                        new_tubes = unique_new_tubes(path, tubes)
+                        if not self.can_add_tubes(new_tubes, degrees, tubes):
+                            continue
+                        upgrade_cost, upgrades = self.path_upgrade_plan(path, new_tubes, tubes, edge_schedule)
+                        cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in new_tubes) + POD_COST + upgrade_cost
+                        if cost > budget:
+                            continue
+                        new_pods = {pod_id: pod_path[:] for pod_id, pod_path in planned_pods.items()}
+                        new_pods[MAX_PODS + 1] = path[:]
+                        new_score, _, _, _, delivered, service_paths = self.score_from_pods(new_pods, planned_teleports)
+                        services = [(pad.id, item, service_paths[(pad.id, item)][-1], delivered[(pad.id, item)]) for item in pad.demand
+                                    if (pad.id, item) in service_paths and (pad.id, item) not in service_counts]
+                        if not services:
+                            continue
+                        candidates.append(Candidate((new_score - old_score) * self.months_left(), cost, pad.id, module.id, required_type, path, new_tubes,
+                                                    upgrades, delivered=sum(delivered for _, _, _, delivered in services), services=services))
         for size in range(1, min(3, len(entries)) + 1):
             for ordered in permutations(entries[:8], size):
                 if not any(required_type in [astronaut_type for astronaut_type, _, _ in services] for _, services in ordered):
@@ -1708,7 +1734,7 @@ def loop_path(path: list[int]) -> list[int]:
 
 
 def two_hop_loop_paths(a: int, b: int, c: int) -> list[list[int]]:
-    """Lists closed two-hop walks over a, b, and c."""
+    """Lists two-hop walks."""
     return [
         [a, b, c, b, a], [a, b, a, b, c, b, a],
         [a, b, c, b, a, b, c, b, a], [a, b, a, b, c, b, a, b, c, b, a],

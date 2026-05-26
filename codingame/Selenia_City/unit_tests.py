@@ -167,6 +167,13 @@ pod 2 3-0-3
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
+    def test_auto_route_prefers_current_service_edge(self):
+        """Verifies AUTO route resolution keeps serving demand at the current node."""
+        planner = parse_turn_state(second_new_island_turn_state())
+        reason = apply_actions(planner, "TUBE 6 11; TUBE 0 6; TUBE 5 10")
+        self.assertFalse(reason)
+        self.assertEqual(planner.resolve_auto_route([(6, 11), (0, 6)])[:5], [11, 6, 0, 6, 0])
+
     def test_same_pad_boarding_uses_input_passenger_order(self):
         """Verifies same-pad passengers board by input order instead of type order."""
         state = """

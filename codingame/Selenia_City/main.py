@@ -293,7 +293,7 @@ class Planner:
 		def best_edge(loads):
 			source_load=Counter()
 			for(source,_),count in loads.items():source_load[source]+=count
-			source=min(source_load,key=lambda node:(-source_load[node],pod_service_counts[node],source_distance(current,node),node))
+			source=min(source_load,key=lambda node:(-min(source_load[node],10),pod_service_counts[node],source_distance(current,node),node))
 			return max((edge for edge in loads if edge[0]==source),key=lambda edge:(loads[edge],-edge[1]))
 		graph={}
 		for(a,b)in edges:graph.setdefault(a,[]).append(b);graph.setdefault(b,[]).append(a)
@@ -325,7 +325,7 @@ class Planner:
 		if not loads:raise ValueError("auto service edges have no demand")
 		source_load=Counter()
 		for(source,_),count in loads.items():source_load[source]+=count
-		current=min(source_load,key=lambda node:(-source_load[node],pod_service_counts[node],node));path=[current];planned_pods[pod_id]=path[:];pod_positions[pod_id]=0
+		current=min(source_load,key=lambda node:(-min(source_load[node],10),pod_service_counts[node],node));path=[current];planned_pods[pod_id]=path[:];pod_positions[pod_id]=0
 		for day in range(MONTH_DAYS):
 			self.apply_teleport_phase(queues,distances,self.teleports);self.settle_node_arrivals(day,queues,module_arrivals,service_delivered,service_speed,service_balance)
 			loads=service_loads()

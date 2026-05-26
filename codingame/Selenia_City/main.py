@@ -341,7 +341,8 @@ class Planner:
 			edge=best_edge(graphs[pod_id],loads,pod_id,None);current_nodes[pod_id]=edge[0];paths[pod_id]=[edge[0]]
 		for day in range(MONTH_DAYS):
 			self.apply_teleport_phase(queues,distances,self.teleports);self.settle_node_arrivals(day,queues,module_arrivals,service_delivered,service_speed,service_balance)
-			requests=self.daily_pod_moves(fixed_pods,pod_positions,self.tubes);active=[]
+			fixed_moves=self.daily_pod_moves(fixed_pods,pod_positions,self.tubes);self.launch_pods(queues,fixed_moves,distances,pod_positions,fixed_pods);self.settle_node_arrivals(day+1,queues,module_arrivals,service_delivered,service_speed,service_balance)
+			requests={};active=[]
 			for pod_id in sorted(graphs):
 				loads=service_loads(graphs[pod_id])
 				if not loads:continue
@@ -349,9 +350,7 @@ class Planner:
 				target=edge[1]if current_nodes[pod_id]==edge[0]else next_step(graphs[pod_id],current_nodes[pod_id],edge[0])
 				requests[pod_id]=current_nodes[pod_id],target;paths[pod_id].append(target);active.append(pod_id)
 			if not active:break
-			moves=capacity_moves(requests);all_pods={**fixed_pods,**paths};positions={**pod_positions,**{pod_id:0 for pod_id in paths}}
-			self.launch_pods(queues,moves,distances,positions,all_pods)
-			pod_positions.update({pod_id:positions[pod_id]for pod_id in pod_positions})
+			moves=capacity_moves(requests);positions={pod_id:0 for pod_id in paths};self.launch_pods(queues,moves,distances,positions,paths)
 			for pod_id in active:
 				moved=moves.get(pod_id)
 				if moved:current_nodes[pod_id]=moved[1]

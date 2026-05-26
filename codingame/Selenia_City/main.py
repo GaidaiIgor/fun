@@ -304,6 +304,12 @@ class Planner:
 			return result
 		def best_edge(graph,loads,pod_id,current):
 			return min(loads,key=lambda edge:(-min(loads[edge],10),pod_service_counts[pod_id][edge[0]],source_distance(graph,current,edge[0])if current is not None else 0,edge[0],edge[1]))
+		def capacity_moves(requests):
+			moves={};by_tube={}
+			for(pod_id,move)in requests.items():by_tube.setdefault(route_key(*move),[]).append((pod_id,move))
+			for(edge,pods)in by_tube.items():
+				for(pod_id,move)in sorted(pods)[:self.tubes.get(edge,0)]:moves[pod_id]=move
+			return moves
 		graphs={pod_id:make_graph(edges)for(pod_id,edges)in specs}
 		reverse_graph={}
 		for(a,b)in self.tubes:reverse_graph.setdefault(a,[]).append((b,1));reverse_graph.setdefault(b,[]).append((a,1))
@@ -320,8 +326,8 @@ class Planner:
 						if cost:queue.append(neighbor)
 						else:queue.appendleft(neighbor)
 		queues={pad.id:[(pad.id,index,astronaut_type)for(index,astronaut_type)in enumerate(pad.order)]for pad in self.get_landing_pads()}
-		auto_ids=set(graphs);module_arrivals=Counter();service_delivered=Counter();service_speed=Counter();service_balance=Counter();planned_pods={pid:pod.path[:]for(pid,pod)in self.pods.items()if pid not in auto_ids};pod_positions={pid:0 for pid in planned_pods};base_counts=Counter();pod_service_counts={pid:Counter()for pid in graphs}
-		for path in planned_pods.values():
+		auto_ids=set(graphs);module_arrivals=Counter();service_delivered=Counter();service_speed=Counter();service_balance=Counter();fixed_pods={pid:pod.path[:]for(pid,pod)in self.pods.items()if pid not in auto_ids};pod_positions={pid:0 for pid in fixed_pods};base_counts=Counter();pod_service_counts={pid:Counter()for pid in graphs}
+		for path in fixed_pods.values():
 			for node in set(path):base_counts[node]+=1
 		for pod_id in graphs:
 			pod_service_counts[pod_id].update(base_counts)
@@ -332,23 +338,24 @@ class Planner:
 		for pod_id in sorted(graphs):
 			loads=service_loads(graphs[pod_id])
 			if not loads:raise ValueError("auto service edges have no demand")
-			edge=best_edge(graphs[pod_id],loads,pod_id,None);current_nodes[pod_id]=edge[0];paths[pod_id]=[edge[0]];planned_pods[pod_id]=paths[pod_id][:];pod_positions[pod_id]=0
+			edge=best_edge(graphs[pod_id],loads,pod_id,None);current_nodes[pod_id]=edge[0];paths[pod_id]=[edge[0]]
 		for day in range(MONTH_DAYS):
 			self.apply_teleport_phase(queues,distances,self.teleports);self.settle_node_arrivals(day,queues,module_arrivals,service_delivered,service_speed,service_balance)
-			active=[]
+			requests=self.daily_pod_moves(fixed_pods,pod_positions,self.tubes);active=[]
 			for pod_id in sorted(graphs):
 				loads=service_loads(graphs[pod_id])
 				if not loads:continue
 				edge=best_edge(graphs[pod_id],loads,pod_id,current_nodes[pod_id])
 				target=edge[1]if current_nodes[pod_id]==edge[0]else next_step(graphs[pod_id],current_nodes[pod_id],edge[0])
-				paths[pod_id].append(target);planned_pods[pod_id]=paths[pod_id][:];active.append(pod_id)
+				requests[pod_id]=current_nodes[pod_id],target;paths[pod_id].append(target);active.append(pod_id)
 			if not active:break
-			moves=self.daily_pod_moves(planned_pods,pod_positions,self.tubes)
-			self.launch_pods(queues,moves,distances,pod_positions,planned_pods)
+			moves=capacity_moves(requests);all_pods={**fixed_pods,**paths};positions={**pod_positions,**{pod_id:0 for pod_id in paths}}
+			self.launch_pods(queues,moves,distances,positions,all_pods)
+			pod_positions.update({pod_id:positions[pod_id]for pod_id in pod_positions})
 			for pod_id in active:
 				moved=moves.get(pod_id)
 				if moved:current_nodes[pod_id]=moved[1]
-				else:paths[pod_id].pop();planned_pods[pod_id]=paths[pod_id][:]
+				else:paths[pod_id].pop()
 			self.settle_node_arrivals(day+1,queues,module_arrivals,service_delivered,service_speed,service_balance)
 		return{pod_id:close_pod_path(paths[pod_id],self.tubes)for pod_id in paths}
 	def greedy_edge_routes(self,edges,tubes):

@@ -181,7 +181,7 @@ pod 2 3-0-3
         self.assertFalse(reason)
         routes = planner.resolve_auto_routes([(5, [(6, 11), (0, 6)]), (4, [(5, 7), (5, 6), (5, 10)])])
         self.assertEqual(routes[5][:7], [11, 6, 11, 6, 11, 6, 0])
-        self.assertEqual(routes[4], [7, 5, 7, 5, 6, 5, 6, 5, 6, 5, 10, 5, 10, 5, 7])
+        self.assertEqual(routes[4], [7, 5, 7, 5, 6, 5, 6, 5, 7, 5, 6, 5, 10, 5, 7])
 
     def test_auto_route_ranks_edges_not_source_totals(self):
         """Verifies AUTO edge choice does not add unrelated demand from the same source node."""

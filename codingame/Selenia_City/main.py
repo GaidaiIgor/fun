@@ -235,7 +235,7 @@ class Planner:
 					for path in self.greedy_edge_routes([route_key(pad.id,a),route_key(pad.id,b)],full_tubes):
 						key=tuple(path)
 						if key not in seen:paths.append((-sum(pad.demand.values()),tube_cost(pad,self.buildings[a])+tube_cost(pad,self.buildings[b]),path));seen.add(key)
-		return[path for(_,_,path)in sorted(paths)[:16]]
+		return[path for(_,_,path)in sorted(paths)[:4]]
 	def replacement_path_groups(self,planned_pods,tubes,edge_schedule):
 		pods=self.reroutable_pods(set())[:4]
 		for count in range(1,len(pods)+1):

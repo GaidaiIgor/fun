@@ -137,11 +137,11 @@ pod 2 3-0-3
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
     def test_transfer_route_search_beats_recorded_timeout_baseline(self):
-        """Verifies this timeout-prone turn is at least 20 percent faster than the recorded baseline."""
+        """Verifies this timeout-prone turn plans under 500 milliseconds."""
         state = transfer_route_state()
-        baseline_seconds = 1.5256240998860449
+        target_seconds = 0.5
         best_seconds = min(timed_planner_run(state) for _ in range(3))
-        self.assertLess(best_seconds, baseline_seconds * 0.8)
+        self.assertLess(best_seconds, target_seconds)
 
     def test_connects_new_island_by_replacing_multiple_service_pods(self):
         """Verifies new disconnected buildings can be connected by rerouting a variable pod bundle."""

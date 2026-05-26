@@ -183,6 +183,24 @@ pod 2 3-0-3
         self.assertEqual(routes[5][:7], [11, 6, 11, 6, 11, 6, 0])
         self.assertEqual(routes[4], [7, 5, 7, 5, 6, 5, 6, 5, 6, 5, 10, 5, 10, 5, 7])
 
+    def test_auto_route_ranks_edges_not_source_totals(self):
+        """Verifies AUTO edge choice does not add unrelated demand from the same source node."""
+        state = """
+month 1
+resources 0
+landing 0 0 0 1,1,1,1,1,1,2,2,2,2,2,2
+module 1 1 10 0
+module 2 2 0 10
+landing 3 20 0 3:9
+module 4 3 30 0
+tube 0 1 1
+tube 0 2 1
+tube 0 3 1
+tube 3 4 1
+"""
+        planner = parse_turn_state(state)
+        self.assertEqual(planner.resolve_auto_route([(0, 1), (0, 2), (0, 3), (3, 4)], 1)[:2], [3, 4])
+
     def test_same_pad_boarding_uses_input_passenger_order(self):
         """Verifies same-pad passengers board by input order instead of type order."""
         state = """

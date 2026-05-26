@@ -291,6 +291,10 @@ class Planner:
 				for neighbor in graph[current]:
 					if neighbor==finish:return distance+1
 					if neighbor not in seen:seen.add(neighbor);queue.append((neighbor,distance+1))
+		def path_to_source(graph,start,finish):
+			result=[]
+			while start!=finish:start=next_step(graph,start,finish);result.append(start)
+			return result
 		def service_loads(graph):
 			result=Counter()
 			for(node,waiting)in queues.items():
@@ -302,13 +306,8 @@ class Planner:
 					options=[neighbor for neighbor in graph[node]if distances[astronaut_type][neighbor]<distances[astronaut_type][node]]
 					if options:result[node,min(options,key=lambda item:(distances[astronaut_type][item],item))]+=1
 			return result
-		def choose_source(graph,loads,pod_id,current=None):
-			source_load=Counter()
-			for(source,_),count in loads.items():source_load[source]+=count
-			return min(source_load,key=lambda node:(-min(source_load[node],10),pod_service_counts[pod_id][node],source_distance(graph,current,node)if current is not None else 0,node))
 		def best_edge(graph,loads,pod_id,current):
-			source=choose_source(graph,loads,pod_id,current)
-			return max((edge for edge in loads if edge[0]==source),key=lambda edge:(loads[edge],-edge[1]))
+			return min(loads,key=lambda edge:(-min(loads[edge],10),pod_service_counts[pod_id][edge[0]],source_distance(graph,current,edge[0])if current is not None else 0,edge[0],edge[1]))
 		graphs={pod_id:make_graph(edges)for(pod_id,edges)in specs}
 		reverse_graph={}
 		for(a,b)in self.tubes:reverse_graph.setdefault(a,[]).append((b,1));reverse_graph.setdefault(b,[]).append((a,1))
@@ -333,25 +332,27 @@ class Planner:
 			for other_id,graph in graphs.items():
 				if other_id!=pod_id:
 					for node in graph:pod_service_counts[pod_id][node]+=1
-		paths={};current_nodes={}
+		paths={};current_nodes={};pending={}
 		for pod_id in sorted(graphs):
 			loads=service_loads(graphs[pod_id])
 			if not loads:raise ValueError("auto service edges have no demand")
-			current_nodes[pod_id]=choose_source(graphs[pod_id],loads,pod_id);paths[pod_id]=[current_nodes[pod_id]];planned_pods[pod_id]=paths[pod_id][:];pod_positions[pod_id]=0
+			edge=best_edge(graphs[pod_id],loads,pod_id,None);current_nodes[pod_id]=edge[0];paths[pod_id]=[edge[0]];pending[pod_id]=[edge[1]];planned_pods[pod_id]=paths[pod_id][:];pod_positions[pod_id]=0
 		for day in range(MONTH_DAYS):
 			self.apply_teleport_phase(queues,distances,self.teleports);self.settle_node_arrivals(day,queues,module_arrivals,service_delivered,service_speed,service_balance)
 			active=[]
 			for pod_id in sorted(graphs):
-				loads=service_loads(graphs[pod_id])
-				if not loads:continue
-				edge=best_edge(graphs[pod_id],loads,pod_id,current_nodes[pod_id]);target=edge[1]if edge[0]==current_nodes[pod_id]else next_step(graphs[pod_id],current_nodes[pod_id],edge[0])
+				if not pending[pod_id]:
+					loads=service_loads(graphs[pod_id])
+					if not loads:continue
+					edge=best_edge(graphs[pod_id],loads,pod_id,current_nodes[pod_id]);pending[pod_id]=path_to_source(graphs[pod_id],current_nodes[pod_id],edge[0])+[edge[1]]
+				target=pending[pod_id][0]
 				paths[pod_id].append(target);planned_pods[pod_id]=paths[pod_id][:];active.append(pod_id)
 			if not active:break
 			moves=self.daily_pod_moves(planned_pods,pod_positions,self.tubes)
 			self.launch_pods(queues,moves,distances,pod_positions,planned_pods)
 			for pod_id in active:
 				moved=moves.get(pod_id)
-				if moved:current_nodes[pod_id]=moved[1]
+				if moved:current_nodes[pod_id]=moved[1];pending[pod_id].pop(0)
 				else:paths[pod_id].pop();planned_pods[pod_id]=paths[pod_id][:]
 			self.settle_node_arrivals(day+1,queues,module_arrivals,service_delivered,service_speed,service_balance)
 		return{pod_id:close_pod_path(paths[pod_id],self.tubes)for pod_id in paths}

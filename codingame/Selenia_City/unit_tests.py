@@ -137,10 +137,10 @@ pod 2 3-0-3
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
     def test_transfer_route_search_beats_recorded_timeout_baseline(self):
-        """Verifies this timeout-prone turn plans under 400 milliseconds."""
+        """Verifies this timeout-prone turn plans under 300 milliseconds."""
         state = transfer_route_state()
-        target_seconds = 0.4
-        best_seconds = max(timed_planner_run(state) for _ in range(3))
+        target_seconds = 0.3
+        best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
     def test_connects_new_island_by_replacing_multiple_service_pods(self):
@@ -154,10 +154,10 @@ pod 2 3-0-3
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
     def test_new_island_replacement_search_beats_recorded_timeout_baseline(self):
-        """Verifies this new-island replacement turn plans under 400 milliseconds."""
+        """Verifies this new-island replacement turn plans under 300 milliseconds."""
         state = new_island_state()
-        target_seconds = 0.4
-        best_seconds = max(timed_planner_run(state) for _ in range(3))
+        target_seconds = 0.3
+        best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
     def test_same_pad_boarding_uses_input_passenger_order(self):

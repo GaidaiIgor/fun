@@ -262,7 +262,19 @@ class Planner:
 						seen.add(key);yielded+=1;yield(tuple(sorted(pod.id for pod in removed)),[path],schedule)
 						if yielded>=EXACT_REPLACEMENT_GROUP_LIMIT:return
 	def resolve_auto_route(self,edges:list[Pair],pod_id:int=MAX_PODS)->list[int]:
-		def next_step(start,finish):
+		return self.resolve_auto_routes([(pod_id,edges)])[pod_id]
+	def resolve_auto_routes(self,specs:list[tuple[int,list[Pair]]])->dict[int,list[int]]:
+		def make_graph(edges):
+			graph={}
+			for(a,b)in edges:graph.setdefault(a,[]).append(b);graph.setdefault(b,[]).append(a)
+			graph={node:sorted(neighbors)for(node,neighbors)in graph.items()};seen=set();queue=deque([next(iter(graph))])
+			while queue:
+				current=queue.popleft()
+				if current in seen:continue
+				seen.add(current);queue.extend(graph[current])
+			if len(seen)<len(graph):raise ValueError("auto service edges are disconnected")
+			return graph
+		def next_step(graph,start,finish):
 			queue=deque([start]);parent={start:start}
 			while finish not in parent:
 				current=queue.popleft()
@@ -271,7 +283,7 @@ class Planner:
 			step=finish
 			while parent[step]!=start:step=parent[step]
 			return step
-		def source_distance(start,finish):
+		def source_distance(graph,start,finish):
 			if start==finish:return 0
 			queue=deque([(start,0)]);seen={start}
 			while queue:
@@ -279,7 +291,7 @@ class Planner:
 				for neighbor in graph[current]:
 					if neighbor==finish:return distance+1
 					if neighbor not in seen:seen.add(neighbor);queue.append((neighbor,distance+1))
-		def service_loads():
+		def service_loads(graph):
 			result=Counter()
 			for(node,waiting)in queues.items():
 				if node not in graph:continue
@@ -290,19 +302,14 @@ class Planner:
 					options=[neighbor for neighbor in graph[node]if distances[astronaut_type][neighbor]<distances[astronaut_type][node]]
 					if options:result[node,min(options,key=lambda item:(distances[astronaut_type][item],item))]+=1
 			return result
-		def best_edge(loads):
+		def choose_source(graph,loads,pod_id,current=None):
 			source_load=Counter()
 			for(source,_),count in loads.items():source_load[source]+=count
-			source=min(source_load,key=lambda node:(-min(source_load[node],10),pod_service_counts[node],source_distance(current,node),node))
+			return min(source_load,key=lambda node:(-min(source_load[node],10),pod_service_counts[pod_id][node],source_distance(graph,current,node)if current is not None else 0,node))
+		def best_edge(graph,loads,pod_id,current):
+			source=choose_source(graph,loads,pod_id,current)
 			return max((edge for edge in loads if edge[0]==source),key=lambda edge:(loads[edge],-edge[1]))
-		graph={}
-		for(a,b)in edges:graph.setdefault(a,[]).append(b);graph.setdefault(b,[]).append(a)
-		graph={node:sorted(neighbors)for(node,neighbors)in graph.items()};seen_nodes=set();queue=deque([next(iter(graph))])
-		while queue:
-			current=queue.popleft()
-			if current in seen_nodes:continue
-			seen_nodes.add(current);queue.extend(graph[current])
-		if len(seen_nodes)<len(graph):raise ValueError("auto service edges are disconnected")
+		graphs={pod_id:make_graph(edges)for(pod_id,edges)in specs}
 		reverse_graph={}
 		for(a,b)in self.tubes:reverse_graph.setdefault(a,[]).append((b,1));reverse_graph.setdefault(b,[]).append((a,1))
 		for(a,b)in self.teleports.items():reverse_graph.setdefault(b,[]).append((a,0))
@@ -318,25 +325,36 @@ class Planner:
 						if cost:queue.append(neighbor)
 						else:queue.appendleft(neighbor)
 		queues={pad.id:[(pad.id,index,astronaut_type)for(index,astronaut_type)in enumerate(pad.order)]for pad in self.get_landing_pads()}
-		module_arrivals=Counter();service_delivered=Counter();service_speed=Counter();service_balance=Counter();planned_pods={pid:pod.path[:]for(pid,pod)in self.pods.items()if pid!=pod_id};pod_positions={pid:0 for pid in planned_pods};pod_service_counts=Counter()
+		auto_ids=set(graphs);module_arrivals=Counter();service_delivered=Counter();service_speed=Counter();service_balance=Counter();planned_pods={pid:pod.path[:]for(pid,pod)in self.pods.items()if pid not in auto_ids};pod_positions={pid:0 for pid in planned_pods};base_counts=Counter();pod_service_counts={pid:Counter()for pid in graphs}
 		for path in planned_pods.values():
-			for node in set(path):pod_service_counts[node]+=1
-		loads=service_loads()
-		if not loads:raise ValueError("auto service edges have no demand")
-		source_load=Counter()
-		for(source,_),count in loads.items():source_load[source]+=count
-		current=min(source_load,key=lambda node:(-min(source_load[node],10),pod_service_counts[node],node));path=[current];planned_pods[pod_id]=path[:];pod_positions[pod_id]=0
+			for node in set(path):base_counts[node]+=1
+		for pod_id in graphs:
+			pod_service_counts[pod_id].update(base_counts)
+			for other_id,graph in graphs.items():
+				if other_id!=pod_id:
+					for node in graph:pod_service_counts[pod_id][node]+=1
+		paths={};current_nodes={}
+		for pod_id in sorted(graphs):
+			loads=service_loads(graphs[pod_id])
+			if not loads:raise ValueError("auto service edges have no demand")
+			current_nodes[pod_id]=choose_source(graphs[pod_id],loads,pod_id);paths[pod_id]=[current_nodes[pod_id]];planned_pods[pod_id]=paths[pod_id][:];pod_positions[pod_id]=0
 		for day in range(MONTH_DAYS):
 			self.apply_teleport_phase(queues,distances,self.teleports);self.settle_node_arrivals(day,queues,module_arrivals,service_delivered,service_speed,service_balance)
-			loads=service_loads()
-			if not loads:break
-			edge=best_edge(loads);target=edge[1]if edge[0]==current else next_step(current,edge[0]);path.append(target);planned_pods[pod_id]=path[:]
-			moves=self.daily_pod_moves(planned_pods,pod_positions,self.tubes);moved=moves.get(pod_id)
+			active=[]
+			for pod_id in sorted(graphs):
+				loads=service_loads(graphs[pod_id])
+				if not loads:continue
+				edge=best_edge(graphs[pod_id],loads,pod_id,current_nodes[pod_id]);target=edge[1]if edge[0]==current_nodes[pod_id]else next_step(graphs[pod_id],current_nodes[pod_id],edge[0])
+				paths[pod_id].append(target);planned_pods[pod_id]=paths[pod_id][:];active.append(pod_id)
+			if not active:break
+			moves=self.daily_pod_moves(planned_pods,pod_positions,self.tubes)
 			self.launch_pods(queues,moves,distances,pod_positions,planned_pods)
-			if moved:current=moved[1]
-			else:path.pop();planned_pods[pod_id]=path[:]
+			for pod_id in active:
+				moved=moves.get(pod_id)
+				if moved:current_nodes[pod_id]=moved[1]
+				else:paths[pod_id].pop();planned_pods[pod_id]=paths[pod_id][:]
 			self.settle_node_arrivals(day+1,queues,module_arrivals,service_delivered,service_speed,service_balance)
-		return close_pod_path(path,self.tubes)
+		return{pod_id:close_pod_path(paths[pod_id],self.tubes)for pod_id in paths}
 	def greedy_edge_routes(self,edges,tubes):
 		def next_step(start,finish):
 			queue=deque([start]);parent={start:start}

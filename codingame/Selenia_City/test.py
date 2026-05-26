@@ -42,7 +42,7 @@ pod 3 5-4-5-4-0-4-5-4-0-4-5
 pod 4 7-5-7-5-6-5-7-5-6-5-7
 """
 # OUTPUT_COMMAND = "TUBE 11 6;TUBE 6 0;POD 5 AUTO(11-6, 6-0)"
-OUTPUT_COMMAND = "TUBE 6 11; TUBE 0 6; TUBE 5 10; POD 5 AUTO(6-11, 0-6); DESTROY 4; POD 4 7 5 6 5 7 5 6 5 7 5 6 5 10 5 6 5 10 5 7"
+OUTPUT_COMMAND = "TUBE 6 11; TUBE 0 6; TUBE 5 10; POD 5 AUTO(6-11, 0-6); DESTROY 4; POD 4 AUTO(5-7, 5-6, 5-10)"
 # OUTPUT_COMMAND = "TUBE 6 11; TUBE 0 6; TUBE 5 10; POD 5 11 6 0 6 0 6 11 6 0 6 0 6 11 6 0 6 11; DESTROY 4; POD 4 7 5 6 5 7 5 6 5 7 5 6 5 10 5 6 5 10 5 7"
 
 
@@ -77,14 +77,12 @@ def apply_command_with_auto(planner: Planner, command: str) -> tuple[str, list[s
             return reason, []
         expanded_actions.append(action)
     resolved_actions = []
+    try:resolved_paths = context.resolve_auto_routes([(pod_id,edges)for(_,_,pod_id,edges)in autos])
+    except ValueError as error:return f"AUTO: {error}", resolved_actions
     for index, action, pod_id, edges in autos:
-        try:path = context.resolve_auto_route(edges, pod_id)
-        except ValueError as error:return f"{action}: {error}", resolved_actions
+        path = resolved_paths[pod_id]
         expanded_actions[index] = "POD {} {}".format(pod_id, " ".join(map(str, path)))
         resolved_actions.append(expanded_actions[index])
-        reason = apply_actions(context, expanded_actions[index])
-        if reason:
-            return reason, resolved_actions
     for action in expanded_actions:
         reason = apply_actions(planner, action)
         if reason:

@@ -137,9 +137,9 @@ pod 2 3-0-3
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
     def test_transfer_route_search_beats_recorded_timeout_baseline(self):
-        """Verifies this timeout-prone turn plans under 500 milliseconds."""
+        """Verifies this timeout-prone turn plans under 400 milliseconds."""
         state = transfer_route_state()
-        target_seconds = 0.5
+        target_seconds = 0.4
         best_seconds = max(timed_planner_run(state) for _ in range(3))
         self.assertLess(best_seconds, target_seconds)
 

@@ -8,7 +8,7 @@ from io import StringIO
 from time import perf_counter
 import unittest
 
-from Selenia_City.main import MAX_PODS, MAX_TUBES_PER_BUILDING, POD_COST, POD_REFUND, TELEPORT_COST
+from Selenia_City.main import MAX_PODS, MAX_TUBES_PER_BUILDING, MONTH_DAYS, POD_COST, POD_REFUND, TELEPORT_COST
 from Selenia_City.main import Building, Planner, Pod, point_on_segment, route_key, segments_intersect, tube_cost
 
 
@@ -86,7 +86,7 @@ pod 1 1-0-1
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
     def test_loop_closure_uses_shortest_return_path(self):
-        """Verifies loop closure does not repeat useful work after the last delivery."""
+        """Verifies explicit month-long routes score at least as well as the old shortest loop."""
         state = """
 month 2
 resources 2502
@@ -100,8 +100,6 @@ pod 1 1-0-1
         benchmark_move = "DESTROY 1;TUBE 0 2;TUBE 3 0;POD 1 1 0 1 0 2 0 2 0 1;POD 2 3 0 3"
         benchmark_score = score_command(state, benchmark_move)
         planner_move = choose_planner_command(state)
-        self.assertIn("POD 1 1 0 1 0 2 0 2 0 1", planner_move)
-        self.assertNotIn("POD 1 1 0 1 0 2 0 2 0 2 0 2 0 1 0 1", planner_move)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
     def test_two_hop_route_bundles_passengers_before_downstream_trip(self):
@@ -181,7 +179,7 @@ pod 2 3-0-3
         self.assertFalse(reason)
         routes = planner.resolve_auto_routes([(5, [(6, 11), (0, 6)]), (4, [(5, 7), (5, 6), (5, 10)])])
         self.assertEqual(routes[5][:7], [11, 6, 11, 6, 11, 6, 0])
-        self.assertEqual(routes[4], [7, 5, 7, 5, 6, 5, 6, 5, 7, 5, 6, 5, 10, 5, 6, 5, 6, 5, 6, 5, 6, 5, 7])
+        self.assertEqual(routes[4], [7, 5, 7, 5, 6, 5, 6, 5, 7, 5, 6, 5, 10, 5, 6, 5, 6, 5, 6, 5, 6])
 
     def test_auto_route_ranks_edges_not_source_totals(self):
         """Verifies AUTO edge choice does not add unrelated demand from the same source node."""
@@ -241,7 +239,7 @@ def choose_planner_command(state: str) -> str:
     with redirect_stderr(StringIO()):
         actions = planner.choose_actions()
     command = ";".join(actions) or "WAIT"
-    assert_looped_planner_pods(command)
+    assert_full_planner_pods(command)
     return command
 
 
@@ -338,14 +336,14 @@ pod 4 7-5-7-5-6-5-7-5-6-5-7
 """
 
 
-def assert_looped_planner_pods(command: str):
-    """Checks every planner-created pod route ends at its starting node."""
+def assert_full_planner_pods(command: str):
+    """Checks every planner-created pod route has one stop per month day plus its start."""
     for action in command.split(";"):
         parts = action.strip().split()
         if parts and parts[0] == "POD":
             path = [int(item) for item in parts[2:]]
-            if path[0] != path[-1]:
-                raise AssertionError(f"unlooped planner pod route: {action}")
+            if len(path) != MONTH_DAYS + 1:
+                raise AssertionError(f"non-month planner pod route: {action}")
 
 
 def score_command(state: str, command: str) -> int:

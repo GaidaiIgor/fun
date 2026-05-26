@@ -160,7 +160,7 @@ class Planner:
 			for(a,b)in new_tubes:new_tube_state[route_key(a,b)]=1
 			for(a,b)in upgrades:new_tube_state[route_key(a,b)]+=1
 			new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()if pod_id not in destroy_ids}
-			for(fake_id,path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=close_pod_path(path,new_tube_state)
+			for(fake_id,path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=full_pod_path(path,new_tube_state)
 			result=score(new_pods,planned_teleports,new_tube_state);gain=result[0]-old_score
 			if gain>0 and result[3]>=demand:
 				candidate=Candidate(gain,cost,0,0,0,paths[0],new_tubes,upgrades,reroute_pod_id=destroy_ids[0]if len(destroy_ids)==1 else None,destroy_pod_ids=list(destroy_ids),extra_paths=[path[:]for path in paths[1:]])
@@ -362,7 +362,7 @@ class Planner:
 				if moved:current_nodes[pod_id]=moved[1]
 				else:paths[pod_id].pop()
 			self.settle_node_arrivals(day+1,queues,module_arrivals,service_delivered,service_speed,service_balance)
-		return{pod_id:close_pod_path(paths[pod_id],self.tubes)for pod_id in paths}
+		return{pod_id:full_pod_path(paths[pod_id],self.tubes)for pod_id in paths}
 	def greedy_edge_routes(self,edges,tubes):
 		def next_step(start,finish):
 			queue=deque([start]);parent={start:start}
@@ -432,7 +432,7 @@ class Planner:
 		for(a,b)in candidate.tubes:actions.append(f"TUBE {a} {b}");tubes[route_key(a,b)]=1;degrees[a]+=1;degrees[b]+=1
 		for(a,b)in candidate.upgrades:actions.append(f"UPGRADE {a} {b}");tubes[route_key(a,b)]+=1
 		for(index,path)in enumerate([candidate.path]+candidate.extra_paths):
-			path=close_pod_path(path,tubes);pod_id=destroy_ids[index]if index<len(destroy_ids)else next_pod_id(pod_ids);pod_ids.add(pod_id);planned_pods[pod_id]=path[:];actions.append("POD {} {}".format(pod_id," ".join(map(str,path))))
+			path=full_pod_path(path,tubes);pod_id=destroy_ids[index]if index<len(destroy_ids)else next_pod_id(pod_ids);pod_ids.add(pod_id);planned_pods[pod_id]=path[:];actions.append("POD {} {}".format(pod_id," ".join(map(str,path))))
 			for(edge,day)in path_edge_days(path):edge_schedule[edge,day]+=1
 		return budget-candidate.cost
 	def destroy_obsolete_pods(self,actions,service_counts,edge_schedule,planned_pods,rerouted_pod_ids,retired_pod_ids,budget,pod_ids):
@@ -976,7 +976,7 @@ class Planner:
 		if candidate.teleport is not None:a,b=candidate.teleport;actions.append(f"TELEPORT {a} {b}");planned_teleports[a]=b;teleport_used.add(a);teleport_used.add(b)
 		created_paths=[candidate.path]+candidate.extra_paths if candidate.path else candidate.extra_paths
 		for(index,path)in enumerate(created_paths):
-			path=close_pod_path(path,tubes);pod_id=candidate.reroute_pod_id if index==0 and candidate.reroute_pod_id is not None else next_pod_id(pod_ids);pod_ids.add(pod_id);planned_pods[pod_id]=path[:];actions.append("POD {} {}".format(pod_id," ".join(map(str,path))))
+			path=full_pod_path(path,tubes);pod_id=candidate.reroute_pod_id if index==0 and candidate.reroute_pod_id is not None else next_pod_id(pod_ids);pod_ids.add(pod_id);planned_pods[pod_id]=path[:];actions.append("POD {} {}".format(pod_id," ".join(map(str,path))))
 			if len(path)==3 and path[0]==path[2]:
 				if self.buildings[path[0]].kind==0 and self.buildings[path[1]].kind>0:direct_pod_counts[path[0],path[1]]+=1
 				dedicated_edge_counts[route_key(path[0],path[1])]+=1
@@ -1017,17 +1017,14 @@ def segments_intersect(a,b,c,d):
 def orientation(a,b,c):return(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)
 def loop_path(path):return path+path[-2::-1]
 def two_hop_loop_paths(a,b,c):return[[a,b,c,b,a],[a,b,a,b,c,b,a],[a,b,c,b,a,b,c,b,a],[a,b,a,b,c,b,a,b,c,b,a]]
-def close_pod_path(path,tubes):
-	if not path or path[0]==path[-1]:return path[:]
-	graph={}
-	for(a,b)in tubes:graph.setdefault(a,[]).append(b);graph.setdefault(b,[]).append(a)
-	queue=deque([path[-1]]);parent={path[-1]:path[-1]}
-	while path[0]not in parent:
-		building_id=queue.popleft()
-		for neighbor_id in graph[building_id]:
-			if neighbor_id in parent:continue
-			parent[neighbor_id]=building_id;queue.append(neighbor_id)
-	return path+unwind_path(parent,path[-1],path[0])[1:]
+def full_pod_path(path,tubes=None):
+	if len(path)<2:return path[:]
+	if len(path)>=MONTH_DAYS+1:return path[:MONTH_DAYS+1]
+	edges=list(zip(path,path[1:]))
+	if path[0]!=path[-1]:edges+=list(zip(path[-1:0:-1],path[-2::-1]))
+	result=[path[0]]
+	for day in range(MONTH_DAYS):result.append(edges[day%len(edges)][1])
+	return result
 def path_edge_days(path):
 	edges=[route_key(a,b)for(a,b)in zip(path,path[1:])]
 	if not edges:return[]

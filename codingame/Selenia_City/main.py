@@ -152,6 +152,18 @@ class Planner:
 						for(fake_id,added_path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=added_path[:]
 						fast_gain=self.score_from_pods(new_pods,planned_teleports)[0]-fast_old_score
 						if fast_gain>0:shortlist.append((fast_gain,-cost,(pod_id,),paths,new_tubes,upgrades,cost))
+		demand=sum(sum(pad.demand.values())for pad in self.get_landing_pads());quick_best=None
+		for(_,_,destroy_ids,paths,new_tubes,upgrades,cost)in sorted(shortlist,reverse=True):
+			new_tube_state=dict(tubes)
+			for(a,b)in new_tubes:new_tube_state[route_key(a,b)]=1
+			for(a,b)in upgrades:new_tube_state[route_key(a,b)]+=1
+			new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()if pod_id not in destroy_ids}
+			for(fake_id,path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=close_pod_path(path,new_tube_state)
+			result=score(new_pods,planned_teleports,new_tube_state);gain=result[0]-old_score
+			if gain>0 and result[3]>=demand:
+				candidate=Candidate(gain,cost,0,0,0,paths[0],new_tubes,upgrades,reroute_pod_id=destroy_ids[0]if len(destroy_ids)==1 else None,destroy_pod_ids=list(destroy_ids),extra_paths=[path[:]for path in paths[1:]])
+				if quick_best is None or(candidate.score,-candidate.cost)>(quick_best.score,-quick_best.cost):quick_best=candidate
+		if quick_best is not None:return quick_best
 		bundle_options=route_options[:24]+self.star_connect_options(tubes)
 		for(destroy_ids,base_paths,removed_schedule)in self.replacement_path_groups(planned_pods,tubes,edge_schedule):
 			for path in bundle_options:
@@ -223,7 +235,7 @@ class Planner:
 					for path in self.greedy_edge_routes([route_key(pad.id,a),route_key(pad.id,b)],full_tubes):
 						key=tuple(path)
 						if key not in seen:paths.append((-sum(pad.demand.values()),tube_cost(pad,self.buildings[a])+tube_cost(pad,self.buildings[b]),path));seen.add(key)
-		return[path for(_,_,path)in sorted(paths)[:48]]
+		return[path for(_,_,path)in sorted(paths)[:16]]
 	def replacement_path_groups(self,planned_pods,tubes,edge_schedule):
 		pods=self.reroutable_pods(set())[:4]
 		for count in range(1,len(pods)+1):

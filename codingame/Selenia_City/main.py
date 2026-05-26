@@ -312,12 +312,9 @@ class Planner:
 		for _ in range(MONTH_DAYS):
 			active={edge:count for(edge,count)in demand.items()if count>0}
 			if not active:break
-			current_edges=[edge for edge in active if edge[0]==current]
-			if current_edges:source=current
-			else:
-				big={source for(source,_),count in active.items()if count>=10}
-				if big:source=min(big,key=lambda item:(source_distance(current,item),item))
-				else:source=max({source for(source,_)in active},key=lambda item:(max(count for((source,_),count)in active.items()if source==item),-source_distance(current,item),-item))
+			big={source for(source,_),count in active.items()if count>=10}
+			if big:source=min(big,key=lambda item:(source_distance(current,item),item))
+			else:source=max({source for(source,_)in active},key=lambda item:(max(count for((source,_),count)in active.items()if source==item),-source_distance(current,item),-item))
 			if source!=current:current=next_step(current,source);path.append(current);continue
 			target=max((target for(source,target)in active if source==current),key=lambda item:(active[current,item],-item));demand[current,target]-=10;current=target;path.append(current)
 		return close_pod_path(path,self.tubes)

@@ -350,7 +350,6 @@ class Planner:
 		for(a,b)in sorted(self.tubes):print(f"tube {a} {b} {self.tubes[a,b]}",file=sys.stderr)
 		for a in sorted(self.teleports):print(f"teleport {a} {self.teleports[a]}",file=sys.stderr)
 		for pod_id in sorted(self.pods):path=self.pods[pod_id].path;path_text="-".join(map(str,path));print(f"pod {pod_id} {path_text}",file=sys.stderr)
-		self.debug_pair_costs(new_buildings)
 	def debug_pair_costs(self,new_buildings):
 		degrees=self.get_tube_degrees();building_ids=sorted(self.buildings);new_ids={building.id for building in new_buildings};total_pairs=len(building_ids)*(len(building_ids)-1)//2;printed=set()
 		if total_pairs<=DEBUG_PAIR_COST_LIMIT:pair_keys=[route_key(a,b)for(index,a)in enumerate(building_ids)for b in building_ids[index+1:]]

@@ -140,7 +140,7 @@ pod 2 3-0-3
         """Verifies this timeout-prone turn plans under 500 milliseconds."""
         state = transfer_route_state()
         target_seconds = 0.5
-        best_seconds = min(timed_planner_run(state) for _ in range(3))
+        best_seconds = max(timed_planner_run(state) for _ in range(3))
         self.assertLess(best_seconds, target_seconds)
 
     def test_connects_new_island_by_replacing_multiple_service_pods(self):

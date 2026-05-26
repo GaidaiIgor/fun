@@ -181,7 +181,7 @@ pod 2 3-0-3
         self.assertFalse(reason)
         routes = planner.resolve_auto_routes([(5, [(6, 11), (0, 6)]), (4, [(5, 7), (5, 6), (5, 10)])])
         self.assertEqual(routes[5][:7], [11, 6, 11, 6, 11, 6, 0])
-        self.assertEqual(routes[4], [7, 5, 7, 5, 6, 5, 6, 5, 7, 5, 6, 5, 10, 5, 7])
+        self.assertEqual(routes[4], [7, 5, 7, 5, 6, 5, 6, 5, 7, 5, 6, 5, 10, 5, 6, 5, 6, 5, 6, 5, 6, 5, 7])
 
     def test_auto_route_ranks_edges_not_source_totals(self):
         """Verifies AUTO edge choice does not add unrelated demand from the same source node."""
@@ -200,6 +200,22 @@ tube 3 4 1
 """
         planner = parse_turn_state(state)
         self.assertEqual(planner.resolve_auto_route([(0, 1), (0, 2), (0, 3), (3, 4)], 1)[:2], [3, 4])
+
+    def test_auto_route_oscillates_on_shared_edge_without_demand(self):
+        """Verifies AUTO falls back to the most shared service-area edge when no passengers need it."""
+        state = """
+month 1
+resources 0
+module 2 1 0 0
+module 3 2 10 0
+module 4 3 0 10
+tube 2 3 1
+tube 2 4 1
+pod 1 2-3-2
+pod 2 2-4-2
+"""
+        planner = parse_turn_state(state)
+        self.assertEqual(planner.resolve_auto_route([(2, 3), (2, 4)], 5)[:5], [2, 3, 2, 3, 2])
 
     def test_same_pad_boarding_uses_input_passenger_order(self):
         """Verifies same-pad passengers board by input order instead of type order."""

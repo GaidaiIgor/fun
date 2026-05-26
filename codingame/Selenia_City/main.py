@@ -304,6 +304,13 @@ class Planner:
 			return result
 		def best_edge(graph,loads,pod_id,current):
 			return min(loads,key=lambda edge:(-min(loads[edge],10),pod_service_counts[pod_id][edge[0]],source_distance(graph,current,edge[0])if current is not None else 0,edge[0],edge[1]))
+		def fallback_node(graph,pod_id):
+			return min(graph,key=lambda node:(-pod_service_counts[pod_id][node],node))
+		def fallback_target(graph,pod_id,current):
+			node=fallback_node(graph,pod_id);neighbor=min(graph[node],key=lambda item:(-pod_service_counts[pod_id][item],item))
+			if current==node:return neighbor
+			if current==neighbor:return node
+			return next_step(graph,current,node)
 		def capacity_moves(requests):
 			moves={};by_tube={}
 			for(pod_id,move)in requests.items():by_tube.setdefault(route_key(*move),[]).append((pod_id,move))
@@ -337,17 +344,16 @@ class Planner:
 		paths={};current_nodes={}
 		for pod_id in sorted(graphs):
 			loads=service_loads(graphs[pod_id])
-			if not loads:raise ValueError("auto service edges have no demand")
-			edge=best_edge(graphs[pod_id],loads,pod_id,None);current_nodes[pod_id]=edge[0];paths[pod_id]=[edge[0]]
+			current_nodes[pod_id]=best_edge(graphs[pod_id],loads,pod_id,None)[0]if loads else fallback_node(graphs[pod_id],pod_id);paths[pod_id]=[current_nodes[pod_id]]
 		for day in range(MONTH_DAYS):
 			self.apply_teleport_phase(queues,distances,self.teleports);self.settle_node_arrivals(day,queues,module_arrivals,service_delivered,service_speed,service_balance)
 			fixed_moves=self.daily_pod_moves(fixed_pods,pod_positions,self.tubes);self.launch_pods(queues,fixed_moves,distances,pod_positions,fixed_pods);self.settle_node_arrivals(day+1,queues,module_arrivals,service_delivered,service_speed,service_balance)
 			requests={};active=[]
 			for pod_id in sorted(graphs):
 				loads=service_loads(graphs[pod_id])
-				if not loads:continue
-				edge=best_edge(graphs[pod_id],loads,pod_id,current_nodes[pod_id])
-				target=edge[1]if current_nodes[pod_id]==edge[0]else next_step(graphs[pod_id],current_nodes[pod_id],edge[0])
+				if loads:
+					edge=best_edge(graphs[pod_id],loads,pod_id,current_nodes[pod_id]);target=edge[1]if current_nodes[pod_id]==edge[0]else next_step(graphs[pod_id],current_nodes[pod_id],edge[0])
+				else:target=fallback_target(graphs[pod_id],pod_id,current_nodes[pod_id])
 				requests[pod_id]=current_nodes[pod_id],target;paths[pod_id].append(target);active.append(pod_id)
 			if not active:break
 			moves=capacity_moves(requests);positions={pod_id:0 for pod_id in paths};self.launch_pods(queues,moves,distances,positions,paths)

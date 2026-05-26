@@ -166,7 +166,7 @@ class Planner:
 				candidate=Candidate(gain,cost,0,0,0,paths[0],new_tubes,upgrades,reroute_pod_id=destroy_ids[0]if len(destroy_ids)==1 else None,destroy_pod_ids=list(destroy_ids),extra_paths=[path[:]for path in paths[1:]])
 				if quick_best is None or(candidate.score,-candidate.cost)>(quick_best.score,-quick_best.cost):quick_best=candidate
 		if quick_best is not None:return quick_best
-		bundle_options=route_options[:24]+self.star_connect_options(tubes)
+		bundle_options=route_options[:8]+self.star_connect_options(tubes)
 		for(destroy_ids,base_paths,removed_schedule)in self.replacement_path_groups(planned_pods,tubes,edge_schedule):
 			for path in bundle_options:
 				paths=base_paths+[path]

@@ -350,19 +350,21 @@ class Planner:
 			for other_id,graph in graphs.items():
 				if other_id!=pod_id:
 					for node in graph:pod_service_counts[pod_id][node]+=1
-		paths={};current_nodes={}
-		for pod_id in sorted(graphs):
-			loads=service_loads(graphs[pod_id])
-			current_nodes[pod_id]=best_edge(graphs[pod_id],loads,pod_id,None)[0]if loads else fallback_node(graphs[pod_id],pod_id);paths[pod_id]=[current_nodes[pod_id]]
+		paths={pod_id:[]for pod_id in graphs};current_nodes={}
 		for day in range(MONTH_DAYS):
 			self.apply_teleport_phase(queues,distances,self.teleports);self.settle_node_arrivals(day,queues,module_arrivals,service_delivered,service_speed,service_balance)
 			fixed_moves=self.daily_pod_moves(fixed_pods,pod_positions,self.tubes);self.launch_pods(queues,fixed_moves,distances,pod_positions,fixed_pods);self.settle_node_arrivals(day+1,queues,module_arrivals,service_delivered,service_speed,service_balance)
 			requests={};active=[]
 			for pod_id in sorted(graphs):
+				current=current_nodes.get(pod_id)
 				loads=service_loads(graphs[pod_id])
 				if loads:
-					edge=best_edge(graphs[pod_id],loads,pod_id,current_nodes[pod_id]);target=edge[1]if current_nodes[pod_id]==edge[0]else next_step(graphs[pod_id],current_nodes[pod_id],edge[0])
-				else:target=fallback_target(graphs[pod_id],pod_id,current_nodes[pod_id])
+					edge=best_edge(graphs[pod_id],loads,pod_id,current)
+					if current is None:current_nodes[pod_id]=edge[0];paths[pod_id]=[edge[0]];target=edge[1]
+					else:target=edge[1]if current==edge[0]else next_step(graphs[pod_id],current,edge[0])
+				elif current is None:
+					current_nodes[pod_id]=fallback_node(graphs[pod_id],pod_id);paths[pod_id]=[current_nodes[pod_id]];target=fallback_target(graphs[pod_id],pod_id,current_nodes[pod_id])
+				else:target=fallback_target(graphs[pod_id],pod_id,current)
 				requests[pod_id]=current_nodes[pod_id],target;paths[pod_id].append(target);active.append(pod_id)
 			if not active:break
 			moves=capacity_moves(requests);positions={pod_id:0 for pod_id in paths};self.launch_pods(queues,moves,distances,positions,paths)

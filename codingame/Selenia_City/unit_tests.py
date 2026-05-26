@@ -199,6 +199,23 @@ tube 3 4 1
         planner = parse_turn_state(state)
         self.assertEqual(planner.resolve_auto_route([(0, 1), (0, 2), (0, 3), (3, 4)], 1)[:2], [3, 4])
 
+    def test_auto_route_initial_node_uses_first_daily_choice(self):
+        """Verifies AUTO placement uses the same edge ranking as the first movement day."""
+        state = """
+month 1
+resources 0
+landing 0 0 0 1:20
+landing 2 20 0 1:5
+module 3 1 30 0
+landing 4 10 0 none
+tube 0 4 1
+tube 2 3 1
+tube 3 4 1
+pod 1 0-4-0-4-0-4-0-4-0-4-0-4-0-4-0-4-0-4-0-4-0
+"""
+        planner = parse_turn_state(state)
+        self.assertEqual(planner.resolve_auto_route([(2, 3), (4, 3)], 2)[:2], [4, 3])
+
     def test_auto_route_oscillates_on_shared_edge_without_demand(self):
         """Verifies AUTO falls back to the most shared service-area edge when no passengers need it."""
         state = """

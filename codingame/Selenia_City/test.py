@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 if not __package__:
@@ -62,31 +63,41 @@ def print_score_after_command():
 
 def apply_command_with_auto(planner: Planner, command: str) -> tuple[str, list[str]]:
     """Applies command to planner while expanding AUTO pod route syntax."""
-    resolved_actions = []
-    for action in command.split(";"):
-        cleaned = action.strip()
-        if not cleaned:
+    actions = [action.strip() for action in command.split(";") if action.strip()]
+    context = deepcopy(planner)
+    autos = []
+    expanded_actions = []
+    for action in actions:
+        auto = parse_auto_action(action)
+        if auto:
+            autos.append((len(expanded_actions), *auto));expanded_actions.append("")
             continue
-        try:
-            expanded, resolved = expand_auto_action(planner, cleaned)
-        except ValueError as error:
-            return f"{cleaned}: {error}", resolved_actions
-        if resolved:
-            resolved_actions.append(resolved)
-        reason = apply_actions(planner, expanded)
+        reason = apply_actions(context, action)
         if reason:
-            return reason if expanded == cleaned else f"{cleaned} resolved to {expanded}: {reason}", resolved_actions
+            return reason, []
+        expanded_actions.append(action)
+    resolved_actions = []
+    for index, action, pod_id, edges in autos:
+        try:path = context.resolve_auto_route(edges, pod_id)
+        except ValueError as error:return f"{action}: {error}", resolved_actions
+        expanded_actions[index] = "POD {} {}".format(pod_id, " ".join(map(str, path)))
+        resolved_actions.append(expanded_actions[index])
+        reason = apply_actions(context, expanded_actions[index])
+        if reason:
+            return reason, resolved_actions
+    for action in expanded_actions:
+        reason = apply_actions(planner, action)
+        if reason:
+            return reason, resolved_actions
     return "", resolved_actions
 
 
-def expand_auto_action(planner: Planner, action: str) -> tuple[str, str]:
-    """Returns server-compatible action text and resolved pod route text for AUTO pod commands."""
+def parse_auto_action(action: str) -> tuple[str, int, list[tuple[int, int]]]:
+    """Returns AUTO action metadata for pod_id and service edges, or an empty tuple."""
     parts = action.split(maxsplit=2)
     if len(parts) != 3 or parts[0] != "POD" or not parts[2].strip().startswith("AUTO("):
-        return action, ""
-    path = planner.resolve_auto_route(parse_auto_edges(parts[2].strip()))
-    expanded = "POD {} {}".format(parts[1], " ".join(map(str, path)))
-    return expanded, expanded
+        return ()
+    return action, int(parts[1]), parse_auto_edges(parts[2].strip())
 
 
 def parse_auto_edges(text: str) -> list[tuple[int, int]]:

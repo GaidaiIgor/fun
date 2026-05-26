@@ -261,6 +261,10 @@ class Planner:
 					if key not in seen:
 						seen.add(key);yielded+=1;yield(tuple(sorted(pod.id for pod in removed)),[path],schedule)
 						if yielded>=EXACT_REPLACEMENT_GROUP_LIMIT:return
+	def resolve_auto_route(self,edges:list[Pair])->list[int]:
+		routes=self.greedy_edge_routes([route_key(a,b)for(a,b)in edges],self.tubes)
+		if not routes:raise ValueError("auto service edges are disconnected")
+		return close_pod_path(routes[0],self.tubes)
 	def greedy_edge_routes(self,edges,tubes):
 		def next_step(start,finish):
 			queue=deque([start]);parent={start:start}

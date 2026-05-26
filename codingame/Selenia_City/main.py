@@ -12,8 +12,8 @@ POD_COST=1000
 POD_REFUND=750
 REROUTE_COST=POD_COST-POD_REFUND
 TELEPORT_COST=5000
-EXACT_PATH_SHORTLIST=4
-EXACT_ROUTE_LIMIT=64
+EXACT_PATH_SHORTLIST=10
+EXACT_ROUTE_LIMIT=128
 EXACT_SEARCH_ROUNDS=8
 EXACT_BULK_PODS=5
 EXACT_REPLACEMENT_GROUP_LIMIT=72
@@ -116,7 +116,7 @@ class Planner:
 				upgrade_cost,upgrades=self.bundle_upgrade_plan(paths,new_tubes,tubes,edge_schedule);cost=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in new_tubes)+POD_COST*len(paths)+upgrade_cost
 				if cost>budget:continue
 				new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()}
-				for(fake_id,added_path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=added_path[:]
+				for(fake_id,added_path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=full_pod_path(added_path,tubes)
 				fast_gain=self.score_from_pods(new_pods,planned_teleports)[0]-fast_old_score
 				if fast_gain>0:shortlist.append((fast_gain,-cost,(),paths,new_tubes,upgrades,cost))
 		for(pod_id,old_path)in planned_pods.items():
@@ -130,11 +130,11 @@ class Planner:
 				paths=[path[:]for path in paths];upgrade_cost,upgrades=self.bundle_upgrade_plan(paths,[],tubes,removed_schedule);cost=REROUTE_COST+POD_COST*(len(paths)-1)+upgrade_cost
 				if cost>budget:continue
 				new_pods={current_id:pod_path[:]for(current_id,pod_path)in planned_pods.items()if current_id!=pod_id}
-				for(fake_id,added_path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=added_path[:]
+				for(fake_id,added_path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=full_pod_path(added_path,tubes)
 				fast_gain=self.score_from_pods(new_pods,planned_teleports)[0]-fast_old_score
 				if fast_gain>0:shortlist.append((fast_gain,-cost,(pod_id,),paths,[],upgrades,cost))
 		for(pod_id,old_path)in planned_pods.items():
-			if pod_id not in self.pods or len(old_path)!=3 or old_path[0]!=old_path[2]:continue
+			if pod_id not in self.pods or path_single_edge(old_path) is None:continue
 			old_pad=self.buildings[old_path[0]];hub=self.buildings[old_path[1]]
 			if old_pad.kind!=0 or hub.kind<=0:continue
 			old_batches=(old_pad.demand[hub.kind]+9)//10
@@ -151,7 +151,7 @@ class Planner:
 						upgrade_cost,upgrades=self.bundle_upgrade_plan(paths,new_tubes,tubes,removed_schedule);cost=REROUTE_COST+POD_COST+sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in new_tubes)+upgrade_cost
 						if cost>budget:continue
 						new_pods={current_id:pod_path[:]for(current_id,pod_path)in planned_pods.items()if current_id!=pod_id}
-						for(fake_id,added_path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=added_path[:]
+						for(fake_id,added_path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=full_pod_path(added_path,tubes)
 						fast_gain=self.score_from_pods(new_pods,planned_teleports)[0]-fast_old_score
 						if fast_gain>0:shortlist.append((fast_gain,-cost,(pod_id,),paths,new_tubes,upgrades,cost))
 		demand=sum(sum(pad.demand.values())for pad in self.get_landing_pads());quick_best=None
@@ -177,12 +177,12 @@ class Planner:
 				upgrade_cost,upgrades=self.bundle_upgrade_plan(paths,new_tubes,tubes,removed_schedule);cost=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in new_tubes)+POD_COST*len(paths)-POD_REFUND*len(destroy_ids)+upgrade_cost
 				if cost>budget:continue
 				new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()if pod_id not in destroy_ids}
-				for(fake_id,added_path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=added_path[:]
+				for(fake_id,added_path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=full_pod_path(added_path,tubes)
 				fast_gain=self.score_from_pods(new_pods,planned_teleports)[0]-fast_old_score
 				if fast_gain>0:shortlist.append((fast_gain,-cost,destroy_ids,paths,new_tubes,upgrades,cost))
 		for(_,_,destroy_ids,paths,new_tubes,upgrades,cost)in sorted(shortlist,reverse=True)[:EXACT_PATH_SHORTLIST]:
 			new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()if pod_id not in destroy_ids}
-			for(fake_id,path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=path[:]
+			for(fake_id,path)in enumerate(paths,MAX_PODS+1):new_pods[fake_id]=full_pod_path(path,tubes)
 			new_tube_state=dict(tubes)
 			for(a,b)in new_tubes:new_tube_state[route_key(a,b)]=1
 			for(a,b)in upgrades:new_tube_state[route_key(a,b)]+=1
@@ -194,7 +194,7 @@ class Planner:
 	def bundle_upgrade_plan(self,paths,new_tubes,tubes,edge_schedule):
 		new_keys={route_key(a,b)for(a,b)in new_tubes};added_schedule=Counter();required_capacities=Counter()
 		for path in paths:
-			for(edge,day)in path_edge_days(path):added_schedule[edge,day]+=1;required_capacities[edge]=max(required_capacities[edge],edge_schedule[edge,day]+added_schedule[edge,day])
+			for(edge,day)in path_edge_days(full_pod_path(path,tubes)):added_schedule[edge,day]+=1;required_capacities[edge]=max(required_capacities[edge],edge_schedule[edge,day]+added_schedule[edge,day])
 		cost=0;upgrades=[]
 		for(edge,required_capacity)in required_capacities.items():
 			capacity=1 if edge in new_keys else tubes[edge]
@@ -213,6 +213,15 @@ class Planner:
 					if tuple(path)not in seen:paths.append(path);seen.add(tuple(path))
 					if len(ordered)==2 and ordered[0]!=ordered[1]:
 						module_counts=Counter({module_id:pad.demand[astronaut_type]for(astronaut_type,module_id)in choices});first_batches=(sum(pad.demand.values())+9)//10;second_batches=(module_counts[ordered[1]]+9)//10;path=[pad.id]+[ordered[0],pad.id]*(first_batches-1)+[ordered[0]];path+=[ordered[1],ordered[0]]*(second_batches-1)+[ordered[1]]
+						if tuple(path)not in seen:paths.append(path);seen.add(tuple(path))
+		connected={node for edge in tubes for node in edge}
+		for pad in self.get_landing_pads():
+			entries=sorted((self.buildings[node]for node in connected if node!=pad.id),key=lambda item:tube_cost(pad,item))[:3]
+			targets=[min(modules_by_type[astronaut_type],key=lambda item:tube_cost(pad,item))for astronaut_type in pad.demand]
+			for entry in entries:
+				for target in targets:
+					if target.id==entry.id:continue
+					for path in([pad.id,entry.id,pad.id,entry.id,pad.id,target.id,pad.id,entry.id],[pad.id,target.id,pad.id,target.id,pad.id,entry.id,pad.id,target.id]):
 						if tuple(path)not in seen:paths.append(path);seen.add(tuple(path))
 		for pad in self.get_landing_pads():
 			for astronaut_type in pad.demand:
@@ -447,7 +456,7 @@ class Planner:
 		return budget
 	def obsolete_pod(self,service_counts,blocked_pod_ids):
 		for pod in sorted(self.pods.values(),key=lambda item:item.id):
-			if pod.id in blocked_pod_ids or len(pod.path)==3 and pod.path[0]==pod.path[2]:continue
+			if pod.id in blocked_pod_ids or path_single_edge(pod.path) is not None:continue
 			services=self.pod_services(pod)
 			if services and all(service_counts[pad_id,astronaut_type]>1 for(pad_id,astronaut_type,_,_)in services):return pod
 	def debug_month_input(self):
@@ -507,9 +516,7 @@ class Planner:
 		requests={}
 		for(pod_id,path)in planned_pods.items():
 			index=pod_positions[pod_id]
-			if index>=len(path)-1:
-				if path[0]!=path[-1]:continue
-				index=0;pod_positions[pod_id]=0
+			if index>=len(path)-1:continue
 			requests[pod_id]=path[index],path[index+1]
 		if capacity_tubes is None:return requests
 		moves={};by_tube={}
@@ -529,7 +536,6 @@ class Planner:
 			else:del queues[building_id]
 		for(pod_id,(a,b))in moves.items():
 			queues.setdefault(b,[]).extend(onboard.get(pod_id,[]));pod_positions[pod_id]+=1
-			if pod_positions[pod_id]>=len(planned_pods[pod_id])-1 and planned_pods[pod_id][0]==planned_pods[pod_id][-1]:pod_positions[pod_id]=0
 	def score_from_pods(self,planned_pods,planned_teleports=None):
 		service_paths=self.service_paths_from_adjacency(self.adjacency_from_paths(list(planned_pods.values()),planned_teleports));directed_schedule=self.directed_schedule_from_paths(list(planned_pods.values()));pod_edges={edge for(edge,_)in directed_schedule};teleport_edges=set((self.teleports if planned_teleports is None else planned_teleports).items());queues={}
 		for((pad_id,astronaut_type),path)in service_paths.items():counts=[0]*len(path);counts[0]=self.buildings[pad_id].demand[astronaut_type];queues[pad_id,astronaut_type]=counts
@@ -614,7 +620,7 @@ class Planner:
 	def get_direct_service_pod_counts(self):
 		counts=Counter()
 		for pod in self.pods.values():
-			if len(pod.path)==3 and pod.path[0]==pod.path[2]and pod.path[0]in self.buildings and pod.path[1]in self.buildings:
+			if path_single_edge(pod.path) is not None and pod.path[0]in self.buildings and pod.path[1]in self.buildings:
 				if self.buildings[pod.path[0]].kind==0 and self.buildings[pod.path[1]].kind>0:counts[pod.path[0],pod.path[1]]+=1
 		return counts
 	def get_edge_schedule(self):
@@ -699,7 +705,7 @@ class Planner:
 						if not self.can_add_tubes(new_tubes,degrees,tubes):continue
 						upgrade_cost,upgrades=self.path_upgrade_plan(path,new_tubes,tubes,edge_schedule);cost=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in new_tubes)+POD_COST+upgrade_cost
 						if cost>budget:continue
-						new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()};new_pods[MAX_PODS+1]=path[:];new_score,_,_,_,delivered,service_paths=self.score_from_pods(new_pods,planned_teleports);services=[(pad.id,item,service_paths[pad.id,item][-1],delivered[pad.id,item])for item in pad.demand if(pad.id,item)in service_paths and(pad.id,item)not in service_counts]
+						new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()};new_pods[MAX_PODS+1]=full_pod_path(path,tubes);new_score,_,_,_,delivered,service_paths=self.score_from_pods(new_pods,planned_teleports);services=[(pad.id,item,service_paths[pad.id,item][-1],delivered[pad.id,item])for item in pad.demand if(pad.id,item)in service_paths and(pad.id,item)not in service_counts]
 						if not services:continue
 						candidates.append(Candidate((new_score-old_score)*self.months_left(),cost,pad.id,module.id,required_type,path,new_tubes,upgrades,delivered=sum(delivered for(_,_,_,delivered)in services),services=services))
 		for size in range(1,min(3,len(entries))+1):
@@ -784,11 +790,11 @@ class Planner:
 			segment_paths=[list(item)for item in selected_paths];schedule=edge_schedule.copy();upgrade_cost=0;upgrades=[]
 			for segment_path in segment_paths:
 				segment_upgrade_cost,segment_upgrades=self.path_upgrade_plan(segment_path,new_tubes,tubes,schedule);upgrade_cost+=segment_upgrade_cost;upgrades.extend(segment_upgrades)
-				for(edge,day)in path_edge_days(segment_path):schedule[edge,day]+=1
+				for(edge,day)in path_edge_days(full_pod_path(segment_path,tubes)):schedule[edge,day]+=1
 			cost=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in new_tubes)+POD_COST*len(segment_paths)+upgrade_cost
 			if cost>budget:continue
 			new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()}
-			for(fake_id,segment_path)in enumerate(segment_paths,MAX_PODS+1):new_pods[fake_id]=segment_path
+			for(fake_id,segment_path)in enumerate(segment_paths,MAX_PODS+1):new_pods[fake_id]=full_pod_path(segment_path,tubes)
 			new_score,_,_,_,service_delivered,service_paths=self.score_from_pods(new_pods,planned_teleports)
 			if(pad.id,astronaut_type)not in service_paths:continue
 			score=(new_score-old_score)*self.months_left()
@@ -848,7 +854,7 @@ class Planner:
 				queue.append(neighbor_id)
 	def path_upgrade_plan(self,path,new_tubes,tubes,edge_schedule):
 		new_keys={route_key(a,b)for(a,b)in new_tubes};required_capacities=Counter()
-		for(edge,day)in path_edge_days(path):required_capacities[edge]=max(required_capacities[edge],edge_schedule[edge,day]+1)
+		for(edge,day)in path_edge_days(full_pod_path(path,tubes)):required_capacities[edge]=max(required_capacities[edge],edge_schedule[edge,day]+1)
 		upgrades=[];cost=0
 		for(edge,required_capacity)in required_capacities.items():
 			capacity=1 if edge in new_keys else tubes[edge]
@@ -873,7 +879,7 @@ class Planner:
 			if segments_intersect(first,second,self.buildings[c],self.buildings[d]):return False
 		return True
 	def two_hop_buildings(self,pad,module):return sorted(self.buildings.values(),key=lambda building:tube_cost(pad,building)+tube_cost(building,module))[:20]
-	def score_added_path(self,planned_pods,planned_teleports,old_score,path):new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()};new_pods[MAX_PODS+1]=path[:];return(self.score_from_pods(new_pods,planned_teleports)[0]-old_score)*self.months_left()
+	def score_added_path(self,planned_pods,planned_teleports,old_score,path):new_pods={pod_id:pod_path[:]for(pod_id,pod_path)in planned_pods.items()};new_pods[MAX_PODS+1]=full_pod_path(path);return(self.score_from_pods(new_pods,planned_teleports)[0]-old_score)*self.months_left()
 	def best_capacity_candidate(self,serviced,tubes,direct_counts,edge_schedule,planned_pods,planned_teleports,teleported_pairs,budget,pod_ids):
 		best=None
 		if len(pod_ids)>=MAX_PODS:return
@@ -919,7 +925,8 @@ class Planner:
 	def get_dedicated_pod_edge_counts(self):
 		counts=Counter()
 		for pod in self.pods.values():
-			if len(pod.path)==3 and pod.path[0]==pod.path[2]:counts[route_key(pod.path[0],pod.path[1])]+=1
+			edge=path_single_edge(pod.path)
+			if edge is not None:counts[edge]+=1
 		return counts
 	def best_baseline_path_candidate(self,tubes,dedicated_edge_counts,edge_schedule,planned_pods,planned_teleports,teleported_pairs,budget,pod_ids):
 		if len(pod_ids)>=MAX_PODS or budget<POD_COST:return
@@ -960,9 +967,9 @@ class Planner:
 	def apply_candidate(self,reason,candidate,actions,serviced,service_counts,module_load,degrees,teleport_used,planned_teleports,tubes,direct_pod_counts,edge_schedule,dedicated_edge_counts,planned_pods,budget,pod_ids):
 		if candidate.reroute_pod_id is not None:
 			old_pod=self.pods[candidate.reroute_pod_id];actions.append(f"DESTROY {candidate.reroute_pod_id}");del planned_pods[candidate.reroute_pod_id]
-			if len(old_pod.path)==3 and old_pod.path[0]==old_pod.path[2]:
+			if(path_edge:=path_single_edge(old_pod.path))is not None:
 				if self.buildings[old_pod.path[0]].kind==0 and self.buildings[old_pod.path[1]].kind>0:direct_pod_counts[old_pod.path[0],old_pod.path[1]]-=1
-				dedicated_edge_counts[route_key(old_pod.path[0],old_pod.path[1])]-=1
+				dedicated_edge_counts[path_edge]-=1
 			for(edge,day)in path_edge_days(old_pod.path):
 				edge_schedule[edge,day]-=1
 				if edge_schedule[edge,day]<=0:del edge_schedule[edge,day]
@@ -977,9 +984,9 @@ class Planner:
 		created_paths=[candidate.path]+candidate.extra_paths if candidate.path else candidate.extra_paths
 		for(index,path)in enumerate(created_paths):
 			path=full_pod_path(path,tubes);pod_id=candidate.reroute_pod_id if index==0 and candidate.reroute_pod_id is not None else next_pod_id(pod_ids);pod_ids.add(pod_id);planned_pods[pod_id]=path[:];actions.append("POD {} {}".format(pod_id," ".join(map(str,path))))
-			if len(path)==3 and path[0]==path[2]:
+			if(path_edge:=path_single_edge(path))is not None:
 				if self.buildings[path[0]].kind==0 and self.buildings[path[1]].kind>0:direct_pod_counts[path[0],path[1]]+=1
-				dedicated_edge_counts[route_key(path[0],path[1])]+=1
+				dedicated_edge_counts[path_edge]+=1
 			for(edge,day)in path_edge_days(path):edge_schedule[edge,day]+=1
 		if reason=="service":
 			for(pad_id,astronaut_type,module_id,delivered)in candidate.services or[(candidate.pad_id,candidate.astronaut_type,candidate.module_id,candidate.delivered)]:serviced.add((pad_id,astronaut_type));service_counts[pad_id,astronaut_type]+=1;module_load[module_id]+=delivered
@@ -1025,16 +1032,13 @@ def full_pod_path(path,tubes=None):
 	result=[path[0]]
 	for day in range(MONTH_DAYS):result.append(edges[day%len(edges)][1])
 	return result
+def path_single_edge(path:list[int])->tuple[int,int]:
+	edges={route_key(a,b)for(a,b)in zip(path,path[1:])}
+	return next(iter(edges))if len(edges)==1 else None
 def path_edge_days(path):
-	edges=[route_key(a,b)for(a,b)in zip(path,path[1:])]
-	if not edges:return[]
-	if path[0]==path[-1]:return[(edges[day%len(edges)],day)for day in range(MONTH_DAYS)]
-	return[(edges[day],day)for day in range(min(MONTH_DAYS,len(edges)))]
+	return[(route_key(a,b),day)for day,(a,b)in enumerate(zip(path,path[1:]))if day<MONTH_DAYS]
 def directed_path_edge_days(path):
-	edges=list(zip(path,path[1:]))
-	if not edges:return[]
-	if path[0]==path[-1]:return[(edges[day%len(edges)],day)for day in range(MONTH_DAYS)]
-	return[(edges[day],day)for day in range(min(MONTH_DAYS,len(edges)))]
+	return[((a,b),day)for day,(a,b)in enumerate(zip(path,path[1:]))if day<MONTH_DAYS]
 def unwind_path(parent,start_id,finish_id):
 	path=[finish_id]
 	while path[-1]!=start_id:path.append(parent[path[-1]])

@@ -40,9 +40,9 @@ module 1 1 130 20
 module 2 2 130 70
 tube 0 1 1
 tube 1 2 1
-pod 1 0-1-0-1-0-1-0-1-0-1-2-1-2-1-2
+pod 1 0-1-0-1-0-1-0-1-0-1-2-1-2-1-2-1-2-1-2-1-0
 """
-        benchmark_move = "DESTROY 1; POD 1 0 1 0; POD 2 2 1 2"
+        benchmark_move = "DESTROY 1; POD 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0; POD 2 2 1 2 1 2 1 2 1 2 1 2 1 2 1 2 1 2 1 2"
         benchmark_score = 4125
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)
@@ -61,7 +61,7 @@ landing 4 120 45 2:50
 module 5 2 20 75
 module 6 1 140 75
 """
-        benchmark_move = "TUBE 2 0; POD 1 2 0 2; TUBE 4 1; POD 2 4 1 4; TUBE 3 5; TUBE 3 2; POD 3 3 5 3 5 3 5 3 2 3 2 3 2"
+        benchmark_move = "TUBE 2 0; POD 1 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2; TUBE 4 1; POD 2 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4; TUBE 3 5; TUBE 3 2; POD 3 3 5 3 5 3 5 3 2 3 2 3 2 3 2 3 2 3 5 3 5 3"
         benchmark_score = 10120
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)
@@ -77,9 +77,9 @@ landing 1 104 37 1:20
 module 2 2 148 10
 landing 3 47 13 1:11,2:11
 tube 0 1 1
-pod 1 1-0-1
+pod 1 1-0-1-0-1-0-1-0-1-0-1-0-1-0-1-0-1-0-1-0-1
 """
-        benchmark_move = "TUBE 0 3; TUBE 0 2; POD 2 3 0 3; DESTROY 1; POD 1 1 0 1 0 2 0 2 0"
+        benchmark_move = "TUBE 0 3; TUBE 0 2; POD 2 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0; DESTROY 1; POD 1 1 0 1 0 2 0 2 0 2 0 2 0 1 0 1 0 1 0 2 0 2"
         benchmark_score = 3579
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)
@@ -95,9 +95,9 @@ landing 1 104 37 1:20
 module 2 2 148 10
 landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
 tube 0 1 1
-pod 1 1-0-1
+pod 1 1-0-1-0-1-0-1-0-1-0-1-0-1-0-1-0-1-0-1-0-1
 """
-        benchmark_move = "DESTROY 1;TUBE 0 2;TUBE 3 0;POD 1 1 0 1 0 2 0 2 0 1;POD 2 3 0 3"
+        benchmark_move = "DESTROY 1;TUBE 0 2;TUBE 3 0;POD 1 1 0 1 0 2 0 2 0 1 0 1 0 2 0 2 0 1 0 1 0 2;POD 2 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0"
         benchmark_score = score_command(state, benchmark_move)
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
@@ -116,8 +116,8 @@ landing 5 46 66 1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3
 tube 0 1 1
 tube 0 2 1
 tube 0 3 1
-pod 1 1-0-1-0-2-0-2-0-1
-pod 2 3-0-3
+pod 1 1-0-1-0-2-0-2-0-1-0-1-0-2-0-2-0-1-0-1-0-2
+pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
 """
         benchmark_move = "TUBE 4 5; TUBE 0 4; POD 3 5 4 5 4 0 4 5 4 0 4 5"
         benchmark_score = 5413
@@ -128,7 +128,7 @@ pod 2 3-0-3
     def test_transfer_route_connects_missing_module_type(self):
         """Verifies one route can connect a pad to existing network and a missing module type."""
         state = transfer_route_state()
-        benchmark_move = "TUBE 5 7; TUBE 5 6; POD 4 7 5 6 5 7"
+        benchmark_move = "TUBE 5 7; TUBE 5 6; POD 4 7 5 6 5 7 5 6 5 7 5 6 5 7 5 6 5 7 5 6 5 7"
         benchmark_score = 7185
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)
@@ -209,8 +209,8 @@ module 3 2 10 0
 module 4 3 0 10
 tube 2 3 1
 tube 2 4 1
-pod 1 2-3-2
-pod 2 2-4-2
+pod 1 2-3-2-3-2-3-2-3-2-3-2-3-2-3-2-3-2-3-2-3-2
+pod 2 2-4-2-4-2-4-2-4-2-4-2-4-2-4-2-4-2-4-2-4-2
 """
         planner = parse_turn_state(state)
         self.assertEqual(planner.resolve_auto_route([(2, 3), (2, 4)], 5)[:5], [2, 3, 2, 3, 2])
@@ -227,8 +227,8 @@ landing 3 10 0 none
 tube 0 3 1
 tube 3 1 1
 tube 3 2 1
-pod 1 0-3-0
-pod 2 3-2-3
+pod 1 0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0
+pod 2 3-2-3-2-3-2-3-2-3-2-3-2-3-2-3-2-3-2-3-2-3
 """
         self.assertEqual(score_command(state, "WAIT"), 925)
 
@@ -268,9 +268,9 @@ tube 0 2 1
 tube 0 3 1
 tube 0 4 1
 tube 4 5 1
-pod 1 1-0-1-0-2-0-2-0-1
-pod 2 3-0-3
-pod 3 5-4-5-4-0-4-5-4-0-4-5
+pod 1 1-0-1-0-2-0-2-0-1-0-1-0-2-0-2-0-1-0-1-0-2
+pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
+pod 3 5-4-5-4-0-4-5-4-0-4-5-4-5-4-0-4-5-4-0-4-5
 """
 
 
@@ -296,10 +296,10 @@ tube 0 4 1
 tube 4 5 1
 tube 5 6 1
 tube 5 7 1
-pod 1 1-0-1-0-2-0-2-0-1
-pod 2 3-0-3
-pod 3 5-4-5-4-0-4-5-4-0-4-5
-pod 4 7-5-7-5-6-5-7-5-6-5-7
+pod 1 1-0-1-0-2-0-2-0-1-0-1-0-2-0-2-0-1-0-1-0-2
+pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
+pod 3 5-4-5-4-0-4-5-4-0-4-5-4-5-4-0-4-5-4-0-4-5
+pod 4 7-5-7-5-6-5-7-5-6-5-7-5-7-5-6-5-7-5-6-5-7
 """
 
 
@@ -330,9 +330,9 @@ tube 5 7 1
 tube 6 9 1
 tube 8 9 1
 pod 1 1-0-1-0-3-0-2-0-3-0-2-0-3-0-2-0-2-0-2-0-2
-pod 2 9-6-9-6-9-8-9-6-9
-pod 3 5-4-5-4-0-4-5-4-0-4-5
-pod 4 7-5-7-5-6-5-7-5-6-5-7
+pod 2 9-6-9-6-9-8-9-6-9-6-9-6-9-8-9-6-9-6-9-6-9
+pod 3 5-4-5-4-0-4-5-4-0-4-5-4-5-4-0-4-5-4-0-4-5
+pod 4 7-5-7-5-6-5-7-5-6-5-7-5-7-5-6-5-7-5-6-5-7
 """
 
 

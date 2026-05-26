@@ -16,6 +16,7 @@ EXACT_PATH_SHORTLIST=4
 EXACT_ROUTE_LIMIT=64
 EXACT_SEARCH_ROUNDS=8
 EXACT_BULK_PODS=5
+EXACT_REPLACEMENT_GROUP_LIMIT=96
 OVERRIDE_MONTH=-1
 OVERRIDE_COMMAND=""
 Pair=tuple[int,int]
@@ -238,7 +239,7 @@ class Planner:
 						if key not in seen:paths.append((-sum(pad.demand.values()),tube_cost(pad,self.buildings[a])+tube_cost(pad,self.buildings[b]),path));seen.add(key)
 		return[path for(_,_,path)in sorted(paths)[:2]]
 	def replacement_path_groups(self,planned_pods,tubes,edge_schedule):
-		pods=self.reroutable_pods(set())[:4]
+		pods=self.reroutable_pods(set())[:4];yielded=0
 		for count in range(1,len(pods)+1):
 			for removed in combinations(pods,count):
 				edges=[]
@@ -257,7 +258,9 @@ class Planner:
 				seen=set()
 				for path in paths:
 					key=tuple(path)
-					if key not in seen:seen.add(key);yield(tuple(sorted(pod.id for pod in removed)),[path],schedule)
+					if key not in seen:
+						seen.add(key);yielded+=1;yield(tuple(sorted(pod.id for pod in removed)),[path],schedule)
+						if yielded>=EXACT_REPLACEMENT_GROUP_LIMIT:return
 	def greedy_edge_routes(self,edges,tubes):
 		def next_step(start,finish):
 			queue=deque([start]);parent={start:start}

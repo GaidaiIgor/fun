@@ -145,37 +145,20 @@ pod 2 3-0-3
 
     def test_connects_new_island_by_replacing_multiple_service_pods(self):
         """Verifies new disconnected buildings can be connected by rerouting a variable pod bundle."""
-        state = """
-month 5
-resources 1877
-module 0 1 106 9
-landing 1 104 37 1:20
-module 2 2 148 10
-landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
-module 4 3 91 19
-landing 5 46 66 1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3
-module 6 4 110 43
-landing 7 28 10 1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2
-module 8 5 159 46
-landing 9 108 85 1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3
-tube 0 1 1
-tube 0 2 1
-tube 0 3 1
-tube 0 4 1
-tube 4 5 1
-tube 5 6 1
-tube 5 7 1
-pod 1 1-0-1-0-2-0-2-0-1
-pod 2 3-0-3
-pod 3 5-4-5-4-0-4-5-4-0-4-5
-pod 4 7-5-7-5-6-5-7-5-6-5-7
-"""
+        state = new_island_state()
         benchmark_move = "TUBE 5 9; TUBE 8 9; DESTROY 1; DESTROY 2; " \
             "POD 1 1 0 1 0 3 0 2 0 3 0 2 0 3 0 2 0 2 0 2 0 2 0; POD 2 9 5 9 5 9 8 9 5 9"
         benchmark_score = 8791
         self.assertEqual(score_command(state, benchmark_move), benchmark_score)
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
+    def test_new_island_replacement_search_beats_recorded_timeout_baseline(self):
+        """Verifies this new-island replacement turn plans under 400 milliseconds."""
+        state = new_island_state()
+        target_seconds = 0.4
+        best_seconds = max(timed_planner_run(state) for _ in range(3))
+        self.assertLess(best_seconds, target_seconds)
 
     def test_same_pad_boarding_uses_input_passenger_order(self):
         """Verifies same-pad passengers board by input order instead of type order."""
@@ -233,6 +216,35 @@ tube 4 5 1
 pod 1 1-0-1-0-2-0-2-0-1
 pod 2 3-0-3
 pod 3 5-4-5-4-0-4-5-4-0-4-5
+"""
+
+
+def new_island_state() -> str:
+    """Returns the month-five new-island state that requires replacing multiple pods."""
+    return """
+month 5
+resources 1877
+module 0 1 106 9
+landing 1 104 37 1:20
+module 2 2 148 10
+landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
+module 4 3 91 19
+landing 5 46 66 1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3
+module 6 4 110 43
+landing 7 28 10 1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2
+module 8 5 159 46
+landing 9 108 85 1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3
+tube 0 1 1
+tube 0 2 1
+tube 0 3 1
+tube 0 4 1
+tube 4 5 1
+tube 5 6 1
+tube 5 7 1
+pod 1 1-0-1-0-2-0-2-0-1
+pod 2 3-0-3
+pod 3 5-4-5-4-0-4-5-4-0-4-5
+pod 4 7-5-7-5-6-5-7-5-6-5-7
 """
 
 

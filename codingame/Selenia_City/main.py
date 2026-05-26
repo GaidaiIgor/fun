@@ -291,9 +291,10 @@ class Planner:
 					if options:result[node,min(options,key=lambda item:(distances[astronaut_type][item],item))]+=1
 			return result
 		def best_edge(loads):
-			full=[edge for(edge,count)in loads.items()if count>=10]
-			if full:return min(full,key=lambda edge:(source_distance(current,edge[0]),edge[0],-loads[edge],edge[1]))
-			return max(loads,key=lambda edge:(loads[edge],-source_distance(current,edge[0]),-edge[0],-edge[1]))
+			source_load=Counter()
+			for(source,_),count in loads.items():source_load[source]+=count
+			source=min(source_load,key=lambda node:(-source_load[node],pod_service_counts[node],source_distance(current,node),node))
+			return max((edge for edge in loads if edge[0]==source),key=lambda edge:(loads[edge],-edge[1]))
 		graph={}
 		for(a,b)in edges:graph.setdefault(a,[]).append(b);graph.setdefault(b,[]).append(a)
 		graph={node:sorted(neighbors)for(node,neighbors)in graph.items()};seen_nodes=set();queue=deque([next(iter(graph))])
@@ -317,10 +318,14 @@ class Planner:
 						if cost:queue.append(neighbor)
 						else:queue.appendleft(neighbor)
 		queues={pad.id:[(pad.id,index,astronaut_type)for(index,astronaut_type)in enumerate(pad.order)]for pad in self.get_landing_pads()}
-		module_arrivals=Counter();service_delivered=Counter();service_speed=Counter();service_balance=Counter();planned_pods={pid:pod.path[:]for(pid,pod)in self.pods.items()if pid!=pod_id};pod_positions={pid:0 for pid in planned_pods}
+		module_arrivals=Counter();service_delivered=Counter();service_speed=Counter();service_balance=Counter();planned_pods={pid:pod.path[:]for(pid,pod)in self.pods.items()if pid!=pod_id};pod_positions={pid:0 for pid in planned_pods};pod_service_counts=Counter()
+		for path in planned_pods.values():
+			for node in set(path):pod_service_counts[node]+=1
 		loads=service_loads()
 		if not loads:raise ValueError("auto service edges have no demand")
-		full=[edge for(edge,count)in loads.items()if count>=10];current=(min(full,key=lambda edge:(edge[0],edge[1]))if full else max(loads,key=lambda edge:(loads[edge],-edge[0],-edge[1])))[0];path=[current];planned_pods[pod_id]=path[:];pod_positions[pod_id]=0
+		source_load=Counter()
+		for(source,_),count in loads.items():source_load[source]+=count
+		current=min(source_load,key=lambda node:(-source_load[node],pod_service_counts[node],node));path=[current];planned_pods[pod_id]=path[:];pod_positions[pod_id]=0
 		for day in range(MONTH_DAYS):
 			self.apply_teleport_phase(queues,distances,self.teleports);self.settle_node_arrivals(day,queues,module_arrivals,service_delivered,service_speed,service_balance)
 			loads=service_loads()

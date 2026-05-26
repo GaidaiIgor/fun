@@ -316,7 +316,12 @@ class Planner:
 			if big:source=min(big,key=lambda item:(source_distance(current,item),item))
 			else:source=max({source for(source,_)in active},key=lambda item:(max(count for((source,_),count)in active.items()if source==item),-source_distance(current,item),-item))
 			if source!=current:current=next_step(current,source);path.append(current);continue
-			target=max((target for(source,target)in active if source==current),key=lambda item:(active[current,item],-item));demand[current,target]-=10;current=target;path.append(current)
+			target=max((target for(source,target)in active if source==current),key=lambda item:(active[current,item],-item));demand[current,target]-=10
+			downstream=[edge for edge in demand if edge[0]==target and demand[edge]>0]
+			if downstream:
+				next_edge=max(downstream,key=lambda edge:(demand[edge],-edge[1]))
+				if demand[next_edge]<10:demand[next_edge]+=10
+			current=target;path.append(current)
 		return close_pod_path(path,self.tubes)
 	def greedy_edge_routes(self,edges,tubes):
 		def next_step(start,finish):

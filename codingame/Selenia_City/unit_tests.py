@@ -151,6 +151,15 @@ pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
+    def test_connects_island_module_and_landing_with_auto_service(self):
+        """Verifies disconnected landing and module nodes are both connected with non-overlapping service."""
+        state = landing_module_island_state()
+        benchmark_move = "TUBE 6 9; TUBE 6 8; POD 5 9 6 9 6 0 6 9 6 0 6 8 6 0 6 0 6 0 6 0 6 0"
+        benchmark_score = 9289
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
     def test_new_island_replacement_search_beats_recorded_timeout_baseline(self):
         """Verifies this new-island replacement turn plans under 300 milliseconds."""
         state = new_island_state()
@@ -359,6 +368,36 @@ pod 1 1-0-1-0-3-0-2-0-3-0-2-0-3-0-2-0-2-0-2-0-2
 pod 2 9-6-9-6-9-8-9-6-9-6-9-6-9-8-9-6-9-6-9-6-9
 pod 3 5-4-5-4-0-4-5-4-0-4-5-4-5-4-0-4-5-4-0-4-5
 pod 4 7-5-7-5-6-5-7-5-6-5-7-5-7-5-6-5-7-5-6-5-7
+"""
+
+
+def landing_module_island_state() -> str:
+    """Returns the month-five state with a disconnected landing and matching module island."""
+    return """
+month 5
+resources 1921
+module 0 1 106 9
+landing 1 104 37 1:20
+module 2 2 148 10
+landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
+module 4 3 91 19
+landing 5 46 66 1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3
+module 6 4 110 43
+landing 7 28 10 1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2
+module 8 5 159 46
+landing 9 108 85 1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3
+tube 0 1 1
+tube 0 2 1
+tube 0 3 1
+tube 0 4 1
+tube 0 6 1
+tube 3 4 1
+tube 3 7 1
+tube 4 5 1
+pod 1 1-0-1-0-2-0-2-0-2-0-2-0-1-0-1-0-1-0-2-0-2
+pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
+pod 3 5-4-5-4-0-4-5-4-0-6-0-4-0-4-0-4-0-4-0-4-0
+pod 4 7-3-7-3-7-3-4-3-4-3-4-3-4-3-4-3-4-3-4-3-4
 """
 
 

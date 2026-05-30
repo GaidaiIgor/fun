@@ -165,6 +165,12 @@ class Planner:
 			if gain>0 and result[3]>=demand:
 				candidate=Candidate(gain,cost,0,0,0,paths[0],new_tubes,upgrades,reroute_pod_id=destroy_ids[0]if len(destroy_ids)==1 else None,destroy_pod_ids=list(destroy_ids),extra_paths=[path[:]for path in paths[1:]])
 				if quick_best is None or(candidate.score,-candidate.cost)>(quick_best.score,-quick_best.cost):quick_best=candidate
+		auto_tree_candidate=self.best_auto_tree_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score);auto_tree_is_best=False
+		if auto_tree_candidate is not None and(quick_best is None or(auto_tree_candidate.score,-auto_tree_candidate.cost)>(quick_best.score,-quick_best.cost)):
+			quick_best=auto_tree_candidate;auto_tree_is_best=True
+		if auto_tree_is_best:
+			auto_candidate=self.best_auto_extension_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
+			if auto_candidate is not None and(auto_candidate.score,-auto_candidate.cost)>(quick_best.score,-quick_best.cost):quick_best=auto_candidate
 		if quick_best is not None:return quick_best
 		bundle_options=route_options[:8]+self.star_connect_options(tubes)
 		for(destroy_ids,base_paths,removed_schedule)in self.replacement_path_groups(planned_pods,tubes,edge_schedule):
@@ -193,6 +199,38 @@ class Planner:
 		auto_candidate=self.best_auto_extension_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
 		if auto_candidate is not None and(best is None or(auto_candidate.score,-auto_candidate.cost)>(best.score,-best.cost)):best=auto_candidate
 		return best
+	def best_auto_tree_candidate(self,planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score):
+		if len(pod_ids)>=MAX_PODS:return
+		options=self.auto_tree_options(tubes);best=None
+		for edges in options:
+			new_tubes=[edge for edge in edges if edge not in tubes]
+			base_cost=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in new_tubes)+POD_COST
+			if base_cost>budget or not self.can_add_tubes(new_tubes,degrees,tubes):continue
+			new_tube_state=dict(tubes)
+			for edge in new_tubes:new_tube_state[edge]=1
+			try:path=self.resolve_auto_candidate_paths([(MAX_PODS+1,edges)],planned_pods,planned_teleports,new_tube_state)[MAX_PODS+1]
+			except ValueError:continue
+			new_pods=dict(planned_pods);new_pods[MAX_PODS+1]=path;gain=self.actual_score_from_pods(new_pods,planned_teleports,new_tube_state)[0]-old_score
+			if gain<=0:continue
+			candidate=Candidate(gain,base_cost,0,0,0,path,new_tubes)
+			if best is None or(candidate.score,-candidate.cost)>(best.score,-best.cost):best=candidate
+		return best
+	def auto_tree_options(self,tubes):
+		connected={node for edge in tubes for node in edge};modules_by_type=self.get_modules_by_type();options=[]
+		for pad in sorted(self.get_landing_pads(),key=lambda item:(-sum(item.demand.values()),item.id)):
+			for entry_id in sorted(connected,key=lambda item:tube_cost(pad,self.buildings[item]))[:4]:
+				if entry_id==pad.id:continue
+				neighbors=sorted((b if a==entry_id else a for(a,b)in tubes if entry_id in(a,b)),
+					key=lambda item:(tube_cost(self.buildings[entry_id],self.buildings[item]),item))[:3]
+				for astronaut_type in pad.demand:
+					for module in sorted(modules_by_type[astronaut_type],key=lambda item:tube_cost(self.buildings[entry_id],item))[:2]:
+						if module.id==entry_id:continue
+						edges=[]
+						for edge in[route_key(pad.id,entry_id),route_key(entry_id,module.id),*(route_key(entry_id,neighbor)for neighbor in neighbors[:1])]:
+							if edge not in edges:edges.append(edge)
+						new_cost=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in edges if(a,b)not in tubes)
+						if new_cost:options.append((new_cost,edges))
+		return[edges for(_,edges)in sorted(options)[:24]]
 	def best_auto_extension_candidate(self,planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score):
 		if len(pod_ids)+1>MAX_PODS:return
 		connectors=self.auto_connector_options(tubes);extensions=self.auto_extension_options(planned_pods,tubes)

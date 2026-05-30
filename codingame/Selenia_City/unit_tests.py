@@ -183,6 +183,16 @@ pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
         planner_move = choose_planner_command(state)
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
+    def test_connector_edges_are_removed_from_rerouted_auto_service(self):
+        """Verifies a new connector can take over an old service edge while rerouting the adjacent pod."""
+        state = connector_takes_old_service_edge_state()
+        benchmark_move = "TUBE 6 11; TUBE 5 10; POD 6 11 6 11 6 11 6 0 6 0 6 0 6 0 6 0 6 0 6 0 6 0; " \
+            "DESTROY 3; POD 3 5 4 5 4 0 4 5 4 0 4 5 10 5 4 0 4 5 10 5 4 0"
+        benchmark_score = 11380
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
     def test_auto_route_prefers_high_load_exclusive_source(self):
         """Verifies AUTO route resolution drains high-load exclusive service nodes first."""
         planner = parse_turn_state(second_new_island_turn_state())
@@ -407,6 +417,41 @@ def second_new_island_overlap_state() -> str:
         "pod 2 9-6-9-6-9-8-9-6-9-6-9-6-9-8-9-6-9-6-9-6-9",
         "pod 2 9-6-9-6-9-8-9-6-9-8-9-6-9-6-9-6-9-6-9-8-9",
     )
+
+
+def connector_takes_old_service_edge_state() -> str:
+    """Returns the month-six state where a connector should take over an existing edge from a rerouted pod."""
+    return """
+month 6
+resources 2012
+module 0 1 106 9
+landing 1 104 37 1:20
+module 2 2 148 10
+landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
+module 4 3 91 19
+landing 5 46 66 1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3
+module 6 4 110 43
+landing 7 28 10 1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2
+module 8 5 159 46
+landing 9 108 85 1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3
+module 10 6 20 50
+landing 11 95 74 1,2,3,4,5,6,1,2,3,4,5,6,1,2,3,4,5,6,1,2,3,4,5,6,1,2,3,4,5,6
+tube 0 1 1
+tube 0 2 1
+tube 0 3 1
+tube 0 4 1
+tube 0 6 1
+tube 3 4 1
+tube 3 7 1
+tube 4 5 1
+tube 6 8 1
+tube 6 9 1
+pod 1 1-0-1-0-2-0-2-0-2-0-2-0-1-0-1-0-1-0-2-0-2
+pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
+pod 3 5-4-5-4-0-4-5-4-0-6-0-4-0-4-0-4-0-4-0-4-0
+pod 4 7-3-7-3-7-3-4-3-4-3-4-3-4-3-4-3-4-3-4-3-4
+pod 5 9-6-9-6-0-6-9-6-0-6-8-6-0-6-0-6-0-6-0-6-0
+"""
 
 
 def assert_full_planner_pods(command: str):

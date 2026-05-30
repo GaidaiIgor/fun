@@ -237,7 +237,9 @@ class Planner:
 		best=None
 		for(pod_id,service_edges)in extensions:
 			for connector_edges in connectors:
-				specs=[(pod_id,service_edges),(MAX_PODS+1,connector_edges)];new_tubes=[]
+				extension_edges=[edge for edge in service_edges if edge not in connector_edges]
+				if not extension_edges:continue
+				specs=[(pod_id,extension_edges),(MAX_PODS+1,connector_edges)];new_tubes=[]
 				for(_,edges)in specs:
 					for edge in edges:
 						if edge not in tubes and edge not in new_tubes:new_tubes.append(edge)
@@ -249,11 +251,10 @@ class Planner:
 				temp_pods={current_id:path[:]for(current_id,path)in planned_pods.items()if current_id!=pod_id}
 				try:paths_by_id=self.resolve_auto_candidate_paths(specs,temp_pods,planned_teleports,new_tube_state)
 				except ValueError:continue
-				paths=[paths_by_id[pod_id],paths_by_id[MAX_PODS+1]];removed_schedule=self.schedule_without_pod(edge_schedule,self.pods[pod_id]);upgrade_cost,upgrades=self.bundle_upgrade_plan(paths,new_tubes,tubes,removed_schedule);cost=base_cost+upgrade_cost
-				if cost>budget:continue
+				paths=[paths_by_id[pod_id],paths_by_id[MAX_PODS+1]]
 				new_pods=dict(temp_pods);new_pods[pod_id]=paths[0];new_pods[MAX_PODS+1]=paths[1];gain=self.actual_score_from_pods(new_pods,planned_teleports,new_tube_state)[0]-old_score
 				if gain<=0:continue
-				candidate=Candidate(gain,cost,0,0,0,paths[0],new_tubes,upgrades,reroute_pod_id=pod_id,extra_paths=[paths[1]])
+				candidate=Candidate(gain,base_cost,0,0,0,paths[0],new_tubes,reroute_pod_id=pod_id,extra_paths=[paths[1]])
 				if best is None or(candidate.score,-candidate.cost)>(best.score,-best.cost):best=candidate
 		return best
 	def auto_connector_options(self,tubes):

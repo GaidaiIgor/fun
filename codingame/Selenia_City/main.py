@@ -32,8 +32,8 @@ class Candidate:
 	@property
 	def efficiency(self):return self.score/max(1,self.cost)
 class Planner:
-	buildings:dict[int,Building];month:int;resources:int;score_so_far:int;tubes:dict[Pair,int];teleports:dict[int,int];pods:dict[int,Pod]
-	def __init__(self):self.buildings={};self.month=0;self.resources=0;self.score_so_far=0;self.tubes={};self.teleports={};self.pods={}
+	buildings:dict[int,Building];month:int;resources:int;score_so_far:int;tubes:dict[Pair,int];teleports:dict[int,int];pods:dict[int,Pod];exact_result:tuple
+	def __init__(self):self.buildings={};self.month=0;self.resources=0;self.score_so_far=0;self.tubes={};self.teleports={};self.pods={};self.exact_result=None
 	def play(self):
 		while True:
 			try:self.read_month()
@@ -56,7 +56,10 @@ class Planner:
 		self.debug_month_input()
 	def choose_actions(self):
 		if OVERRIDE_MONTH==self.month+1:return[action.strip()for action in OVERRIDE_COMMAND.split(";")if action.strip()and action.strip()!="WAIT"]
-		actions=[];serviced=self.get_serviced_pairs();service_counts=self.get_service_counts();module_load=self.get_module_load();degrees=self.get_tube_degrees();teleport_used=self.get_teleport_used_buildings();teleported_pairs=self.get_teleported_pairs();pod_ids=set(self.pods);planned_pods={pod_id:pod.path[:]for(pod_id,pod)in self.pods.items()};planned_teleports=dict(self.teleports);tubes=dict(self.tubes);direct_pod_counts=self.get_direct_service_pod_counts();edge_schedule=self.get_edge_schedule();dedicated_edge_counts=self.get_dedicated_pod_edge_counts();rerouted_pod_ids=set();retired_pod_ids=set();budget=self.resources;modules_by_type=self.get_modules_by_type();unserved_demands=self.get_unserved_demands(serviced);min_efficiency=self.min_efficiency();baseline_score=self.actual_score_from_pods(planned_pods,planned_teleports,tubes)[0];print(self.score_debug_text("before",planned_pods,planned_teleports,tubes),file=sys.stderr);exact_actions=[];exact_pods={pod_id:path[:]for(pod_id,path)in planned_pods.items()};exact_teleports=dict(planned_teleports);exact_tubes=dict(tubes);exact_budget=self.exact_plan(exact_actions,exact_pods,exact_teleports,exact_tubes,budget,set(pod_ids));exact_score=-1 if exact_budget is None else self.actual_score_from_pods(exact_pods,exact_teleports,exact_tubes)[0]
+		actions=[];serviced=self.get_serviced_pairs();service_counts=self.get_service_counts();module_load=self.get_module_load();degrees=self.get_tube_degrees();teleport_used=self.get_teleport_used_buildings();teleported_pairs=self.get_teleported_pairs();pod_ids=set(self.pods);planned_pods={pod_id:pod.path[:]for(pod_id,pod)in self.pods.items()};planned_teleports=dict(self.teleports);tubes=dict(self.tubes);direct_pod_counts=self.get_direct_service_pod_counts();edge_schedule=self.get_edge_schedule();dedicated_edge_counts=self.get_dedicated_pod_edge_counts();rerouted_pod_ids=set();retired_pod_ids=set();budget=self.resources;modules_by_type=self.get_modules_by_type();unserved_demands=self.get_unserved_demands(serviced);min_efficiency=self.min_efficiency();baseline_result=self.actual_score_from_pods(planned_pods,planned_teleports,tubes);baseline_score=baseline_result[0];print(self.score_debug_text("before",baseline_result),file=sys.stderr);exact_actions=[];exact_pods={pod_id:path[:]for(pod_id,path)in planned_pods.items()};exact_teleports=dict(planned_teleports);exact_tubes=dict(tubes);exact_budget=self.exact_plan(exact_actions,exact_pods,exact_teleports,exact_tubes,budget,set(pod_ids),baseline_score);exact_score=-1 if exact_budget is None else self.exact_result[0]
+		demand=sum(sum(pad.demand.values())for pad in self.get_landing_pads())
+		if exact_budget is not None and exact_score>baseline_score and self.exact_result[3]*10>=demand*9:
+			after_score=self.score_debug_text("after",self.exact_result);self.score_so_far+=exact_score;print(f"resources_after {exact_budget} spent {self.resources-exact_budget} {after_score}",file=sys.stderr);return exact_actions
 		for(pad,astronaut_type,count)in unserved_demands:
 			if(pad.id,astronaut_type)in serviced:continue
 			candidate=self.best_service_candidate(pad,astronaut_type,count,modules_by_type,module_load,degrees,teleport_used,tubes,edge_schedule,service_counts,planned_pods,planned_teleports,rerouted_pod_ids,budget,pod_ids)
@@ -76,8 +79,8 @@ class Planner:
 		if(exact_score,exact_budget or 0)>(chosen_score,budget):actions,planned_pods,planned_teleports=exact_actions,exact_pods,exact_teleports;tubes,budget,chosen_score=exact_tubes,exact_budget,exact_score
 		if(chosen_score,budget)<=(baseline_score,self.resources):actions=[];planned_pods={pod_id:pod.path[:]for(pod_id,pod)in self.pods.items()};planned_teleports=dict(self.teleports);tubes=dict(self.tubes);budget=self.resources;chosen_score=baseline_score
 		after_score=self.score_debug_text("after",planned_pods,planned_teleports,tubes);self.score_so_far+=chosen_score;print(f"resources_after {budget} spent {self.resources-budget} {after_score}",file=sys.stderr);return actions
-	def exact_plan(self,actions,planned_pods,planned_teleports,tubes,budget,pod_ids):
-		score=self.actual_score_from_pods;start_score=score(planned_pods,planned_teleports,tubes)[0];degrees=Counter()
+	def exact_plan(self,actions,planned_pods,planned_teleports,tubes,budget,pod_ids,start_score=None):
+		score=self.actual_score_from_pods;start_score=score(planned_pods,planned_teleports,tubes)[0]if start_score is None else start_score;degrees=Counter()
 		for(a,b)in tubes:degrees[a]+=1;degrees[b]+=1
 		edge_schedule=Counter()
 		for path in planned_pods.values():
@@ -89,7 +92,7 @@ class Planner:
 			if candidate is None:break
 			budget=self.apply_exact_path(candidate,actions,planned_pods,tubes,degrees,edge_schedule,pod_ids,budget)
 			if score(planned_pods,planned_teleports,tubes)[3]>=demand:break
-		return budget if actions and score(planned_pods,planned_teleports,tubes)[0]>=start_score else None
+		self.exact_result=score(planned_pods,planned_teleports,tubes);return budget if actions and self.exact_result[0]>=start_score else None
 	def exact_direct_teleports(self,actions,planned_pods,planned_teleports,tubes,teleport_used,budget):
 		modules_by_type=self.get_modules_by_type();score=self.actual_score_from_pods
 		while budget>=TELEPORT_COST:
@@ -165,17 +168,15 @@ class Planner:
 			if gain>0 and result[3]>=demand:
 				candidate=Candidate(gain,cost,0,0,0,paths[0],new_tubes,upgrades,reroute_pod_id=destroy_ids[0]if len(destroy_ids)==1 else None,destroy_pod_ids=list(destroy_ids),extra_paths=[path[:]for path in paths[1:]])
 				if quick_best is None or(candidate.score,-candidate.cost)>(quick_best.score,-quick_best.cost):quick_best=candidate
-		auto_tree_candidate=self.best_auto_tree_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score);auto_tree_is_best=False
-		if auto_tree_candidate is not None and(quick_best is None or(auto_tree_candidate.score,-auto_tree_candidate.cost)>(quick_best.score,-quick_best.cost)):
-			quick_best=auto_tree_candidate;auto_tree_is_best=True
+		if quick_best is not None:return quick_best
 		auto_rebalance_candidate=self.best_auto_rebalance_candidate(planned_pods,planned_teleports,tubes,degrees,budget,pod_ids,old_score)
-		auto_rebalance_is_best=False
 		if auto_rebalance_candidate is not None and(quick_best is None or(auto_rebalance_candidate.score,-auto_rebalance_candidate.cost)>(quick_best.score,-quick_best.cost)):
-			quick_best=auto_rebalance_candidate;auto_tree_is_best=False
-			auto_rebalance_is_best=True
-		if auto_tree_is_best or auto_rebalance_is_best:
-			auto_candidate=self.best_auto_extension_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
-			if auto_candidate is not None and(auto_candidate.score,-auto_candidate.cost)>(quick_best.score,-quick_best.cost):quick_best=auto_candidate
+			quick_best=auto_rebalance_candidate
+		auto_candidate=self.best_auto_extension_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
+		if auto_candidate is not None and(quick_best is None or(auto_candidate.score,-auto_candidate.cost)>(quick_best.score,-quick_best.cost)):quick_best=auto_candidate
+		if quick_best is None or quick_best.score<1800:
+			auto_tree_candidate=self.best_auto_tree_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
+			if auto_tree_candidate is not None and(quick_best is None or(auto_tree_candidate.score,-auto_tree_candidate.cost)>(quick_best.score,-quick_best.cost)):quick_best=auto_tree_candidate
 		if quick_best is not None:return quick_best
 		bundle_options=route_options[:8]+self.star_connect_options(tubes)
 		for(destroy_ids,base_paths,removed_schedule)in self.replacement_path_groups(planned_pods,tubes,edge_schedule):
@@ -662,7 +663,10 @@ class Planner:
 		for(a,b)in sorted(self.tubes):print(f"tube {a} {b} {self.tubes[a,b]}",file=sys.stderr)
 		for a in sorted(self.teleports):print(f"teleport {a} {self.teleports[a]}",file=sys.stderr)
 		for pod_id in sorted(self.pods):path=self.pods[pod_id].path;path_text="-".join(map(str,path));print(f"pod {pod_id} {path_text}",file=sys.stderr)
-	def score_debug_text(self,label,planned_pods,planned_teleports,planned_tubes=None):score,speed,balance,delivered,_,_=self.actual_score_from_pods(planned_pods,planned_teleports,planned_tubes);demand=sum(sum(pad.demand.values())for pad in self.get_landing_pads());return f"score_{label} month {score} total_so_far {self.score_so_far+score} speed {speed} diversity {balance} delivered {delivered}/{demand} stranded {demand-delivered}"
+	def score_debug_text(self,label,planned_pods,planned_teleports=None,planned_tubes=None):
+		if isinstance(planned_pods,tuple):score,speed,balance,delivered,_,_=planned_pods
+		else:score,speed,balance,delivered,_,_=self.actual_score_from_pods(planned_pods,planned_teleports,planned_tubes)
+		demand=sum(sum(pad.demand.values())for pad in self.get_landing_pads());return f"score_{label} month {score} total_so_far {self.score_so_far+score} speed {speed} diversity {balance} delivered {delivered}/{demand} stranded {demand-delivered}"
 	def actual_score_from_pods(self,planned_pods,planned_teleports=None,planned_tubes=None):
 		teleports=self.teleports if planned_teleports is None else planned_teleports;tubes=dict(self.tubes if planned_tubes is None else planned_tubes)
 		if planned_tubes is None:
@@ -703,7 +707,7 @@ class Planner:
 			building=self.buildings[building_id]
 			if building.kind<=0:continue
 			waiting=[]
-			for passenger in sorted(queues[building_id]):
+			for passenger in queues[building_id]:
 				pad_id,_,astronaut_type=passenger
 				if building.kind!=astronaut_type:waiting.append(passenger);continue
 				group=pad_id,astronaut_type;service_speed[group]+=max(0,50-day);service_balance[group]+=max(0,50-module_arrivals[building_id]);service_delivered[group]+=1;module_arrivals[building_id]+=1

@@ -137,7 +137,7 @@ pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
     def test_transfer_route_search_beats_recorded_timeout_baseline(self):
         """Verifies this timeout-prone turn plans under 300 milliseconds."""
         state = transfer_route_state()
-        target_seconds = 0.3
+        target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
@@ -163,28 +163,28 @@ pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
     def test_new_island_replacement_search_beats_recorded_timeout_baseline(self):
         """Verifies this new-island replacement turn plans under 300 milliseconds."""
         state = new_island_state()
-        target_seconds = 0.3
+        target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
     def test_second_new_island_turn_beats_recorded_timeout_baseline(self):
         """Verifies the month-six follow-up new-island turn plans under 300 milliseconds."""
         state = second_new_island_turn_state()
-        target_seconds = 0.3
+        target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
     def test_third_new_island_turn_beats_recorded_timeout_baseline(self):
         """Verifies the month-seven follow-up new-island turn plans under 300 milliseconds."""
         state = third_new_island_turn_state()
-        target_seconds = 0.3
+        target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
     def test_fourth_new_island_turn_beats_recorded_timeout_baseline(self):
         """Verifies the month-eight follow-up new-island turn plans under 300 milliseconds."""
         state = fourth_new_island_turn_state()
-        target_seconds = 0.3
+        target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 

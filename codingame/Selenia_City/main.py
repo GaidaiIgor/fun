@@ -722,13 +722,18 @@ class Planner:
 			for(pod_id,move)in sorted(pods)[:capacity_tubes.get(edge,0)]:moves[pod_id]=move
 		return moves
 	def launch_pods(self,queues,moves,distances,pod_positions,planned_pods):
-		onboard={};seats=Counter({pod_id:10 for pod_id in moves})
+		onboard={};seats=Counter({pod_id:10 for pod_id in moves});by_start={}
+		for(pod_id,(a,b))in moves.items():by_start.setdefault(a,[]).append((pod_id,b))
+		for candidates in by_start.values():candidates.sort()
 		for building_id in sorted(queues):
 			waiting=[]
+			candidates=by_start.get(building_id,[])
 			for passenger in sorted(queues[building_id]):
-				astronaut_type=passenger[2];options=[pod_id for(pod_id,(a,b))in moves.items()if a==building_id and seats[pod_id]>0 and distances[astronaut_type][b]<distances[astronaut_type][a]]
-				if not options:waiting.append(passenger);continue
-				pod_id=min(options);seats[pod_id]-=1;onboard.setdefault(pod_id,[]).append(passenger)
+				astronaut_type=passenger[2];pod_id=0
+				for(candidate_id,b)in candidates:
+					if seats[candidate_id]>0 and distances[astronaut_type][b]<distances[astronaut_type][building_id]:pod_id=candidate_id;break
+				if not pod_id:waiting.append(passenger);continue
+				seats[pod_id]-=1;onboard.setdefault(pod_id,[]).append(passenger)
 			if waiting:queues[building_id]=waiting
 			else:del queues[building_id]
 		for(pod_id,(a,b))in moves.items():

@@ -181,6 +181,13 @@ pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
+    def test_fourth_new_island_turn_beats_recorded_timeout_baseline(self):
+        """Verifies the month-eight follow-up new-island turn plans under 300 milliseconds."""
+        state = fourth_new_island_turn_state()
+        target_seconds = 0.3
+        best_seconds = max(timed_planner_run(state) for _ in range(10))
+        self.assertLess(best_seconds, target_seconds)
+
     def test_rebalances_existing_auto_pods_for_new_island(self):
         """Verifies a disconnected island can be served by rebalancing existing pod service areas."""
         state = third_new_island_turn_state()
@@ -507,6 +514,50 @@ tube 6 9 1
 pod 1 1-0-1-0-1-6-1-0-1-0-1-6-1-0-1-0-1-0-1-0-1
 pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
 pod 3 5-4-5-4-0-4-0-4-5-4-0-4-5-10-5-4-0-4-0-4-0
+pod 4 7-0-7-0-2-0-2-0-7-0-2-0-2-0-2-0-2-0-2-0-2
+pod 5 9-6-9-6-8-6-9-6-8-6-9-6-9-6-8-6-9-6-8-6-9
+pod 6 11-1-11-1-11-1-0-1-0-1-0-1-0-1-0-1-0-1-0-1-0
+"""
+
+
+def fourth_new_island_turn_state() -> str:
+    """Returns the month-eight state that triggered timeout risk."""
+    return """
+month 8
+resources 2163
+module 0 1 106 9
+landing 1 104 37 1:20
+module 2 2 148 10
+landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
+module 4 3 91 19
+landing 5 46 66 1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3
+module 6 4 110 43
+landing 7 28 10 1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2
+module 8 5 159 46
+landing 9 108 85 1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3
+module 10 6 20 50
+landing 11 95 74 1,2,3,4,5,6,1,2,3,4,5,6,1,2,3,4,5,6,1,2,3,4,5,6,1,2,3,4,5,6
+module 12 7 10 88
+landing 13 64 23 1,2,3,4,5,6,7,1,2,3,4,5,6,7,1,2,3,4,5,6,7,1,2,3,4,5,6,7,1,2,3,4
+module 14 8 134 9
+landing 15 32 86 1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8,1,2
+tube 0 1 1
+tube 0 2 1
+tube 0 3 1
+tube 0 4 1
+tube 0 7 1
+tube 1 4 1
+tube 1 6 1
+tube 1 11 1
+tube 4 5 1
+tube 4 13 1
+tube 5 10 1
+tube 6 8 1
+tube 6 9 1
+tube 10 12 1
+pod 1 1-0-1-0-1-6-1-4-1-6-1-4-1-6-1-0-1-4-1-6-1
+pod 2 3-0-3-0-4-13-4-13-4-13-4-0-3-0-4-13-4-0-4-0-4
+pod 3 5-4-5-4-0-4-0-4-5-10-5-4-5-10-12-10-5-4-5-10-12
 pod 4 7-0-7-0-2-0-2-0-7-0-2-0-2-0-2-0-2-0-2-0-2
 pod 5 9-6-9-6-8-6-9-6-8-6-9-6-9-6-8-6-9-6-8-6-9
 pod 6 11-1-11-1-11-1-0-1-0-1-0-1-0-1-0-1-0-1-0-1-0

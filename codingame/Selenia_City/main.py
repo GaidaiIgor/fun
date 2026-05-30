@@ -190,7 +190,68 @@ class Planner:
 			if gain<=0:continue
 			candidate=Candidate(gain,cost,0,0,0,paths[0],new_tubes,upgrades,reroute_pod_id=destroy_ids[0]if len(destroy_ids)==1 else None,destroy_pod_ids=list(destroy_ids),extra_paths=[path[:]for path in paths[1:]])
 			if best is None or(candidate.score,-candidate.cost)>(best.score,-best.cost):best=candidate
+		auto_candidate=self.best_auto_extension_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
+		if auto_candidate is not None and(best is None or(auto_candidate.score,-auto_candidate.cost)>(best.score,-best.cost)):best=auto_candidate
 		return best
+	def best_auto_extension_candidate(self,planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score):
+		if len(pod_ids)+1>MAX_PODS:return
+		connectors=self.auto_connector_options(tubes);extensions=self.auto_extension_options(planned_pods,tubes)
+		best=None
+		for(pod_id,service_edges)in extensions:
+			for connector_edges in connectors:
+				specs=[(pod_id,service_edges),(MAX_PODS+1,connector_edges)];new_tubes=[]
+				for(_,edges)in specs:
+					for edge in edges:
+						if edge not in tubes and edge not in new_tubes:new_tubes.append(edge)
+				base_cost=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in new_tubes)+REROUTE_COST+POD_COST
+				if base_cost>budget:continue
+				if not self.can_add_tubes(new_tubes,degrees,tubes):continue
+				new_tube_state=dict(tubes)
+				for edge in new_tubes:new_tube_state[edge]=1
+				temp_pods={current_id:path[:]for(current_id,path)in planned_pods.items()if current_id!=pod_id}
+				try:paths_by_id=self.resolve_auto_candidate_paths(specs,temp_pods,planned_teleports,new_tube_state)
+				except ValueError:continue
+				paths=[paths_by_id[pod_id],paths_by_id[MAX_PODS+1]];removed_schedule=self.schedule_without_pod(edge_schedule,self.pods[pod_id]);upgrade_cost,upgrades=self.bundle_upgrade_plan(paths,new_tubes,tubes,removed_schedule);cost=base_cost+upgrade_cost
+				if cost>budget:continue
+				new_pods=dict(temp_pods);new_pods[pod_id]=paths[0];new_pods[MAX_PODS+1]=paths[1];gain=self.actual_score_from_pods(new_pods,planned_teleports,new_tube_state)[0]-old_score
+				if gain<=0:continue
+				candidate=Candidate(gain,cost,0,0,0,paths[0],new_tubes,upgrades,reroute_pod_id=pod_id,extra_paths=[paths[1]])
+				if best is None or(candidate.score,-candidate.cost)>(best.score,-best.cost):best=candidate
+		return best
+	def auto_connector_options(self,tubes):
+		connected={node for edge in tubes for node in edge};modules_by_type=self.get_modules_by_type();options=[]
+		for pad in sorted(self.get_landing_pads(),key=lambda item:(-sum(item.demand.values()),item.id)):
+			entries=sorted((self.buildings[node]for node in connected if node!=pad.id),key=lambda item:tube_cost(pad,item))[:4]
+			targets=[]
+			for astronaut_type in pad.demand:
+				targets.extend(sorted(modules_by_type[astronaut_type],key=lambda item:tube_cost(pad,item))[:2])
+			for entry in entries:
+				for target in targets:
+					if target.id==entry.id:continue
+					edges=[route_key(pad.id,entry.id),route_key(entry.id,target.id)]
+					new_cost=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in edges if(a,b)not in tubes)
+					if new_cost:options.append((-sum(pad.demand.values()),new_cost,edges))
+		return[edges for(_,_,edges)in sorted(options)[:10]]
+	def auto_extension_options(self,planned_pods,tubes):
+		options=[]
+		for pod in self.reroutable_pods(set())[:8]:
+			edges=[]
+			for(a,b)in map(route_key,planned_pods[pod.id],planned_pods[pod.id][1:]):
+				if(a,b)in tubes and(a,b)not in edges:edges.append((a,b))
+			if not edges:continue
+			nodes={node for edge in edges for node in edge}
+			for node in sorted(nodes):
+				targets=sorted((building for building in self.buildings.values()if building.id not in nodes and building.kind>0),key=lambda item:tube_cost(self.buildings[node],item))[:4]
+				for target in targets:
+					edge=route_key(node,target.id)
+					if edge not in tubes:options.append((tube_cost(self.buildings[node],target),pod.id,edges+[edge]))
+		return[(pod_id,edges)for(_,pod_id,edges)in sorted(options)[:8]]
+	def resolve_auto_candidate_paths(self,specs,planned_pods,planned_teleports,tubes):
+		old_pods=self.pods;old_tubes=self.tubes;old_teleports=self.teleports
+		try:
+			self.pods={pod_id:Pod(pod_id,path[:])for(pod_id,path)in planned_pods.items()};self.tubes=dict(tubes);self.teleports=dict(planned_teleports);return self.resolve_auto_routes(specs)
+		finally:
+			self.pods=old_pods;self.tubes=old_tubes;self.teleports=old_teleports
 	def bundle_upgrade_plan(self,paths,new_tubes,tubes,edge_schedule):
 		new_keys={route_key(a,b)for(a,b)in new_tubes};added_schedule=Counter();required_capacities=Counter()
 		for path in paths:

@@ -165,6 +165,15 @@ pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
+    def test_extends_adjacent_service_pod_for_new_island(self):
+        """Verifies new nodes can be connected by adding a connector and extending an adjacent service pod."""
+        state = second_new_island_overlap_state()
+        benchmark_move = "TUBE 6 11; TUBE 0 6; POD 5 11 6 11 6 11 6 0 6 0 6 0 6 0 6 0 6 0 6 0 6 0; TUBE 5 10; DESTROY 4; POD 4 7 5 7 5 6 5 6 5 7 5 6 5 10 5 6 5 6 5 6 5 6"
+        benchmark_score = 11180
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
     def test_auto_route_prefers_high_load_exclusive_source(self):
         """Verifies AUTO route resolution drains high-load exclusive service nodes first."""
         planner = parse_turn_state(second_new_island_turn_state())
@@ -351,6 +360,14 @@ pod 2 9-6-9-6-9-8-9-6-9-6-9-6-9-8-9-6-9-6-9-6-9
 pod 3 5-4-5-4-0-4-5-4-0-4-5-4-5-4-0-4-5-4-0-4-5
 pod 4 7-5-7-5-6-5-7-5-6-5-7-5-7-5-6-5-7-5-6-5-7
 """
+
+
+def second_new_island_overlap_state() -> str:
+    """Returns the month-six state where overlapping a new connector is worse than extending adjacent service."""
+    return second_new_island_turn_state().replace(
+        "pod 2 9-6-9-6-9-8-9-6-9-6-9-6-9-8-9-6-9-6-9-6-9",
+        "pod 2 9-6-9-6-9-8-9-6-9-8-9-6-9-6-9-6-9-6-9-8-9",
+    )
 
 
 def assert_full_planner_pods(command: str):

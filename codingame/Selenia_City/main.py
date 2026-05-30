@@ -168,7 +168,12 @@ class Planner:
 		auto_tree_candidate=self.best_auto_tree_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score);auto_tree_is_best=False
 		if auto_tree_candidate is not None and(quick_best is None or(auto_tree_candidate.score,-auto_tree_candidate.cost)>(quick_best.score,-quick_best.cost)):
 			quick_best=auto_tree_candidate;auto_tree_is_best=True
-		if auto_tree_is_best:
+		auto_rebalance_candidate=self.best_auto_rebalance_candidate(planned_pods,planned_teleports,tubes,degrees,budget,pod_ids,old_score)
+		auto_rebalance_is_best=False
+		if auto_rebalance_candidate is not None and(quick_best is None or(auto_rebalance_candidate.score,-auto_rebalance_candidate.cost)>(quick_best.score,-quick_best.cost)):
+			quick_best=auto_rebalance_candidate;auto_tree_is_best=False
+			auto_rebalance_is_best=True
+		if auto_tree_is_best or auto_rebalance_is_best:
 			auto_candidate=self.best_auto_extension_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
 			if auto_candidate is not None and(auto_candidate.score,-auto_candidate.cost)>(quick_best.score,-quick_best.cost):quick_best=auto_candidate
 		if quick_best is not None:return quick_best
@@ -199,6 +204,96 @@ class Planner:
 		auto_candidate=self.best_auto_extension_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
 		if auto_candidate is not None and(best is None or(auto_candidate.score,-auto_candidate.cost)>(best.score,-best.cost)):best=auto_candidate
 		return best
+	def best_auto_rebalance_candidate(self,planned_pods,planned_teleports,tubes,degrees,budget,pod_ids,old_score):
+		pod_edges=self.current_pod_edges(planned_pods,tubes);best=None;evaluated=0
+		for new_tubes in self.auto_rebalance_edge_options(tubes):
+			tube_cost_total=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in new_tubes)
+			if tube_cost_total+REROUTE_COST>budget or not self.can_add_tubes(new_tubes,degrees,tubes):continue
+			new_tube_state=dict(tubes)
+			for edge in new_tubes:new_tube_state[edge]=1
+			for specs in self.auto_rebalance_specs(new_tubes,pod_edges,new_tube_state):
+				destroy_ids=[pod_id for(pod_id,_)in specs];cost=tube_cost_total+REROUTE_COST*len(destroy_ids)
+				if cost>budget:continue
+				temp_pods={pod_id:path[:]for(pod_id,path)in planned_pods.items()if pod_id not in destroy_ids}
+				try:paths_by_id=self.resolve_auto_candidate_paths(specs,temp_pods,planned_teleports,new_tube_state)
+				except ValueError:continue
+				new_pods=dict(temp_pods)
+				for(pod_id,_)in specs:new_pods[pod_id]=paths_by_id[pod_id]
+				gain=self.actual_score_from_pods(new_pods,planned_teleports,new_tube_state)[0]-old_score
+				evaluated+=1
+				if gain>0:
+					paths=[paths_by_id[pod_id]for(pod_id,_)in specs];candidate=Candidate(gain,cost,0,0,0,paths[0],new_tubes,destroy_pod_ids=destroy_ids,extra_paths=paths[1:])
+					if best is None or(candidate.score,-candidate.cost)>(best.score,-best.cost):best=candidate
+				if evaluated>=4:return best
+		return best
+	def auto_rebalance_edge_options(self,tubes):
+		connected={node for edge in tubes for node in edge};modules_by_type=self.get_modules_by_type();options=[];seen=set()
+		for pad in sorted(self.get_landing_pads(),key=lambda item:(-sum(item.demand.values()),item.id)):
+			for entry_id in sorted(connected,key=lambda item:tube_cost(pad,self.buildings[item]))[:5]:
+				if entry_id==pad.id:continue
+				nearby=sorted(connected,key=lambda item:tube_cost(self.buildings[entry_id],self.buildings[item]))
+				bridges=[None]+[route_key(entry_id,node)for node in nearby[:6]if node!=entry_id]
+				for astronaut_type in pad.demand:
+					for module in sorted(modules_by_type[astronaut_type],key=lambda item:tube_cost(self.buildings[entry_id],item))[:2]:
+						module_entries=sorted((node for node in connected if node!=module.id),key=lambda item:tube_cost(module,self.buildings[item]))[:3]
+						for module_entry in module_entries:
+							edges=[route_key(pad.id,entry_id),route_key(module_entry,module.id)]
+							for bridge in bridges:
+								combo=edges+([]if bridge is None else[bridge]);new_edges=[]
+								for edge in combo:
+									if edge not in tubes and edge not in new_edges:new_edges.append(edge)
+								key=tuple(sorted(new_edges))
+								coverage=sum(1 for node in{item for edge in new_edges for item in edge}if node not in connected)
+								module_touch=sum(1 for edge in new_edges for node in edge if self.buildings[node].kind>0)
+								if new_edges and key not in seen:
+									option_cost=sum(tube_cost(self.buildings[a],self.buildings[b])for(a,b)in new_edges)
+									seen.add(key);options.append((-coverage,-module_touch,-len(new_edges),option_cost,new_edges))
+		return[edges for(_,_,_,_,edges)in sorted(options)[:36]]
+	def auto_rebalance_specs(self,new_tubes,pod_edges,tubes):
+		choices=[]
+		for edge in new_tubes:
+			candidates=[]
+			for(pod_id,edges)in pod_edges.items():
+				path_edges=self.connect_service_to_edge(edges,edge,tubes)
+				if path_edges:candidates.append((len(path_edges)>2,len(edges),len(path_edges),pod_id,path_edges))
+			choices.append([(pod_id,path_edges)for(_,_,_,pod_id,path_edges)in sorted(candidates)[:3]])
+		yielded=0;seen=set()
+		for assignment in product(*choices):
+			by_pod={}
+			for(pod_id,path_edges)in assignment:
+				by_pod.setdefault(pod_id,list(pod_edges[pod_id]))
+				for edge in path_edges:
+					if edge not in by_pod[pod_id]:by_pod[pod_id].append(edge)
+			for(pod_id,edges)in pod_edges.items():
+				if pod_id in by_pod:continue
+				if any(edge in assigned_edges for assigned_edges in by_pod.values() for edge in edges):by_pod[pod_id]=edges[:]
+			specs=sorted(by_pod.items())
+			key=tuple((pod_id,tuple(edges))for(pod_id,edges)in specs)
+			if key not in seen:seen.add(key);yielded+=1;yield specs
+			if yielded>=27:return
+	def current_pod_edges(self,planned_pods,tubes):
+		result={}
+		for pod in self.reroutable_pods(set())[:8]:
+			edges=[]
+			for edge in map(route_key,planned_pods[pod.id],planned_pods[pod.id][1:]):
+				if edge in tubes and edge not in edges:edges.append(edge)
+			if edges:result[pod.id]=edges
+		return result
+	def connect_service_to_edge(self,service_edges,edge,tubes):
+		service_nodes={node for service_edge in service_edges for node in service_edge};graph={}
+		for(a,b)in tubes:graph.setdefault(a,[]).append(b);graph.setdefault(b,[]).append(a)
+		queue=deque(service_nodes);parent={node:node for node in service_nodes};finish=None
+		while queue and finish is None:
+			current=queue.popleft()
+			if current in edge:finish=current;break
+			for neighbor in sorted(graph.get(current,[])):
+				if neighbor not in parent:parent[neighbor]=current;queue.append(neighbor)
+		if finish is None:return[]
+		path=[finish]
+		while parent[path[-1]]!=path[-1]:path.append(parent[path[-1]])
+		path.reverse();edges=[route_key(a,b)for(a,b)in zip(path,path[1:])]
+		if edge not in edges:edges.append(edge)
+		return edges
 	def best_auto_tree_candidate(self,planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score):
 		if len(pod_ids)>=MAX_PODS:return
 		options=self.auto_tree_options(tubes);best=None

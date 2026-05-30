@@ -181,6 +181,19 @@ pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
+    def test_rebalances_existing_auto_pods_for_new_island(self):
+        """Verifies a disconnected island can be served by rebalancing existing pod service areas."""
+        state = third_new_island_turn_state()
+        benchmark_move = "TUBE 1 4; TUBE 4 13; TUBE 5 12; DESTROY 3; " \
+            "POD 3 5 4 5 4 5 4 5 4 5 4 5 10 5 4 5 12 5 10 5 4 5; " \
+            "DESTROY 2; POD 2 3 0 3 0 4 13 4 13 4 13 4 0 4 0 4 0 3 0 4 13 4; " \
+            "DESTROY 6; POD 6 11 1 11 1 11 1 0 1 4 1 4 1 0 1 0 1 0 1 4 1 4; " \
+            "DESTROY 1; POD 1 1 0 1 0 1 6 1 6 1 0 1 6 1 6 1 0 1 0 1 0 1"
+        benchmark_score = 13273
+        self.assertEqual(score_command(state, benchmark_move), benchmark_score)
+        planner_move = choose_planner_command(state)
+        self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
+
     def test_extends_adjacent_service_pod_for_new_island(self):
         """Verifies new nodes can be connected by adding a connector and extending an adjacent service pod."""
         state = second_new_island_overlap_state()

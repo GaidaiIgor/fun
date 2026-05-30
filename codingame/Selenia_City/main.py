@@ -91,7 +91,7 @@ class Planner:
 			candidate=self.best_exact_path_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids)
 			if candidate is None:break
 			budget=self.apply_exact_path(candidate,actions,planned_pods,tubes,degrees,edge_schedule,pod_ids,budget)
-			if score(planned_pods,planned_teleports,tubes)[3]>=demand:break
+			if score(planned_pods,planned_teleports,tubes)[3]*10>=demand*9:break
 		self.exact_result=score(planned_pods,planned_teleports,tubes);return budget if actions and self.exact_result[0]>=start_score else None
 	def exact_direct_teleports(self,actions,planned_pods,planned_teleports,tubes,teleport_used,budget):
 		modules_by_type=self.get_modules_by_type();score=self.actual_score_from_pods
@@ -109,7 +109,9 @@ class Planner:
 		return budget
 	def best_exact_path_candidate(self,planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids):
 		if len(pod_ids)>=MAX_PODS or budget<POD_COST:return
-		score=self.actual_score_from_pods;fast_old_score=self.score_from_pods(planned_pods,planned_teleports)[0];old_score=score(planned_pods,planned_teleports,tubes)[0];shortlist=[];best=None;modules_by_type=self.get_modules_by_type();route_options=self.exact_path_options(tubes)
+		score=self.actual_score_from_pods;old_score=score(planned_pods,planned_teleports,tubes)[0]
+		if len(self.buildings)>16:return self.best_large_map_auto_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
+		fast_old_score=self.score_from_pods(planned_pods,planned_teleports)[0];shortlist=[];best=None;modules_by_type=self.get_modules_by_type();route_options=self.exact_path_options(tubes)
 		for path in route_options:
 			new_tubes=unique_new_tubes(path,tubes)
 			if not self.can_add_tubes(new_tubes,degrees,tubes):continue
@@ -204,6 +206,11 @@ class Planner:
 			if best is None or(candidate.score,-candidate.cost)>(best.score,-best.cost):best=candidate
 		auto_candidate=self.best_auto_extension_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)
 		if auto_candidate is not None and(best is None or(auto_candidate.score,-auto_candidate.cost)>(best.score,-best.cost)):best=auto_candidate
+		return best
+	def best_large_map_auto_candidate(self,planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score):
+		best=self.best_auto_rebalance_candidate(planned_pods,planned_teleports,tubes,degrees,budget,pod_ids,old_score)
+		for candidate in[self.best_auto_extension_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score),self.best_auto_tree_candidate(planned_pods,planned_teleports,tubes,degrees,edge_schedule,budget,pod_ids,old_score)]:
+			if candidate is not None and(best is None or(candidate.score,-candidate.cost)>(best.score,-best.cost)):best=candidate
 		return best
 	def best_auto_rebalance_candidate(self,planned_pods,planned_teleports,tubes,degrees,budget,pod_ids,old_score):
 		pod_edges=self.current_pod_edges(planned_pods,tubes);best=None;evaluated=0

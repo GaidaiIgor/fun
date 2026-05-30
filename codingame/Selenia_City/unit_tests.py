@@ -135,7 +135,7 @@ pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
     def test_transfer_route_search_beats_recorded_timeout_baseline(self):
-        """Verifies this timeout-prone turn plans under 300 milliseconds."""
+        """Verifies this timeout-prone turn plans under 100 milliseconds."""
         state = transfer_route_state()
         target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
@@ -161,29 +161,36 @@ pod 2 3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3-0-3
         self.assertGreaterEqual(score_command(state, planner_move), benchmark_score)
 
     def test_new_island_replacement_search_beats_recorded_timeout_baseline(self):
-        """Verifies this new-island replacement turn plans under 300 milliseconds."""
+        """Verifies this new-island replacement turn plans under 100 milliseconds."""
         state = new_island_state()
         target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
     def test_second_new_island_turn_beats_recorded_timeout_baseline(self):
-        """Verifies the month-six follow-up new-island turn plans under 300 milliseconds."""
+        """Verifies the month-six follow-up new-island turn plans under 100 milliseconds."""
         state = second_new_island_turn_state()
         target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
     def test_third_new_island_turn_beats_recorded_timeout_baseline(self):
-        """Verifies the month-seven follow-up new-island turn plans under 300 milliseconds."""
+        """Verifies the month-seven follow-up new-island turn plans under 100 milliseconds."""
         state = third_new_island_turn_state()
         target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
 
     def test_fourth_new_island_turn_beats_recorded_timeout_baseline(self):
-        """Verifies the month-eight follow-up new-island turn plans under 300 milliseconds."""
+        """Verifies the month-eight follow-up new-island turn plans under 100 milliseconds."""
         state = fourth_new_island_turn_state()
+        target_seconds = 0.1
+        best_seconds = max(timed_planner_run(state) for _ in range(10))
+        self.assertLess(best_seconds, target_seconds)
+
+    def test_fifth_new_island_turn_beats_recorded_timeout_baseline(self):
+        """Verifies the month-nine follow-up new-island turn plans under 100 milliseconds."""
+        state = fifth_new_island_turn_state()
         target_seconds = 0.1
         best_seconds = max(timed_planner_run(state) for _ in range(10))
         self.assertLess(best_seconds, target_seconds)
@@ -561,6 +568,55 @@ pod 3 5-4-5-4-0-4-0-4-5-10-5-4-5-10-12-10-5-4-5-10-12
 pod 4 7-0-7-0-2-0-2-0-7-0-2-0-2-0-2-0-2-0-2-0-2
 pod 5 9-6-9-6-8-6-9-6-8-6-9-6-9-6-8-6-9-6-8-6-9
 pod 6 11-1-11-1-11-1-0-1-0-1-0-1-0-1-0-1-0-1-0-1-0
+"""
+
+
+def fifth_new_island_turn_state() -> str:
+    """Returns the month-nine state that triggered timeout risk."""
+    return """
+month 9
+resources 2818
+module 0 1 106 9
+landing 1 104 37 1:20
+module 2 2 148 10
+landing 3 47 13 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
+module 4 3 91 19
+landing 5 46 66 1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3
+module 6 4 110 43
+landing 7 28 10 1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2,3,4,1,2
+module 8 5 159 46
+landing 9 108 85 1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1,2,3
+module 10 6 20 50
+landing 11 95 74 1,2,3,4,5,6,1,2,3,4,5,6,1,2,3,4,5,6,1,2,3,4,5,6,1,2,3,4,5,6
+module 12 7 10 88
+landing 13 64 23 1,2,3,4,5,6,7,1,2,3,4,5,6,7,1,2,3,4,5,6,7,1,2,3,4,5,6,7,1,2,3,4
+module 14 8 134 9
+landing 15 32 86 1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8,1,2
+module 16 9 132 14
+landing 17 110 67 1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9
+tube 0 1 1
+tube 0 2 1
+tube 0 3 1
+tube 0 4 1
+tube 0 7 1
+tube 1 4 1
+tube 1 6 1
+tube 3 13 1
+tube 4 5 1
+tube 4 11 1
+tube 4 13 1
+tube 5 10 1
+tube 5 12 1
+tube 5 15 1
+tube 6 8 1
+tube 6 9 1
+pod 1 1-0-1-0-1-0-1-4-1-0-1-4-1-6-1-0-1-0-1-0-1
+pod 2 3-0-3-0-4-11-4-11-4-11-4-0-3-0-4-0-4-0-4-0-4
+pod 3 5-4-5-4-0-4-0-4-5-4-5-10-5-4-5-10-5-4-5-4-0
+pod 4 7-0-7-0-2-0-2-0-7-0-2-0-2-0-2-0-2-0-2-0-2
+pod 5 9-6-9-6-1-6-9-6-1-6-8-6-1-6-8-6-1-6-1-6-1
+pod 6 13-3-13-4-13-4-13-3-0-3-13-4-13-3-0-3-0-3-0-3-0
+pod 7 15-5-15-5-15-5-12-5-12-5-12-5-12-5-12-5-12-5-12-5-12
 """
 
 

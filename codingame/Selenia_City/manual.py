@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -17,146 +16,54 @@ POD_CAPACITY = 10
 class GameState:
     """Stores the complete current game snapshot while reading monthly input.
     month is the current zero-based month. resources stores available resources. buildings keeps known buildings ordered by id.
-    pod_routes stores transport pod paths. Tube ownership is stored inside buildings."""
+    pods stores transport pods ordered by id. Tube ownership and monthly astronaut arrivals are stored inside buildings."""
     month: int = -1
     resources: int = 0
     buildings: dict[int, Building] = field(default_factory=dict)
-    pod_routes: dict[int, list[int]] = field(default_factory=dict)
+    pods: list[Pod] = field(default_factory=list)
 
-    @staticmethod
-    def read_month(previous: GameState) -> GameState:
-        """Reads one complete monthly input snapshot.
-        previous provides persistent buildings from earlier months. Returns the parsed fresh state for the next month."""
-        state = GameState()
-        state.month = previous.month + 1
-        state.buildings = {building_id: building.copy_building_only() for building_id, building in previous.buildings.items()}
-        state.resources = int(input())
-        state.read_tubes()
-        state.pod_routes = state.read_pod_routes()
-        state.read_buildings()
-        state.buildings = dict(sorted(state.buildings.items()))
-        return state
-
-    def read_tubes(self):
-        """Reads current route input into self.
-        Tube routes are written to endpoint building tubes, while teleport routes are written to endpoint building teleport fields."""
+    def read_month_input(self):
+        """Reads one complete monthly input snapshot into self.
+        self receives updated resources plus newly constructed buildings."""
+        self.month += 1
+        self.resources = int(input())
         for _ in range(int(input())):
-            start_id, end_id, capacity = map(int, input().split())
-            if capacity == 0:
-                self.buildings[start_id].teleport = (-1, end_id)
-                self.buildings[end_id].teleport = (start_id, -1)
-            else:
-                self.buildings[start_id].tubes[end_id] = capacity
-                self.buildings[end_id].tubes[start_id] = capacity
+            input()
+        for _ in range(int(input())):
+            input()
+        self.read_new_buildings()
 
-    def read_pod_routes(self) -> dict[int, list[int]]:
-        """Reads the currently existing transport pod routes.
-        Returns pod routes keyed by pod identifier and ordered by pod identifier."""
-        pod_routes = {}
+    def read_new_buildings(self):
+        """Reads buildings constructed for the current month.
+        New buildings are stored in self.buildings. New landing-pad astronauts are initialized in each building initial terminal."""
         for _ in range(int(input())):
             values = list(map(int, input().split()))
-            pod_routes[values[0]] = values[2:]
-        return dict(sorted(pod_routes.items()))
-
-    def read_buildings(self):
-        """Reads buildings constructed for the current month into self.buildings."""
-        for _ in range(int(input())):
-            values = list(map(int, input().split()))
-            astronaut_types = {}
-            if values[0] == 0:
-                astronaut_types = dict(Counter(values[5:]))
-            building = Building(values[1], values[0], np.array((values[2], values[3]), dtype=int), astronaut_types=astronaut_types)
+            building = Building(values[1], values[0], np.array((values[2], values[3]), dtype=int))
             self.buildings[building.id] = building
+            if building.kind == 0:
+                building.initial = Terminal(building)
+                for index, astronaut_type in enumerate(values[5:]):
+                    building.initial.astronauts.append(Astronaut(building.initial, 1000 * building.id + index, astronaut_type, [], 0))
 
     def simulate_month(self) -> SimulationSummary:
         """Simulates astronaut movement before the current month ends.
         Returns a SimulationSummary containing score and wait_times split by building id and astronaut type."""
-        distance_matrix = self.all_distances()
-        terminals = self.init_groups(distance_matrix)
+        distance_matrix = self.get_all_distances()
+        self.reset(distance_matrix)
         summary = SimulationSummary()
-        module_load = {}
-        pods = {pod_id: Pod(pod_id, path) for pod_id, path in self.pod_routes.items()}
         for day in range(MONTH_DAYS):
-            self.process_teleport_phase(terminals, distance_matrix)
-            summary.score += self.settle_arrivals(day, module_load, terminals, queue="departing")
-            self.process_tube_phase(terminals, pods, distance_matrix)
-            for terminal in terminals.values():
-                if terminal.departing.groups:
-                    wait_times = summary.wait_times.setdefault(terminal.building_id, {})
-                    for group in terminal.departing.groups:
-                        wait_times[group.kind] = wait_times.get(group.kind, 0) + group.size
-            summary.score += self.settle_arrivals(day + 1, module_load, terminals, queue="arriving")
+            self.process_teleport_phase(self.buildings, distance_matrix)
+            summary.score += self.settle_arrivals(day, self.buildings)
+            self.process_tube_phase(self.buildings, self.pods, distance_matrix)
+            for building in self.buildings.values():
+                if building.departing.astronauts:
+                    wait_times = summary.wait_times.setdefault(building.id, {})
+                    for astronaut in building.departing.astronauts:
+                        wait_times[astronaut.kind] = wait_times.get(astronaut.kind, 0) + 1
+            summary.score += self.settle_arrivals(day + 1, self.buildings)
         return summary
 
-    def init_groups(self, distance_matrix: NDArray[int]) -> dict[int, Terminal]:
-        """Initializes monthly astronaut groups at landing pad terminals.
-        distance_matrix provides shortest distances used to retain nearest targets. Returns terminals keyed by building id."""
-        terminals = {building_id: Terminal(building_id) for building_id in self.buildings}
-        for building in self.buildings.values():
-            if building.kind == 0:
-                for astronaut_type, count in building.astronaut_types.items():
-                    target_ids = [target.id for target in self.buildings.values() if target.kind == astronaut_type]
-                    sub_terminal = terminals[building.id].departing
-                    sub_terminal.add_group(AstronautGroup.make_group(sub_terminal, astronaut_type, target_ids, count, distance_matrix))
-        return terminals
-
-    def process_teleport_phase(self, terminals: dict[int, Terminal], distance_matrix: NDArray[int]):
-        """Moves eligible departing groups through teleporters.
-        terminals stores simulation queues keyed by building id. distance_matrix provides shortest distances for target selection."""
-        for terminal in terminals.values():
-            outgoing_id = self.buildings[terminal.building_id].teleport[1]
-            if outgoing_id == -1:
-                continue
-            group_index = 0
-            while group_index < len(terminal.departing.groups):
-                group = terminal.departing.groups[group_index]
-                new_group = AstronautGroup.make_group(terminals[outgoing_id].departing, group.kind, group.target_building_ids, group.size, distance_matrix)
-                if new_group.target_distance <= group.target_distance:
-                    self.transfer_group(terminal.departing, group_index, new_group)
-                else:
-                    group_index += 1
-
-    def process_tube_phase(self, terminals: dict[int, Terminal], pods: dict[int, Pod], distance_matrix: NDArray[int]):
-        """Moves pods through tubes and boards groups that get closer to a target.
-        terminals stores simulation queues keyed by building id. pods stores pod movement state keyed by pod id.
-        distance_matrix provides shortest distances for target selection."""
-        tube_uses = {}
-        for pod in pods.values():
-            start_id, destination_id = pod.get_building_ids()
-            edge = (start_id, destination_id) if start_id < destination_id else (destination_id, start_id)
-            if start_id != destination_id and tube_uses.get(edge, 0) < self.buildings[edge[0]].tubes[edge[1]]:
-                pod.seats = POD_CAPACITY
-                group_index = 0
-                source_sub_terminal = terminals[start_id].departing
-                departing = source_sub_terminal.groups
-                while pod.seats > 0 and group_index < len(departing):
-                    group = departing[group_index]
-                    boarding_count = min(group.size, pod.seats)
-                    new_group = \
-                        AstronautGroup.make_group(terminals[destination_id].arriving, group.kind, group.target_building_ids, boarding_count, distance_matrix)
-                    if new_group.target_distance < group.target_distance:
-                        pod.seats -= boarding_count
-                        if boarding_count == group.size:
-                            self.transfer_group(source_sub_terminal, group_index, new_group)
-                        else:
-                            group.size -= boarding_count
-                            new_group.sub_terminal.add_group(new_group)
-                            group_index += 1
-                    else:
-                        group_index += 1
-                pod.path_index = pod.next_path_index()
-                tube_uses[edge] = tube_uses.get(edge, 0) + 1
-
-    @staticmethod
-    def transfer_group(source_sub_terminal: SubTerminal, group_index: int, new_group: AstronautGroup) -> AstronautGroup:
-        """Transfers a group by replacing the source entry with new_group.
-        source_sub_terminal provides the source queue. group_index selects the source group. new_group is added to its destination queue.
-        Returns new_group after it is added."""
-        source_sub_terminal.groups.pop(group_index)
-        new_group.sub_terminal.add_group(new_group)
-        return new_group
-
-    def all_distances(self) -> NDArray[int]:
+    def get_all_distances(self) -> NDArray[int]:
         """Calculates shortest travel distances between all known buildings.
         self supplies buildings, tubes, and teleport links. Returns distances where distances[start_id, end_id] is the shortest travel distance."""
         building_count = len(self.buildings)
@@ -174,6 +81,59 @@ class GameState:
             distances = np.minimum(distances, distances[:, [middle_id]] + distances[[middle_id], :])
         return distances
 
+    def reset(self, distance_matrix: NDArray[int]):
+        """Resets live building terminals and pods to their monthly initial state.
+        distance_matrix provides shortest distances used to retain nearest targets. self provides buildings whose arriving terminals are cleared
+        and whose departing terminals are copied from initial terminals, plus pods whose path_index and seats are reset."""
+        for building in self.buildings.values():
+            building.population = 0
+            building.arriving = Terminal(building)
+            building.departing = Terminal(building)
+            for astronaut in building.initial.astronauts:
+                building.departing.astronauts.append(astronaut.clone(building.departing, self.buildings, distance_matrix))
+        for pod in self.pods:
+            pod.path_index = 0
+
+    def process_teleport_phase(self, buildings: dict[int, Building], distance_matrix: NDArray[int]):
+        """Moves eligible departing astronauts through teleporters.
+        buildings stores simulation queues keyed by building id. distance_matrix provides shortest distances for target selection."""
+        for building in buildings.values():
+            outgoing_id = self.buildings[building.id].teleport[1]
+            if outgoing_id == -1:
+                continue
+            remaining_astronauts = []
+            for astronaut in building.departing.astronauts:
+                new_astronaut = astronaut.clone(buildings[outgoing_id].arriving, buildings, distance_matrix)
+                if new_astronaut.target_distance <= astronaut.target_distance:
+                    buildings[outgoing_id].arriving.astronauts.append(new_astronaut)
+                else:
+                    remaining_astronauts.append(astronaut)
+            building.departing.astronauts = remaining_astronauts
+
+    def process_tube_phase(self, buildings: dict[int, Building], pods: list[Pod], distance_matrix: NDArray[int]):
+        """Moves pods through tubes and boards astronauts that get closer to a target.
+        buildings stores simulation queues keyed by building id. pods stores pod movement state ordered by pod id.
+        distance_matrix provides shortest distances for target selection."""
+        tube_uses = {}
+        for pod in pods:
+            start_id, destination_id = pod.get_building_ids()
+            edge = (start_id, destination_id) if start_id < destination_id else (destination_id, start_id)
+            if start_id != destination_id and tube_uses.get(edge, 0) < self.buildings[edge[0]].tubes[edge[1]]:
+                pod.seats = POD_CAPACITY
+                source_terminal = buildings[start_id].departing
+                remaining_astronauts = []
+                for astronaut in source_terminal.astronauts:
+                    if pod.seats > 0:
+                        new_astronaut = astronaut.clone(buildings[destination_id].arriving, buildings, distance_matrix)
+                        if new_astronaut.target_distance < astronaut.target_distance:
+                            pod.seats -= 1
+                            buildings[destination_id].arriving.astronauts.append(new_astronaut)
+                            continue
+                    remaining_astronauts.append(astronaut)
+                source_terminal.astronauts = remaining_astronauts
+                pod.path_index = pod.next_path_index()
+                tube_uses[edge] = tube_uses.get(edge, 0) + 1
+
     def all_tubes(self) -> Iterator[tuple[tuple[int, int], int]]:
         """Iterates through tube capacities owned by buildings.
         self provides buildings with adjacent tube data. Returns sorted endpoint id pairs and the corresponding tube capacity once per tube."""
@@ -183,49 +143,45 @@ class GameState:
                     yield (building_id, other_id), capacity
 
     @staticmethod
-    def settle_arrivals(day: int, module_load: dict[int, int], terminals: dict[int, Terminal], queue: str) -> int:
-        """Scores groups already standing in matching modules.
-        day determines the speed score. module_load stores arrivals by module id. terminals provides queues to inspect.
-        queue selects whether departing or arriving queues are checked.
-        Returns the score gained from groups settled by this call."""
+    def settle_arrivals(day: int, buildings: dict[int, Building]) -> int:
+        """Scores astronauts in arriving terminals and moves unsettled astronauts to departing terminals.
+        day determines the speed score. buildings provides arrival queues and stores population for balancing score.
+        Returns the score gained from astronauts settled by this call."""
         score_gain = 0
-        for terminal in terminals.values():
-            sub_terminal = getattr(terminal, queue)
-            building_id = sub_terminal.parent.building_id
-            group_index = 0
-            while group_index < len(sub_terminal.groups):
-                group = sub_terminal.groups[group_index]
-                if building_id in group.target_building_ids:
-                    current_load = module_load.get(building_id, 0)
-                    scoring_count = max(0, min(group.size, 50 - current_load))
-                    score_gain += group.size * (50 - day) + scoring_count * (50 - current_load) - scoring_count * (scoring_count - 1) // 2
-                    module_load[building_id] = current_load + group.size
-                    sub_terminal.groups.pop(group_index)
+        for building in buildings.values():
+            remaining_astronauts = []
+            for astronaut in building.arriving.astronauts:
+                if building.id in astronaut.target_building_ids:
+                    score_gain += 50 - day + max(0, 50 - building.population)
+                    building.population += 1
                 else:
-                    group_index += 1
-            if queue == "arriving":
-                for group in sub_terminal.groups:
-                    sub_terminal.parent.departing.add_group(group)
-                sub_terminal.groups = []
+                    remaining_astronauts.append(astronaut)
+            building.arriving.astronauts = []
+            for astronaut in remaining_astronauts:
+                astronaut.terminal = building.departing
+                building.departing.astronauts.append(astronaut)
+            building.departing.astronauts.sort(key=lambda astronaut: astronaut.id)
         return score_gain
+
 
 @dataclass(slots=True)
 class Building:
     """Stores one landing pad or lunar module.
     id is the building identifier. kind is zero for a landing pad, or the positive module type for a lunar module. coords stores
     position. tubes stores adjacent tube capacities keyed by neighbor id. teleport stores incoming and outgoing building ids.
-    astronaut_types stores demand."""
+    population stores the number of astronauts settled in this building during the current month.
+    initial stores the monthly departing terminal template. arriving stores astronauts that reached the building during the current pod phase.
+    departing stores astronauts available to board pods."""
     id: int
     kind: int
     coords: NDArray[int]
     tubes: dict[int, int] = field(default_factory=dict)
     teleport: tuple[int, int] = (-1, -1)
-    astronaut_types: dict[int, int] = field(default_factory=dict)
+    population: int = 0
+    initial: Terminal = field(init=False)
+    arriving: Terminal = field(init=False)
+    departing: Terminal = field(init=False)
 
-    def copy_building_only(self) -> Building:
-        """Copies this building without current-month route attachments.
-        Returns a building sharing persistent coords and astronaut_types with self."""
-        return Building(self.id, self.kind, self.coords, astronaut_types=self.astronaut_types)
 
 @dataclass(slots=True)
 class Pod:
@@ -249,58 +205,42 @@ class Pod:
             return 1 if self.path[0] == self.path[-1] else self.path_index
         return self.path_index + 1
 
-@dataclass(slots=True)
-class AstronautGroup:
-    """Stores astronauts moving together during monthly movement simulation.
-    sub_terminal is the queue where the group stands. kind stores the destination module kind.
-    target_building_ids stores candidate destination modules. target_distance stores the current distance to the nearest candidate target.
-    size stores the number of astronauts in the group."""
-    sub_terminal: SubTerminal
-    kind: int
-    target_building_ids: list[int]
-    target_distance: int
-    size: int
-
-    @staticmethod
-    def make_group(sub_terminal: SubTerminal, astronaut_type: int, target_building_ids: list[int], size: int, distance_matrix: NDArray[int]) -> AstronautGroup:
-        """Creates an astronaut group at sub_terminal with only nearest targets retained.
-        sub_terminal is the current queue. astronaut_type is the destination module kind. target_building_ids are candidate module ids.
-        size is the number of astronauts. distance_matrix gives shortest distances by building id.
-        Returns the new AstronautGroup with target_distance set."""
-        building_id = sub_terminal.parent.building_id
-        target_distance = min(distance_matrix[building_id, target_id] for target_id in target_building_ids)
-        targets = [target_id for target_id in target_building_ids if distance_matrix[building_id, target_id] == target_distance]
-        return AstronautGroup(sub_terminal, astronaut_type, targets, target_distance, size)
-
 
 @dataclass(slots=True)
 class Terminal:
-    """Stores astronaut groups at one building during movement simulation.
-    building_id is the building represented by this terminal. arriving stores groups that reached the building during the current pod phase.
-    departing stores groups available to board pods."""
-    building_id: int
-    arriving: SubTerminal = field(init=False)
-    departing: SubTerminal = field(init=False)
-
-    def __post_init__(self):
-        """Creates the arriving and departing subterminals owned by this terminal."""
-        self.arriving = SubTerminal(self)
-        self.departing = SubTerminal(self)
+    """Stores one astronaut movement queue owned by a building.
+    building is the owning building. astronauts stores astronauts waiting in this queue."""
+    building: Building
+    astronauts: list[Astronaut] = field(default_factory=list)
 
 
 @dataclass(slots=True)
-class SubTerminal:
-    """Stores one movement queue owned by a terminal.
-    parent is the owning terminal. groups stores astronaut groups waiting in this queue."""
-    parent: Terminal
-    groups: list[AstronautGroup] = field(default_factory=list)
+class Astronaut:
+    """Stores one astronaut during monthly movement simulation.
+    terminal is the queue where the astronaut stands. id gives boarding priority. kind stores the destination module kind.
+    target_building_ids stores candidate destination modules. target_distance stores the current distance to the nearest candidate target."""
+    terminal: Terminal
+    id: int
+    kind: int
+    target_building_ids: list[int]
+    target_distance: int
 
-    def add_group(self, group: AstronautGroup):
-        """Adds group to this queue and updates its reverse reference.
-        group is the astronaut group that should wait in this subterminal."""
-        group.sub_terminal = self
-        self.groups.append(group)
+    def clone(self, terminal: Terminal, buildings: dict[int, Building], distance_matrix: NDArray[int]) -> Astronaut:
+        """Creates a copy of self at terminal with only nearest targets retained.
+        terminal is the destination queue. buildings provides candidate target modules. distance_matrix gives shortest distances by building id.
+        Returns the new Astronaut with target_distance set."""
+        astronaut = Astronaut(terminal, self.id, self.kind, self.target_building_ids, 0)
+        astronaut.update_targets(buildings, distance_matrix)
+        return astronaut
 
+    def update_targets(self, buildings: dict[int, Building], distance_matrix: NDArray[int]):
+        """Updates target_building_ids and target_distance for this astronaut.
+        buildings provides candidate target modules when target_building_ids is empty. distance_matrix gives shortest distances."""
+        if not self.target_building_ids:
+            self.target_building_ids = [building.id for building in buildings.values() if building.kind == self.kind]
+        building_id = self.terminal.building.id
+        self.target_distance = min(distance_matrix[building_id, target_id] for target_id in self.target_building_ids)
+        self.target_building_ids = [target_id for target_id in self.target_building_ids if distance_matrix[building_id, target_id] == self.target_distance]
 
 @dataclass(slots=True)
 class SimulationSummary:
@@ -314,7 +254,7 @@ def play():
     """Runs the interactive game loop."""
     state = GameState()
     while True:
-        state = GameState.read_month(state)
+        state.read_month_input()
         print(choose_action(state))
 
 

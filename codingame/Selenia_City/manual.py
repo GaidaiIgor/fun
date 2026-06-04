@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -10,6 +9,7 @@ from numpy.typing import NDArray
 
 MONTH_DAYS = 20
 POD_CAPACITY = 10
+DistanceMatrix = dict[int, dict[int, int]]
 PathsByPair = dict[tuple[int, int], list[list[int]]]
 
 
@@ -49,7 +49,8 @@ class GameState:
     def simulate_month(self) -> SimulationSummary:
         """Simulates astronaut movement before the current month ends.
         Returns a SimulationSummary containing score and wait_times split by building id and astronaut type."""
-        distance_matrix, paths_by_pair = self.get_shortest_distances_paths()
+        distance_matrix, paths_by_pair = self.get_shortest_distances_paths(set(self.buildings))
+        self.update_dynamic_pod_distances()
         self.reset(distance_matrix, paths_by_pair)
         summary = SimulationSummary()
         for day in range(MONTH_DAYS):
@@ -64,41 +65,58 @@ class GameState:
             summary.score += self.settle_arrivals(day + 1, self.buildings)
         return summary
 
-    def get_shortest_distances_paths(self) -> tuple[NDArray[int], PathsByPair]:
+    def update_dynamic_pod_distances(self):
+        """Stores tube-only shortest-distance matrices on dynamic pods.
+        Each dynamic pod receives distances among nodes incident to its service_edges."""
+        for pod in self.pods:
+            if pod.dynamic:
+                service_nodes = set()
+                for start_id, end_id in pod.service_edges:
+                    service_nodes.add(start_id)
+                    service_nodes.add(end_id)
+                pod.distance_matrix, _ = self.get_shortest_distances_paths(service_nodes, use_teleports=False, return_paths=False)
+
+    def get_shortest_distances_paths(self, nodes: set[int], use_teleports: bool = True, return_paths: bool = True) -> tuple[DistanceMatrix, PathsByPair]:
         """Calculates shortest travel distances and all paths realizing each distance.
-        Returns distances where distances[start_id, end_id] is the shortest travel distance, and paths where paths[start_id, end_id] contains every
-        shortest building sequence from start_id to end_id."""
-        building_count = len(self.buildings)
-        unreachable_distance = building_count + 1
-        distances = np.full((building_count, building_count), unreachable_distance, dtype=int)
+        nodes limits the start ids, end ids, and intermediate ids considered. use_teleports controls whether teleport links contribute zero-distance edges.
+        return_paths controls whether shortest path lists are built. Returns distances where distances[start_id][end_id] is the shortest travel
+        distance, and paths where paths[start_id, end_id] contains every shortest building sequence when return_paths is true."""
+        unreachable_distance = len(self.buildings) + 1
+        distances = {start_id: {end_id: unreachable_distance for end_id in nodes} for start_id in nodes}
         paths = {}
-        for building_id in self.buildings:
-            distances[building_id, building_id] = 0
-            paths[building_id, building_id] = [[building_id]]
+        for building_id in nodes:
+            distances[building_id][building_id] = 0
+            if return_paths:
+                paths[building_id, building_id] = [[building_id]]
             outgoing_id = self.buildings[building_id].teleport[1]
-            if outgoing_id != -1:
-                distances[building_id, outgoing_id] = 0
-                paths[building_id, outgoing_id] = [[building_id, outgoing_id]]
-        for (start_id, end_id), _ in self.all_tubes():
-            if distances[start_id, end_id] > 1:
-                distances[start_id, end_id] = 1
-                paths[start_id, end_id] = [[start_id, end_id]]
-            if distances[end_id, start_id] > 1:
-                distances[end_id, start_id] = 1
-                paths[end_id, start_id] = [[end_id, start_id]]
-        for middle_id in range(building_count):
-            for start_id in range(building_count):
-                for end_id in range(building_count):
-                    if middle_id in (start_id, end_id) or (start_id, middle_id) not in paths or (middle_id, end_id) not in paths:
+            if use_teleports and outgoing_id in nodes:
+                distances[building_id][outgoing_id] = 0
+                if return_paths:
+                    paths[building_id, outgoing_id] = [[building_id, outgoing_id]]
+        for start_id in nodes:
+            for end_id in self.buildings[start_id].tubes:
+                if end_id not in nodes:
+                    continue
+                for source_id, destination_id in ((start_id, end_id), (end_id, start_id)):
+                    if distances[source_id][destination_id] > 1:
+                        distances[source_id][destination_id] = 1
+                        if return_paths:
+                            paths[source_id, destination_id] = [[source_id, destination_id]]
+        for middle_id in nodes:
+            for start_id in nodes:
+                for end_id in nodes:
+                    current_distance = distances[start_id][end_id]
+                    new_distance = distances[start_id][middle_id] + distances[middle_id][end_id]
+                    if new_distance > current_distance:
                         continue
-                    new_distance = distances[start_id, middle_id] + distances[middle_id, end_id]
-                    if new_distance <= distances[start_id, end_id]:
-                        new_paths = self.combine_paths(paths[start_id, middle_id], paths[middle_id, end_id])
-                        if new_distance < distances[start_id, end_id]:
-                            distances[start_id, end_id] = new_distance
-                            paths[start_id, end_id] = new_paths
-                        else:
-                            paths[start_id, end_id].extend(new_paths)
+                    distances[start_id][end_id] = new_distance
+                    if not return_paths or middle_id in (start_id, end_id) or (start_id, middle_id) not in paths or (middle_id, end_id) not in paths:
+                        continue
+                    new_paths = self.combine_paths(paths[start_id, middle_id], paths[middle_id, end_id])
+                    if new_distance < current_distance:
+                        paths[start_id, end_id] = new_paths
+                    else:
+                        paths[start_id, end_id].extend(new_paths)
         return distances, paths
 
     @staticmethod
@@ -112,10 +130,10 @@ class GameState:
                 paths.append([*left_path, *right_path[1:]])
         return paths
 
-    def reset(self, distance_matrix: NDArray[int], paths_by_pair: PathsByPair):
+    def reset(self, distance_matrix: DistanceMatrix, paths_by_pair: PathsByPair):
         """Resets live building terminals and pods to their monthly initial state.
         distance_matrix and paths_by_pair provide shortest paths used to route astronauts. self provides buildings whose arriving terminals are cleared
-        and whose departing terminals are copied from initial terminals, plus pods whose path_index is reset."""
+        and whose departing terminals receive reachable astronauts from initial terminals, plus pods whose path_index is reset."""
         paths_by_start_kind = {}
         for building in self.buildings.values():
             building.population = 0
@@ -126,9 +144,12 @@ class GameState:
                     key = building.id, astronaut.kind
                     if key not in paths_by_start_kind:
                         paths_by_start_kind[key] = astronaut.get_paths(self.buildings, distance_matrix, paths_by_pair)
-                    building.departing.astronauts.append(Astronaut(building.departing, astronaut.id, astronaut.kind, paths_by_start_kind[key]))
+                    if paths_by_start_kind[key].size:
+                        building.departing.astronauts.append(Astronaut(building.departing, astronaut.id, astronaut.kind, paths_by_start_kind[key]))
         for pod in self.pods:
             pod.path_index = 0
+            if pod.dynamic:
+                pod.path = []
 
     def process_teleport_phase(self, buildings: dict[int, Building]):
         """Moves eligible departing astronauts through teleporters.
@@ -139,7 +160,7 @@ class GameState:
                 continue
             remaining_astronauts = []
             for astronaut in building.departing.astronauts:
-                if astronaut.paths.shape[1] > 1 and np.any(astronaut.paths[:, 1] == outgoing_id):
+                if np.any(astronaut.paths[:, 1] == outgoing_id):
                     astronaut.move(buildings[outgoing_id].arriving)
                 else:
                     remaining_astronauts.append(astronaut)
@@ -150,13 +171,17 @@ class GameState:
         buildings stores simulation queues keyed by building id. pods stores pod movement state ordered by pod id."""
         tube_uses = {}
         for pod in pods:
-            start_id, destination_id = pod.get_building_ids()
+            if pod.dynamic:
+                start_id = pod.path[-1] if pod.path else pod.get_next_stop(buildings)
+                destination_id = pod.get_next_stop(buildings)
+            else:
+                start_id, destination_id = pod.get_building_ids()
             edge = (start_id, destination_id) if start_id < destination_id else (destination_id, start_id)
-            if start_id != destination_id and tube_uses.get(edge, 0) < self.buildings[edge[0]].tubes[edge[1]]:
+            if tube_uses.get(edge, 0) < self.buildings[edge[0]].tubes[edge[1]]:
                 pod.seats = POD_CAPACITY
                 remaining_astronauts = []
                 for astronaut in buildings[start_id].departing.astronauts:
-                    if pod.seats > 0 and astronaut.paths.shape[1] > 1 and np.any(astronaut.paths[:, 1] == destination_id):
+                    if pod.seats > 0 and np.any(astronaut.paths[:, 1] == destination_id):
                         astronaut.move(buildings[destination_id].arriving)
                         pod.seats -= 1
                         continue
@@ -164,14 +189,6 @@ class GameState:
                 buildings[start_id].departing.astronauts = remaining_astronauts
                 pod.path_index = pod.next_path_index()
                 tube_uses[edge] = tube_uses.get(edge, 0) + 1
-
-    def all_tubes(self) -> Iterator[tuple[tuple[int, int], int]]:
-        """Iterates through tube capacities owned by buildings.
-        self provides buildings with adjacent tube data. Returns sorted endpoint id pairs and the corresponding tube capacity once per tube."""
-        for building_id, building in self.buildings.items():
-            for other_id, capacity in building.tubes.items():
-                if building_id < other_id:
-                    yield (building_id, other_id), capacity
 
     @staticmethod
     def settle_arrivals(day: int, buildings: dict[int, Building]) -> int:
@@ -217,11 +234,41 @@ class Building:
 @dataclass(slots=True)
 class Pod:
     """Stores one transport pod and its monthly movement state.
-    id is the pod identifier. path stores the itinerary. path_index stores the current index in path. seats stores empty seats."""
+    id is the pod identifier. path stores the itinerary. path_index stores the current index in path. seats stores empty seats.
+    service_edges stores edges eligible for dynamic routing. dynamic selects whether the path is generated during simulation.
+    distance_matrix stores tube-only shortest distances among service edge nodes for dynamic routing."""
     id: int
     path: list[int]
     path_index: int = 0
     seats: int = 0
+    dynamic: bool = False
+    service_edges: list[tuple[int, int]] = None
+    distance_matrix: DistanceMatrix = None
+
+    def get_next_stop(self, buildings: dict[int, Building]) -> int:
+        """Chooses and appends this service pod next stop.
+        buildings stores current building terminals and tube links. Returns the building id appended to path."""
+        keys = []
+        for start_id, end_id in self.service_edges:
+            for source_id, destination_id in ((start_id, end_id), (end_id, start_id)):
+                demand = sum(1 for astronaut in buildings[source_id].departing.astronauts if np.any(astronaut.paths[:, 1] == destination_id))
+                demand = min(POD_CAPACITY, demand)
+                if self.path:
+                    keys.append((-demand, self.distance_matrix[self.path[-1]][source_id], source_id, destination_id))
+                else:
+                    keys.append((-demand, source_id, destination_id))
+        source_id, destination_id = min(keys)[-2:]
+        if not self.path:
+            self.path.append(source_id)
+        elif self.path[-1] == source_id:
+            self.path.append(destination_id)
+        else:
+            current_id = self.path[-1]
+            source_distance = self.distance_matrix[current_id][source_id]
+            next_id = next(next_id for next_id in buildings[current_id].tubes
+                if next_id in self.distance_matrix and self.distance_matrix[next_id][source_id] == source_distance - 1)
+            self.path.append(next_id)
+        return self.path[-1]
 
     def get_building_ids(self) -> tuple[int, int]:
         """Gets this pod current and next building ids.
@@ -255,7 +302,7 @@ class Astronaut:
     kind: int
     paths: NDArray[int]
 
-    def get_paths(self, buildings: dict[int, Building], distance_matrix: NDArray[int], paths_by_pair: PathsByPair) -> NDArray[int]:
+    def get_paths(self, buildings: dict[int, Building], distance_matrix: DistanceMatrix, paths_by_pair: PathsByPair) -> NDArray[int]:
         """Selects shortest paths from this astronaut building to the nearest matching modules.
         buildings stores candidate modules keyed by building id. distance_matrix gives shortest travel distances.
         paths_by_pair maps building pairs to all shortest paths between them. Returns a padded matrix with one path per row."""
@@ -263,10 +310,10 @@ class Astronaut:
         target_ids = [building.id for building in buildings.values() if building.kind == self.kind and (building_id, building.id) in paths_by_pair]
         if not target_ids:
             return np.empty((0, 0), dtype=int)
-        nearest_distance = min(distance_matrix[building_id, target_id] for target_id in target_ids)
+        nearest_distance = min(distance_matrix[building_id][target_id] for target_id in target_ids)
         paths = []
         for target_id in target_ids:
-            if distance_matrix[building_id, target_id] == nearest_distance:
+            if distance_matrix[building_id][target_id] == nearest_distance:
                 paths.extend(paths_by_pair[building_id, target_id])
         path_matrix = np.full((len(paths), max(len(path) for path in paths)), -1, dtype=int)
         for index, path in enumerate(paths):
@@ -278,7 +325,7 @@ class Astronaut:
         terminal is the destination queue receiving this astronaut."""
         self.terminal = terminal
         self.paths = self.paths[self.paths[:, 1] == terminal.building.id, 1:]
-        while self.paths.shape[1] > 1 and np.all(self.paths[:, -1] == -1):
+        while np.all(self.paths[:, -1] == -1):
             self.paths = self.paths[:, :-1]
         terminal.astronauts.append(self)
 

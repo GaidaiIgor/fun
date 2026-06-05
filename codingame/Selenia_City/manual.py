@@ -257,9 +257,9 @@ class Pod:
                 demand = sum(1 for astronaut in buildings[source_id].departing.astronauts if np.any(astronaut.paths[:, 1] == destination_id))
                 demand = min(POD_CAPACITY, demand)
                 if self.path:
-                    keys.append((-demand, self.distance_matrix[self.path[-1]][source_id], source_id, destination_id))
+                    keys.append((-demand, buildings[source_id].num_pods, self.distance_matrix[self.path[-1]][source_id], source_id, destination_id))
                 else:
-                    keys.append((-demand, source_id, destination_id))
+                    keys.append((-demand, buildings[source_id].num_pods, source_id, destination_id))
         source_id, destination_id = min(keys)[-2:]
         if not self.path:
             self.path.append(source_id)

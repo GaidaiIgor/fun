@@ -148,6 +148,8 @@ class GameState:
                         building.departing.astronauts.append(Astronaut(building.departing, astronaut.id, astronaut.kind, paths_by_start_kind[key]))
         for pod in self.pods:
             pod.path_index = 0
+            for building_id in {building_id for edge in pod.service_edges for building_id in edge}:
+                self.buildings[building_id].num_pods += 1
             if pod.dynamic:
                 pod.path = []
 
@@ -217,7 +219,7 @@ class Building:
     """Stores one landing pad or lunar module.
     id is the building identifier. kind is zero for a landing pad, or the positive module type for a lunar module. coords stores
     position. tubes stores adjacent tube capacities keyed by neighbor id. teleport stores incoming and outgoing building ids.
-    population stores the number of astronauts settled in this building during the current month.
+    population stores the number of astronauts settled in this building during the current month. num_pods stores the number of pods stopping here.
     initial stores the monthly departing terminal template. arriving stores astronauts that reached the building during the current pod phase.
     departing stores astronauts available to board pods."""
     id: int
@@ -226,6 +228,7 @@ class Building:
     tubes: dict[int, int] = field(default_factory=dict)
     teleport: tuple[int, int] = (-1, -1)
     population: int = 0
+    num_pods: int = 0
     initial: Terminal = field(init=False)
     arriving: Terminal = field(init=False)
     departing: Terminal = field(init=False)
@@ -235,7 +238,7 @@ class Building:
 class Pod:
     """Stores one transport pod and its monthly movement state.
     id is the pod identifier. path stores the itinerary. path_index stores the current index in path. seats stores empty seats.
-    service_edges stores edges eligible for dynamic routing. dynamic selects whether the path is generated during simulation.
+    service_edges stores tube edges served by this pod. dynamic selects whether the path is generated during simulation.
     distance_matrix stores tube-only shortest distances among service edge nodes for dynamic routing."""
     id: int
     path: list[int]

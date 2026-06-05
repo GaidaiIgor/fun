@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from math import ceil
 
 import numpy as np
 from numpy import linalg
@@ -102,22 +103,38 @@ class GameState:
     def build_pods(self) -> list[str]:
         """Builds dynamic pods until every tube edge is served or resources run out.
         Returns pod action strings with full generated routes for the pods added to self."""
-        new_pods = []
         serviced_edges = {edge for pod in self.pods for edge in pod.service_edges}
-        while self.resources >= POD_COST:
-            edge = None
-            for current_edge in self.iter_edges():
-                if current_edge not in serviced_edges:
-                    edge = current_edge
-                    break
-            if edge is None:
-                break
-            pod = self.build_pod(edge)
-            new_pods.append(pod)
-            serviced_edges.add(edge)
+        unserviced_edges = [edge for edge in self.iter_edges() if edge not in serviced_edges]
+        pod_count = min(self.resources // POD_COST, len(unserviced_edges))
+        if pod_count == 0:
+            return []
+        new_pods = [self.build_pod(service_edges) for service_edges in self.distribute_service_edges(unserviced_edges, pod_count)]
         if new_pods:
             self.simulate_month()
         return [" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]) for pod in new_pods]
+
+    def distribute_service_edges(self, edges: list[tuple[int, int]], count: int) -> list[list[tuple[int, int]]]:
+        """Distributes unserviced tube edges into continuous pod service areas.
+        edges gives canonical unserviced tube edges. count gives the number of pods and the maximum edge count per pod.
+        Returns at most count service edge lists, each containing only connected edges from edges."""
+        service_areas = []
+        remaining_edges = list(edges)
+        edge_limit = ceil(len(edges) / count)
+        while remaining_edges and len(service_areas) < count:
+            service_area = [remaining_edges.pop(0)]
+            service_nodes = set(service_area[0])
+            index = 0
+            while index < len(remaining_edges) and len(service_area) < edge_limit:
+                edge = remaining_edges[index]
+                if edge[0] in service_nodes or edge[1] in service_nodes:
+                    service_area.append(edge)
+                    service_nodes.update(edge)
+                    remaining_edges.pop(index)
+                    index = 0
+                else:
+                    index += 1
+            service_areas.append(service_area)
+        return service_areas
 
     def iter_edges(self) -> Iterator[tuple[int, int]]:
         """Iterates over tube edges stored in the current game snapshot.
@@ -127,10 +144,10 @@ class GameState:
                 if building.id < end_id:
                     yield building.id, end_id
 
-    def build_pod(self, edge: tuple[int, int]) -> Pod:
-        """Creates a dynamic pod serving one canonical tube edge.
-        edge gives the canonical tube endpoints served by the new pod. Returns the pod added to self."""
-        pod = Pod(max((pod.id for pod in self.pods), default=0) + 1, [], dynamic=True, service_edges=[edge])
+    def build_pod(self, service_edges: list[tuple[int, int]]) -> Pod:
+        """Creates a dynamic pod serving a continuous area.
+        service_edges gives canonical tube edges served by the new pod. Returns the pod added to self."""
+        pod = Pod(max((pod.id for pod in self.pods), default=0) + 1, [], dynamic=True, service_edges=service_edges)
         self.pods.append(pod)
         self.resources -= POD_COST
         return pod

@@ -41,13 +41,13 @@ class GameState:
 
     def read_new_buildings(self):
         """Reads buildings constructed for the current month.
-        New buildings are stored in self.buildings. New landing-pad astronauts are initialized in each building initial terminal."""
+        New buildings are stored in self.buildings. Each building receives an initial terminal, populated only for landing pads."""
         for _ in range(int(input())):
             values = list(map(int, input().split()))
             building = Building(values[1], values[0], np.array((values[2], values[3]), dtype=int))
+            building.initial = Terminal(building)
             self.buildings[building.id] = building
             if building.kind == 0:
-                building.initial = Terminal(building)
                 for index, astronaut_type in enumerate(values[5:]):
                     building.initial.astronauts.append(Astronaut(building.initial, 1000 * building.id + index, astronaut_type, np.empty((0, 0), dtype=int)))
 

@@ -118,27 +118,24 @@ class GameState:
         Returns pod creation and reroute action strings with full generated routes."""
         all_edges = set(self.iter_edges())
         new_pods = []
+        rerouted_pods = set()
         if not self.pods:
-            if not all_edges or self.resources < POD_COST:
-                return []
-            new_pods.append(self.build_pod(all_edges))
+            if all_edges and self.resources >= POD_COST:
+                new_pods.append(self.build_pod(all_edges))
+        if self.pods:
+            serviced_edges = {edge for pod in self.pods for edge in pod.service_edges}
+            unserviced_edges = {edge for edge in all_edges if edge not in serviced_edges}
+            rerouted_pods = self.assign_unserviced_edges(unserviced_edges)
+            split_pods = self.reduce_pod_load()
+            new_pods.extend(split_pods[0])
+            rerouted_pods.update(split_pods[1])
 
-        serviced_edges = {edge for pod in self.pods for edge in pod.service_edges}
-        unserviced_edges = {edge for edge in all_edges if edge not in serviced_edges}
-        rerouted_pods = self.assign_unserviced_edges(unserviced_edges)
-
-        split_pods = self.reduce_pod_load()
-        new_pods.extend(split_pods[0])
-        rerouted_pods.update(split_pods[1])
-
-        if not new_pods and not rerouted_pods:
-            return []
-        self.simulate_month()
+        summary = self.simulate_month()
+        print(f"MONTHLY_SCORE {summary.score}", file=stderr)
         actions = [" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]) for pod in new_pods]
         for pod in rerouted_pods:
             actions.append(f"DESTROY {pod.id}")
             actions.append(" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]))
-        self.reset_all()
         return actions
 
     def assign_unserviced_edges(self, unserviced_edges: set[tuple[int, int]]) -> set[Pod]:

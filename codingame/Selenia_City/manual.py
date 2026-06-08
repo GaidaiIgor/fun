@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from sys import stderr
 
 import numpy as np
 from numpy import linalg
@@ -55,6 +56,18 @@ class GameState:
         self provides pods that existed before this month decision phase starts."""
         for pod in self.pods:
             pod.dynamic = False
+
+    def print(self):
+        """Prints the current month-start game state to stderr.
+        self provides resources, buildings, tubes, pods, and landing-pad astronaut arrivals included in the snapshot."""
+        print(f"MONTH {self.month}", file=stderr)
+        print(f"RESOURCES {self.resources}", file=stderr)
+        print(f"BUILDINGS {len(self.buildings)}", file=stderr)
+        for building in self.buildings.values():
+            building.print()
+        print(f"PODS {len(self.pods)}", file=stderr)
+        for pod in self.pods:
+            pod.print()
 
     def choose_action(self) -> str:
         """Builds missing transport infrastructure for the current month.
@@ -470,6 +483,16 @@ class Building:
     arriving: Terminal = field(init=False)
     departing: Terminal = field(init=False)
 
+    def print(self):
+        """Prints this building month-start debug state to stderr.
+        self provides id, kind, coordinates, teleport links, tube links, pod membership, and landing-pad astronauts."""
+        tube_text = " ".join(f"{end_id}:{capacity}" for end_id, capacity in self.tubes.items()) or "-"
+        teleport_text = f"{self.teleport[0]}:{self.teleport[1]}"
+        pod_text = " ".join(str(pod.id) for pod in self.pods) or "-"
+        astronaut_text = " ".join(str(astronaut.kind) for astronaut in self.initial.astronauts) or "-"
+        print(f"BUILDING {self.id}, kind={self.kind}, coords={self.coords.tolist()}, tubes={tube_text}, teleport={teleport_text}, pods={pod_text}, "
+              f"astronauts={astronaut_text}", file=stderr)
+
 
 @dataclass(slots=True, eq=False)
 class Pod:
@@ -484,6 +507,13 @@ class Pod:
     dynamic: bool = False
     service_edges: set[tuple[int, int]] = None
     distance_matrix: DistanceMatrix = None
+
+    def print(self):
+        """Prints this pod month-start debug state to stderr.
+        self provides id, dynamic flag, path state, and service edges."""
+        path_text = " ".join(str(building_id) for building_id in self.path)
+        edge_text = " ".join(f"{edge[0]}-{edge[1]}" for edge in self.service_edges)
+        print(f"POD {self.id}, path={path_text}, service_edges={edge_text}", file=stderr)
 
     def get_next_stop(self, buildings: dict[int, Building]) -> int:
         """Chooses and appends this service pod next stop.
@@ -584,6 +614,7 @@ def play():
     while True:
         state.read_month_input()
         state.fix_dynamic_pods()
+        state.print()
         print(state.choose_action())
 
 

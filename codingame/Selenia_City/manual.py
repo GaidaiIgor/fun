@@ -616,6 +616,7 @@ def play():
         state.fix_dynamic_pods()
         state.print()
         print(state.choose_action())
+        print(f"REMAINING_RESOURCES {state.resources}", file=stderr)
 
 
 if __name__ == "__main__":

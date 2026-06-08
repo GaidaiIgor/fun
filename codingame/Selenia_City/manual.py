@@ -184,13 +184,13 @@ class GameState:
                 continue
             if self.resources < POD_COST or len(pod.service_edges) <= 1:
                 break
-            service_areas = self.split_service_area(pod.service_edges)
-            new_pods.append(self.build_pod(service_areas[0]))
+            new_service_area = self.split_service_area(pod)
+            new_pods.append(self.build_pod(new_service_area))
             if not pod.dynamic and self.resources < POD_REROUTE_COST:
                 break
             if not pod.dynamic:
                 rerouted_pods.add(pod)
-            for edge in service_areas[0]:
+            for edge in new_service_area:
                 self.remove_service_edge(edge, pod)
         return new_pods, rerouted_pods
 
@@ -234,21 +234,50 @@ class GameState:
             if all(building_id not in service_edge for service_edge in pod.service_edges):
                 self.buildings[building_id].pods.remove(pod)
 
-    def split_service_area(self, edges: set[tuple[int, int]]) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    def split_service_area(self, pod: Pod) -> set[tuple[int, int]]:
         """Splits a connected pod service area into two service areas.
-        edges gives canonical tube edges currently served by one pod. Returns two service edge sets."""
-        remaining_edges = edges.copy()
-        edge = remaining_edges.pop()
-        service_area = {edge}
-        service_nodes = set(edge)
-        while len(service_area) < len(edges) // 2:
-            for edge in remaining_edges:
-                if edge[0] in service_nodes or edge[1] in service_nodes:
-                    service_area.add(edge)
-                    service_nodes.update(edge)
+        pod gives the existing pod being split. Returns the connected service edge set assigned to a new pod after assigning the side with
+        pod first path edge to pod."""
+        target_size = len(pod.service_edges) // 2
+        for edge in pod.service_edges:
+            remaining_area = pod.service_edges - {edge}
+            if not self.is_service_area_connected(remaining_area):
+                continue
+            moving_area = {edge}
+            moving_nodes = set(edge)
+            break
+        while len(moving_area) < target_size:
+            for edge in remaining_area:
+                if edge[0] not in moving_nodes and edge[1] not in moving_nodes:
+                    continue
+                candidate_remaining_area = remaining_area - {edge}
+                if not self.is_service_area_connected(candidate_remaining_area):
+                    continue
+                moving_area.add(edge)
+                moving_nodes.update(edge)
+                remaining_area = candidate_remaining_area
+                break
+            else:
+                break
+        first_path_edge = self.make_edge(pod.path[0], pod.path[1])
+        return remaining_area if first_path_edge in moving_area else moving_area
+
+    @staticmethod
+    def is_service_area_connected(edges: set[tuple[int, int]]) -> bool:
+        """Checks whether service edges form one connected area.
+        edges gives canonical tube edges. Returns whether all edges belong to one connected component."""
+        edge = next(iter(edges))
+        connected_edges = {edge}
+        connected_nodes = set(edge)
+        while len(connected_edges) < len(edges):
+            for edge in edges:
+                if edge not in connected_edges and (edge[0] in connected_nodes or edge[1] in connected_nodes):
+                    connected_edges.add(edge)
+                    connected_nodes.update(edge)
                     break
-            remaining_edges.remove(edge)
-        return service_area, remaining_edges
+            else:
+                return False
+        return True
 
     def iter_edges(self) -> Iterator[tuple[int, int]]:
         """Iterates over tube edges stored in the current game snapshot.

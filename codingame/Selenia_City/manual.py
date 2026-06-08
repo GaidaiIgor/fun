@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from math import ceil
 
 import numpy as np
 from numpy import linalg
@@ -13,6 +12,7 @@ from numpy.typing import NDArray
 MONTH_DAYS = 20
 POD_CAPACITY = 10
 POD_COST = 1000
+POD_REROUTE_COST = 250
 DistanceMatrix = dict[int, dict[int, int]]
 PathsByPair = dict[tuple[int, int], list[list[int]]]
 
@@ -58,17 +58,17 @@ class GameState:
 
     def choose_action(self) -> str:
         """Builds missing transport infrastructure for the current month.
-        Returns a valid action string containing planned edge and pod commands."""
-        actions = self.build_edges()
-        actions.extend(self.build_pods())
+        Returns a valid action string containing planned edge, pod, and reroute commands."""
+        actions = self.develop_edges()
+        actions.extend(self.develop_pods())
         return ";".join(actions) if actions else "WAIT"
 
-    def build_edges(self) -> list[str]:
-        """Builds tubes until every known astronaut can reach a matching module.
+    def develop_edges(self) -> list[str]:
+        """Makes decisions regarding edge's development.
         Returns tube action strings for the edges added to self."""
         actions = []
         while True:
-            self.prepare_simulation()
+            self.update_paths()
             source_building, target_building = self.find_missing_path_buildings()
             if source_building is None or not self.build_edge(source_building, target_building):
                 break
@@ -81,7 +81,7 @@ class GameState:
         for building in self.buildings.values():
             if building.kind == 0:
                 initial_kinds = {astronaut.kind for astronaut in building.initial.astronauts}
-                reachable_kinds = {astronaut.kind for astronaut in building.departing.astronauts}
+                reachable_kinds = {astronaut.kind for astronaut in building.initial.astronauts if astronaut.paths.size}
                 unreachable_kinds = initial_kinds - reachable_kinds
                 for astronaut_kind in unreachable_kinds:
                     targets = (target for target in self.buildings.values() if target.kind == astronaut_kind)
@@ -100,41 +100,142 @@ class GameState:
         self.resources -= cost
         return True
 
-    def build_pods(self) -> list[str]:
-        """Builds dynamic pods until every tube edge is served or resources run out.
-        Returns pod action strings with full generated routes for the pods added to self."""
-        serviced_edges = {edge for pod in self.pods for edge in pod.service_edges}
-        unserviced_edges = [edge for edge in self.iter_edges() if edge not in serviced_edges]
-        pod_count = min(self.resources // POD_COST, len(unserviced_edges))
-        if pod_count == 0:
-            return []
-        new_pods = [self.build_pod(service_edges) for service_edges in self.distribute_service_edges(unserviced_edges, pod_count)]
-        if new_pods:
-            self.simulate_month()
-        return [" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]) for pod in new_pods]
+    def develop_pods(self) -> list[str]:
+        """Makes decisions regarding pod's development.
+        Returns pod creation and reroute action strings with full generated routes."""
+        all_edges = set(self.iter_edges())
+        new_pods = []
+        if not self.pods:
+            if not all_edges or self.resources < POD_COST:
+                return []
+            new_pods.append(self.build_pod(all_edges))
 
-    def distribute_service_edges(self, edges: list[tuple[int, int]], count: int) -> list[list[tuple[int, int]]]:
-        """Distributes unserviced tube edges into continuous pod service areas.
-        edges gives canonical unserviced tube edges. count gives the number of pods and the maximum edge count per pod.
-        Returns at most count service edge lists, each containing only connected edges from edges."""
-        service_areas = []
-        remaining_edges = list(edges)
-        edge_limit = ceil(len(edges) / count)
-        while remaining_edges and len(service_areas) < count:
-            service_area = [remaining_edges.pop(0)]
-            service_nodes = set(service_area[0])
-            index = 0
-            while index < len(remaining_edges) and len(service_area) < edge_limit:
-                edge = remaining_edges[index]
+        serviced_edges = {edge for pod in self.pods for edge in pod.service_edges}
+        unserviced_edges = {edge for edge in all_edges if edge not in serviced_edges}
+        rerouted_pods = self.assign_unserviced_edges(unserviced_edges)
+
+        split_pods = self.reduce_pod_load()
+        new_pods.extend(split_pods[0])
+        rerouted_pods.update(split_pods[1])
+
+        if not new_pods and not rerouted_pods:
+            return []
+        self.simulate_month()
+        actions = [" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]) for pod in new_pods]
+        for pod in rerouted_pods:
+            actions.append(f"DESTROY {pod.id}")
+            actions.append(" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]))
+        self.reset_all()
+        return actions
+
+    def assign_unserviced_edges(self, unserviced_edges: set[tuple[int, int]]) -> set[Pod]:
+        """Assigns unserviced edges to adjacent existing pods when rerouting is affordable.
+        unserviced_edges stores canonical tube edges still without service and is mutated by removing assigned edges.
+        Returns pods that must be rebuilt after receiving new service edges."""
+        rerouted_pods = set()
+        while unserviced_edges:
+            assignment = self.find_unserviced_edge_pod(unserviced_edges)
+            if assignment is None:
+                break
+            if not assignment[1].dynamic:
+                rerouted_pods.add(assignment[1])
+            self.add_service_edge(assignment[0], assignment[1])
+            unserviced_edges.remove(assignment[0])
+        return rerouted_pods
+
+    def find_unserviced_edge_pod(self, unserviced_edges: set[tuple[int, int]]) -> tuple[tuple[int, int], Pod]:
+        """Finds an unserviced edge and an adjacent pod that can serve it.
+        unserviced_edges stores canonical tube edges still without service. Returns the selected edge and pod, or None when no usable adjacent pod exists."""
+        for edge in unserviced_edges:
+            available_pods = self.buildings[edge[0]].pods | self.buildings[edge[1]].pods
+            dynamic_pods = {pod for pod in available_pods if pod.dynamic}
+            if self.resources < POD_REROUTE_COST:
+                available_pods = dynamic_pods
+            if available_pods:
+                return edge, min(dynamic_pods or available_pods, key=lambda pod: len(pod.service_edges))
+        return None
+
+    def reduce_pod_load(self) -> tuple[list[Pod], set[Pod]]:
+        """Tries to build new pods or reroute existing pods to alleviate highest workload.
+        Returns new pods and original pods that need rebuild actions."""
+        new_pods = []
+        rerouted_pods = set()
+        while True:
+            pod = max(self.pods, key=lambda pod: len(pod.service_edges))
+            overlap_found, overlap_removed, pod_rerouted = self.remove_overlapping_edges(pod)
+            if overlap_found:
+                if not overlap_removed:
+                    break
+                if pod_rerouted:
+                    rerouted_pods.add(pod)
+                continue
+            if self.resources < POD_COST or len(pod.service_edges) <= 1:
+                break
+            service_areas = self.split_service_area(pod.service_edges)
+            new_pods.append(self.build_pod(service_areas[0]))
+            if not pod.dynamic and self.resources < POD_REROUTE_COST:
+                break
+            if not pod.dynamic:
+                rerouted_pods.add(pod)
+            for edge in service_areas[0]:
+                self.remove_service_edge(edge, pod)
+        return new_pods, rerouted_pods
+
+    def remove_overlapping_edges(self, pod: Pod) -> tuple[bool, bool, bool]:
+        """Removes service edges from a pod when those edges are already served by another pod.
+        pod is the pod whose service area is checked.
+        Returns whether overlapping edges existed, whether they were removed, and whether pod was rerouted."""
+        overlapped_edges = set()
+        for other_pod in self.pods:
+            if other_pod is not pod:
+                overlapped_edges.update(pod.service_edges & other_pod.service_edges)
+        if not overlapped_edges:
+            return False, False, False
+        if not pod.dynamic and self.resources < POD_REROUTE_COST:
+            return True, False, False
+        pod_rerouted = not pod.dynamic
+        for edge in overlapped_edges:
+            self.remove_service_edge(edge, pod)
+        return True, True, pod_rerouted
+
+    def add_service_edge(self, edge: tuple[int, int], pod: Pod):
+        """Adds a service edge to a pod and updates all dependent planning state.
+        edge is the canonical tube edge being assigned. pod is the pod receiving the edge."""
+        if not pod.dynamic:
+            self.resources -= POD_REROUTE_COST
+            pod.dynamic = True
+        pod.service_edges.add(edge)
+        pod.path = []
+        for building_id in edge:
+            self.buildings[building_id].pods.add(pod)
+
+    def remove_service_edge(self, edge: tuple[int, int], pod: Pod):
+        """Removes a service edge from a pod and updates all dependent planning state.
+        edge is the canonical tube edge being removed. pod is the pod losing the edge."""
+        if not pod.dynamic:
+            self.resources -= POD_REROUTE_COST
+            pod.dynamic = True
+        pod.service_edges.remove(edge)
+        pod.path = []
+        for building_id in edge:
+            if all(building_id not in service_edge for service_edge in pod.service_edges):
+                self.buildings[building_id].pods.remove(pod)
+
+    def split_service_area(self, edges: set[tuple[int, int]]) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+        """Splits a connected pod service area into two service areas.
+        edges gives canonical tube edges currently served by one pod. Returns two service edge sets."""
+        remaining_edges = edges.copy()
+        edge = remaining_edges.pop()
+        service_area = {edge}
+        service_nodes = set(edge)
+        while len(service_area) < len(edges) // 2:
+            for edge in remaining_edges:
                 if edge[0] in service_nodes or edge[1] in service_nodes:
-                    service_area.append(edge)
+                    service_area.add(edge)
                     service_nodes.update(edge)
-                    remaining_edges.pop(index)
-                    index = 0
-                else:
-                    index += 1
-            service_areas.append(service_area)
-        return service_areas
+                    break
+            remaining_edges.remove(edge)
+        return service_area, remaining_edges
 
     def iter_edges(self) -> Iterator[tuple[int, int]]:
         """Iterates over tube edges stored in the current game snapshot.
@@ -144,11 +245,13 @@ class GameState:
                 if building.id < end_id:
                     yield building.id, end_id
 
-    def build_pod(self, service_edges: list[tuple[int, int]]) -> Pod:
+    def build_pod(self, service_edges: set[tuple[int, int]]) -> Pod:
         """Creates a dynamic pod serving a continuous area.
         service_edges gives canonical tube edges served by the new pod. Returns the pod added to self."""
         pod = Pod(max((pod.id for pod in self.pods), default=0) + 1, [], dynamic=True, service_edges=service_edges)
         self.pods.append(pod)
+        for building_id in {building_id for edge in service_edges for building_id in edge}:
+            self.buildings[building_id].pods.add(pod)
         self.resources -= POD_COST
         return pod
 
@@ -161,7 +264,8 @@ class GameState:
     def simulate_month(self) -> SimulationSummary:
         """Simulates astronaut movement before the current month ends.
         Returns a SimulationSummary containing score and wait_times split by building id and astronaut type."""
-        self.prepare_simulation()
+        self.update_paths()
+        self.reset_all()
         summary = SimulationSummary()
         for day in range(MONTH_DAYS):
             self.process_teleport_phase(self.buildings)
@@ -175,26 +279,32 @@ class GameState:
             summary.score += self.settle_arrivals(day + 1, self.buildings)
         return summary
 
-    def prepare_simulation(self):
-        """Initializes path, terminal, pod, and building counters before movement simulation.
-        self receives freshly calculated astronaut paths, dynamic pod distances, reset terminals, reset pod state, and building pod counts."""
-        self.reset()
+    def update_paths(self):
+        """Prepares path and dynamic pod routing data before planning or movement simulation.
+        self receives freshly calculated astronaut paths and dynamic pod distances."""
         distance_matrix, paths_by_pair = self.get_shortest_distances_paths(set(self.buildings))
-        self.update_dynamic_pod_distances()
         self.build_astronaut_paths(distance_matrix, paths_by_pair)
-        self.count_pods()
+        self.prepare_pods()
 
-    def reset(self):
-        """Resets live building terminals and pods to their monthly initial state.
-        self provides buildings whose live terminals are cleared and pods whose path_index is reset."""
+    def build_astronaut_paths(self, distance_matrix: DistanceMatrix, paths_by_pair: PathsByPair):
+        """Builds monthly path matrices for astronauts waiting at landing pads.
+        distance_matrix and paths_by_pair provide shortest paths. self receives path matrices stored on initial landing-pad astronauts."""
+        paths_by_start_kind = {}
         for building in self.buildings.values():
-            building.population = 0
-            building.arriving = Terminal(building)
-            building.departing = Terminal(building)
+            if building.kind == 0:
+                for astronaut in building.initial.astronauts:
+                    key = building.id, astronaut.kind
+                    if key not in paths_by_start_kind:
+                        paths_by_start_kind[key] = astronaut.get_paths(self.buildings, distance_matrix, paths_by_pair)
+                    astronaut.paths = paths_by_start_kind[key]
+
+    def prepare_pods(self):
+        """Prepares dynamic pod routing data before movement simulation.
+        self provides dynamic pods. Each dynamic pod receives tube-only shortest distances among its service edge nodes."""
         for pod in self.pods:
-            pod.path_index = 0
             if pod.dynamic:
-                pod.path = []
+                service_nodes = {building_id for edge in pod.service_edges for building_id in edge}
+                pod.distance_matrix, _ = self.get_shortest_distances_paths(service_nodes, use_teleports=False, return_paths=False)
 
     def get_shortest_distances_paths(self, nodes: set[int], use_teleports: bool = True, return_paths: bool = True) -> tuple[DistanceMatrix, PathsByPair]:
         """Calculates shortest travel distances and all paths realizing each distance.
@@ -250,38 +360,35 @@ class GameState:
                 paths.append([*left_path, *right_path[1:]])
         return paths
 
-    def update_dynamic_pod_distances(self):
-        """Stores tube-only shortest-distance matrices on dynamic pods.
-        Each dynamic pod receives distances among nodes incident to its service_edges."""
-        for pod in self.pods:
-            if pod.dynamic:
-                service_nodes = set()
-                for start_id, end_id in pod.service_edges:
-                    service_nodes.add(start_id)
-                    service_nodes.add(end_id)
-                pod.distance_matrix, _ = self.get_shortest_distances_paths(service_nodes, use_teleports=False, return_paths=False)
+    def reset_all(self):
+        """Restores state to the beginning of the current month after simulation has temporarily advanced it.
+        self receives fresh terminals, reset pod positions, and restored live astronauts while keeping generated pod paths."""
+        self.reset_buildings()
+        self.reset_pods()
+        self.populate_departing_terminals()
 
-    def build_astronaut_paths(self, distance_matrix: DistanceMatrix, paths_by_pair: PathsByPair):
-        """Builds monthly path matrices for astronauts waiting at landing pads.
-        distance_matrix and paths_by_pair provide shortest paths. self receives reachable astronauts in each landing pad departing terminal."""
-        paths_by_start_kind = {}
+    def reset_buildings(self):
+        """Resets live building state to the beginning of the current month.
+        self provides buildings whose population and terminals are refreshed."""
+        for building in self.buildings.values():
+            building.population = 0
+            building.arriving = Terminal(building)
+            building.departing = Terminal(building)
+
+    def reset_pods(self):
+        """Resets pod movement state to the beginning of the current month.
+        self provides pods whose path index is reset."""
+        for pod in self.pods:
+            pod.path_index = 0
+
+    def populate_departing_terminals(self):
+        """Repopulates live departing terminals from prepared landing-pad astronauts.
+        self provides initial landing-pad astronauts with path matrices. Buildings receive live astronauts that have at least one path."""
         for building in self.buildings.values():
             if building.kind == 0:
                 for astronaut in building.initial.astronauts:
-                    key = building.id, astronaut.kind
-                    if key not in paths_by_start_kind:
-                        paths_by_start_kind[key] = astronaut.get_paths(self.buildings, distance_matrix, paths_by_pair)
-                    if paths_by_start_kind[key].size:
-                        building.departing.astronauts.append(Astronaut(building.departing, astronaut.id, astronaut.kind, paths_by_start_kind[key]))
-
-    def count_pods(self):
-        """Counts how many pods serve each building.
-        self receives updated num_pods values on buildings from pod service_edges."""
-        for building in self.buildings.values():
-            building.num_pods = 0
-        for pod in self.pods:
-            for building_id in {building_id for edge in pod.service_edges for building_id in edge}:
-                self.buildings[building_id].num_pods += 1
+                    if astronaut.paths.size:
+                        building.departing.astronauts.append(Astronaut(building.departing, astronaut.id, astronaut.kind, astronaut.paths))
 
     def process_teleport_phase(self, buildings: dict[int, Building]):
         """Moves eligible departing astronauts through teleporters.
@@ -340,7 +447,7 @@ class GameState:
             for astronaut in remaining_astronauts:
                 astronaut.terminal = building.departing
                 building.departing.astronauts.append(astronaut)
-            building.departing.astronauts.sort(key=lambda astronaut: astronaut.id)
+                building.departing.astronauts.sort(key=lambda astronaut: astronaut.id)
         return score_gain
 
 
@@ -349,7 +456,7 @@ class Building:
     """Stores one landing pad or lunar module.
     id is the building identifier. kind is zero for a landing pad, or the positive module type for a lunar module. coords stores
     position. tubes stores adjacent tube capacities keyed by neighbor id. teleport stores incoming and outgoing building ids.
-    population stores the number of astronauts settled in this building during the current month. num_pods stores the number of pods stopping here.
+    population stores the number of astronauts settled in this building during the current month. pods stores pods stopping here.
     initial stores the monthly departing terminal template. arriving stores astronauts that reached the building during the current pod phase.
     departing stores astronauts available to board pods."""
     id: int
@@ -358,13 +465,13 @@ class Building:
     tubes: dict[int, int] = field(default_factory=dict)
     teleport: tuple[int, int] = (-1, -1)
     population: int = 0
-    num_pods: int = 0
+    pods: set[Pod] = field(default_factory=set)
     initial: Terminal = field(init=False)
     arriving: Terminal = field(init=False)
     departing: Terminal = field(init=False)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class Pod:
     """Stores one transport pod and its monthly movement state.
     id is the pod identifier. path stores the itinerary. path_index stores the current index in path. seats stores empty seats.
@@ -375,7 +482,7 @@ class Pod:
     path_index: int = 0
     seats: int = 0
     dynamic: bool = False
-    service_edges: list[tuple[int, int]] = None
+    service_edges: set[tuple[int, int]] = None
     distance_matrix: DistanceMatrix = None
 
     def get_next_stop(self, buildings: dict[int, Building]) -> int:
@@ -387,9 +494,9 @@ class Pod:
                 demand = sum(1 for astronaut in buildings[source_id].departing.astronauts if np.any(astronaut.paths[:, 1] == destination_id))
                 demand = min(POD_CAPACITY, demand)
                 if self.path:
-                    keys.append((-demand, buildings[source_id].num_pods, self.distance_matrix[self.path[-1]][source_id], source_id, destination_id))
+                    keys.append((-demand, len(buildings[source_id].pods), self.distance_matrix[self.path[-1]][source_id], source_id, destination_id))
                 else:
-                    keys.append((-demand, buildings[source_id].num_pods, source_id, destination_id))
+                    keys.append((-demand, len(buildings[source_id].pods), source_id, destination_id))
         source_id, destination_id = min(keys)[-2:]
         if not self.path:
             self.path.append(source_id)

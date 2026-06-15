@@ -90,7 +90,7 @@ class GameState:
             cost = int(linalg.norm(source_building.coords - target_building.coords) * 10)
             if cost > self.resources:
                 break
-            self.build_edge(source_building, target_building, cost)
+            self.build_tube(source_building, target_building, cost)
             actions.append(f"TUBE {source_building.id} {target_building.id}")
         return actions
 
@@ -108,11 +108,10 @@ class GameState:
                     return building, target
         return None, None
 
-    def build_edge(self, start: Building, end: Building, cost: int):
+    def build_tube(self, start: Building, end: Building, cost: int):
         """Adds a planned tube edge to the current game snapshot.
         start and end identify the buildings connected by the tube. cost gives the resources spent on the tube."""
-        edge = self.make_edge(start.id, end.id)
-        tube = Tube(edge[0], edge[1], 1)
+        tube = Tube(start, end, 1)
         start.tubes[end.id] = tube
         end.tubes[start.id] = tube
         self.resources -= cost
@@ -120,7 +119,7 @@ class GameState:
     def develop_pods(self) -> list[str]:
         """Makes decisions regarding pod development.
         Returns pod action strings generated for new and rerouted pods."""
-        all_edges = {(tube.start_id, tube.end_id) for tube in self.get_tubes()}
+        all_edges = {(tube.start.id, tube.end.id) for tube in self.get_tubes()}
         new_pods = []
         rerouted_pods = set()
         if not self.pods:
@@ -284,7 +283,7 @@ class GameState:
                 break
             else:
                 break
-        first_path_edge = self.make_edge(pod.path[0], pod.path[1])
+        first_path_edge = Tube.get_standard_order(pod.path[0], pod.path[1])
         return remaining_area if first_path_edge in moving_area else moving_area
 
     @staticmethod
@@ -313,12 +312,6 @@ class GameState:
             self.buildings[building_id].pods.add(pod)
         self.resources -= POD_COST
         return pod
-
-    @staticmethod
-    def make_edge(start_id: int, end_id: int) -> tuple[int, int]:
-        """Orders two building ids into a canonical tube edge.
-        start_id and end_id identify the tube endpoints. Returns the canonical endpoint pair."""
-        return (start_id, end_id) if start_id < end_id else (end_id, start_id)
 
     def simulate_month(self) -> SimulationSummary:
         """Simulates astronaut movement before the current month ends.
@@ -482,7 +475,7 @@ class GameState:
                 destination_id = pod.get_next_stop(buildings)
             else:
                 start_id, destination_id = pod.get_building_ids()
-            edge = self.make_edge(start_id, destination_id)
+            edge = Tube.get_standard_order(start_id, destination_id)
             if tube_uses.get(edge, 0) < self.buildings[edge[0]].tubes[edge[1]].capacity:
                 pod.seats = POD_CAPACITY
                 remaining_astronauts = []
@@ -501,14 +494,14 @@ class GameState:
         """Updates tube passenger demand for the current simulation day.
         buildings stores departure queues keyed by building id. tubes stores current tube objects. simulation_summary receives cumulative demand updates."""
         for tube in tubes:
-            tube.demand = {tube.start_id: 0, tube.end_id: 0}
+            tube.demand = {tube.start.id: 0, tube.end.id: 0}
         for building in buildings.values():
             for astronaut in building.departing.astronauts:
                 for destination_id in set(astronaut.paths[:, 1].tolist()):
                     building.tubes[destination_id].demand[building.id] += 1
         for tube in tubes:
-            edge = tube.start_id, tube.end_id
-            simulation_summary.tube_demands[edge] = simulation_summary.tube_demands.get(edge, 0) + tube.demand[tube.start_id] + tube.demand[tube.end_id]
+            edge = tube.start.id, tube.end.id
+            simulation_summary.tube_demands[edge] = simulation_summary.tube_demands.get(edge, 0) + tube.demand[tube.start.id] + tube.demand[tube.end.id]
 
     @staticmethod
     def settle_arrivals(day: int, buildings: dict[int, Building]) -> int:
@@ -565,12 +558,23 @@ class Building:
 @dataclass(slots=True)
 class Tube:
     """Stores one magnetic tube.
-    start_id and end_id store the canonical endpoint ids. capacity stores how many pods can use the tube per day.
+    start and end store the canonical endpoint buildings. capacity stores how many pods can use the tube per day.
     demand stores current directed passenger demand keyed by source building id."""
-    start_id: int
-    end_id: int
+    start: Building
+    end: Building
     capacity: int
     demand: dict[int, int] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Stores endpoint buildings in canonical order after construction."""
+        if self.end.id < self.start.id:
+            self.start, self.end = self.end, self.start
+
+    @staticmethod
+    def get_standard_order(start_id: int, end_id: int) -> tuple[int, int]:
+        """Orders two building ids into a canonical tube edge.
+        start_id and end_id identify the tube endpoints. Returns the canonical endpoint pair."""
+        return (start_id, end_id) if start_id < end_id else (end_id, start_id)
 
 
 @dataclass(slots=True, eq=False)

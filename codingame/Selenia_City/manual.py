@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from sys import stderr
 
@@ -71,20 +70,27 @@ class GameState:
 
     def choose_action(self) -> str:
         """Builds missing transport infrastructure for the current month.
-        Returns a valid action string containing planned edge, pod, and reroute commands."""
+        Returns a valid action string containing planned edge, pod, reroute, and upgrade commands."""
         actions = self.develop_edges()
         actions.extend(self.develop_pods())
+        upgrade_actions, simulation_result = self.upgrade_routes()
+        actions.extend(upgrade_actions)
+        print(f"MONTHLY_SCORE {simulation_result.score}", file=stderr)
         return ";".join(actions) if actions else "WAIT"
 
     def develop_edges(self) -> list[str]:
-        """Makes decisions regarding edge's development.
+        """Makes decisions regarding edge development.
         Returns tube action strings for the edges added to self."""
         actions = []
         while True:
             self.update_paths()
             source_building, target_building = self.find_missing_path_buildings()
-            if source_building is None or not self.build_edge(source_building, target_building):
+            if source_building is None:
                 break
+            cost = int(linalg.norm(source_building.coords - target_building.coords) * 10)
+            if cost > self.resources:
+                break
+            self.build_edge(source_building, target_building, cost)
             actions.append(f"TUBE {source_building.id} {target_building.id}")
         return actions
 
@@ -102,21 +108,19 @@ class GameState:
                     return building, target
         return None, None
 
-    def build_edge(self, start: Building, end: Building) -> bool:
-        """Adds an affordable planned tube edge to the current game snapshot.
-        start and end identify the buildings connected by the tube. Returns whether the tube was added."""
-        cost = int(linalg.norm(start.coords - end.coords) * 10)
-        if cost > self.resources:
-            return False
-        start.tubes[end.id] = 1
-        end.tubes[start.id] = 1
+    def build_edge(self, start: Building, end: Building, cost: int):
+        """Adds a planned tube edge to the current game snapshot.
+        start and end identify the buildings connected by the tube. cost gives the resources spent on the tube."""
+        edge = self.make_edge(start.id, end.id)
+        tube = Tube(edge[0], edge[1], 1)
+        start.tubes[end.id] = tube
+        end.tubes[start.id] = tube
         self.resources -= cost
-        return True
 
     def develop_pods(self) -> list[str]:
-        """Makes decisions regarding pod's development.
-        Returns pod creation and reroute action strings with full generated routes."""
-        all_edges = set(self.iter_edges())
+        """Makes decisions regarding pod development.
+        Returns pod action strings generated for new and rerouted pods."""
+        all_edges = {(tube.start_id, tube.end_id) for tube in self.get_tubes()}
         new_pods = []
         rerouted_pods = set()
         if not self.pods:
@@ -129,14 +133,38 @@ class GameState:
             split_pods = self.reduce_pod_load()
             new_pods.extend(split_pods[0])
             rerouted_pods.update(split_pods[1])
-
-        summary = self.simulate_month()
-        print(f"MONTHLY_SCORE {summary.score}", file=stderr)
+        if not new_pods and not rerouted_pods:
+            return []
+        self.simulate_month()
         actions = [" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]) for pod in new_pods]
         for pod in rerouted_pods:
             actions.append(f"DESTROY {pod.id}")
             actions.append(" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]))
         return actions
+
+    def upgrade_routes(self) -> tuple[list[str], SimulationSummary]:
+        """Repeatedly upgrades the highest-demand affordable tube edge and adds a pod to it.
+        Returns upgrade and pod creation action strings plus the final monthly simulation result after no more upgrade is affordable."""
+        actions = []
+        while True:
+            simulation_result = self.simulate_month()
+            edges = list(simulation_result.tube_demands)
+            lengths = np.array([linalg.norm(self.buildings[edge[0]].coords - self.buildings[edge[1]].coords) for edge in edges])
+            capacities = np.array([self.buildings[edge[0]].tubes[edge[1]].capacity for edge in edges], dtype=int)
+            demands = np.array([simulation_result.tube_demands[edge] for edge in edges], dtype=int)
+            upgrade_costs = (lengths * 10).astype(int) * (capacities + 1)
+            candidates = (upgrade_costs + POD_COST <= self.resources) & (demands > 0)
+            if not np.any(candidates):
+                return actions, simulation_result
+            best_index = int(np.argmax(np.where(candidates, demands, -1)))
+            best_edge = edges[best_index]
+            best_upgrade_cost = int(upgrade_costs[best_index])
+            self.resources -= best_upgrade_cost
+            self.buildings[best_edge[0]].tubes[best_edge[1]].capacity += 1
+            pod = self.build_pod({best_edge})
+            pod.path = [best_edge[index % 2] for index in range(MONTH_DAYS + 1)]
+            actions.append(f"UPGRADE {best_edge[0]} {best_edge[1]}")
+            actions.append(" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]))
 
     def assign_unserviced_edges(self, unserviced_edges: set[tuple[int, int]]) -> set[Pod]:
         """Assigns unserviced edges to adjacent existing pods when rerouting is affordable.
@@ -276,14 +304,6 @@ class GameState:
                 return False
         return True
 
-    def iter_edges(self) -> Iterator[tuple[int, int]]:
-        """Iterates over tube edges stored in the current game snapshot.
-        Returns each tube once as a canonical endpoint pair."""
-        for building in self.buildings.values():
-            for end_id in building.tubes:
-                if building.id < end_id:
-                    yield building.id, end_id
-
     def build_pod(self, service_edges: set[tuple[int, int]]) -> Pod:
         """Creates a dynamic pod serving a continuous area.
         service_edges gives canonical tube edges served by the new pod. Returns the pod added to self."""
@@ -302,21 +322,17 @@ class GameState:
 
     def simulate_month(self) -> SimulationSummary:
         """Simulates astronaut movement before the current month ends.
-        Returns a SimulationSummary containing score and wait_times split by building id and astronaut type."""
+        Returns a SimulationSummary containing score and cumulative tube demand."""
         self.update_paths()
         self.reset_all()
-        summary = SimulationSummary()
+        tubes = self.get_tubes()
+        simulation_summary = SimulationSummary()
         for day in range(MONTH_DAYS):
             self.process_teleport_phase(self.buildings)
-            summary.score += self.settle_arrivals(day, self.buildings)
-            self.process_tube_phase(self.buildings, self.pods)
-            for building in self.buildings.values():
-                if building.departing.astronauts:
-                    wait_times = summary.wait_times.setdefault(building.id, {})
-                    for astronaut in building.departing.astronauts:
-                        wait_times[astronaut.kind] = wait_times.get(astronaut.kind, 0) + 1
-            summary.score += self.settle_arrivals(day + 1, self.buildings)
-        return summary
+            simulation_summary.score += self.settle_arrivals(day, self.buildings)
+            self.process_tube_phase(self.buildings, self.pods, tubes, simulation_summary)
+            simulation_summary.score += self.settle_arrivals(day + 1, self.buildings)
+        return simulation_summary
 
     def update_paths(self):
         """Prepares path and dynamic pod routing data before planning or movement simulation.
@@ -429,6 +445,16 @@ class GameState:
                     if astronaut.paths.size:
                         building.departing.astronauts.append(Astronaut(building.departing, astronaut.id, astronaut.kind, astronaut.paths))
 
+    def get_tubes(self) -> list[Tube]:
+        """Collects tubes stored in the current game snapshot.
+        Returns each tube once."""
+        tubes = []
+        for building in self.buildings.values():
+            for end_id, tube in building.tubes.items():
+                if building.id < end_id:
+                    tubes.append(tube)
+        return tubes
+
     def process_teleport_phase(self, buildings: dict[int, Building]):
         """Moves eligible departing astronauts through teleporters.
         buildings stores simulation queues keyed by building id."""
@@ -444,9 +470,11 @@ class GameState:
                     remaining_astronauts.append(astronaut)
             building.departing.astronauts = remaining_astronauts
 
-    def process_tube_phase(self, buildings: dict[int, Building], pods: list[Pod]):
+    def process_tube_phase(self, buildings: dict[int, Building], pods: list[Pod], tubes: list[Tube], simulation_summary: SimulationSummary):
         """Moves pods through tubes and boards astronauts that get closer to a target.
-        buildings stores simulation queues keyed by building id. pods stores pod movement state ordered by pod id."""
+        buildings stores simulation queues keyed by building id. pods stores pod movement state ordered by pod id. tubes stores tube objects.
+        simulation_summary receives cumulative demand updates."""
+        self.update_tube_demands(buildings, tubes, simulation_summary)
         tube_uses = {}
         for pod in pods:
             if pod.dynamic:
@@ -455,7 +483,7 @@ class GameState:
             else:
                 start_id, destination_id = pod.get_building_ids()
             edge = self.make_edge(start_id, destination_id)
-            if tube_uses.get(edge, 0) < self.buildings[edge[0]].tubes[edge[1]]:
+            if tube_uses.get(edge, 0) < self.buildings[edge[0]].tubes[edge[1]].capacity:
                 pod.seats = POD_CAPACITY
                 remaining_astronauts = []
                 for astronaut in buildings[start_id].departing.astronauts:
@@ -467,6 +495,20 @@ class GameState:
                 buildings[start_id].departing.astronauts = remaining_astronauts
                 pod.path_index = pod.next_path_index()
                 tube_uses[edge] = tube_uses.get(edge, 0) + 1
+
+    @staticmethod
+    def update_tube_demands(buildings: dict[int, Building], tubes: list[Tube], simulation_summary: SimulationSummary):
+        """Updates tube passenger demand for the current simulation day.
+        buildings stores departure queues keyed by building id. tubes stores current tube objects. simulation_summary receives cumulative demand updates."""
+        for tube in tubes:
+            tube.demand = {tube.start_id: 0, tube.end_id: 0}
+        for building in buildings.values():
+            for astronaut in building.departing.astronauts:
+                for destination_id in set(astronaut.paths[:, 1].tolist()):
+                    building.tubes[destination_id].demand[building.id] += 1
+        for tube in tubes:
+            edge = tube.start_id, tube.end_id
+            simulation_summary.tube_demands[edge] = simulation_summary.tube_demands.get(edge, 0) + tube.demand[tube.start_id] + tube.demand[tube.end_id]
 
     @staticmethod
     def settle_arrivals(day: int, buildings: dict[int, Building]) -> int:
@@ -494,14 +536,14 @@ class GameState:
 class Building:
     """Stores one landing pad or lunar module.
     id is the building identifier. kind is zero for a landing pad, or the positive module type for a lunar module. coords stores
-    position. tubes stores adjacent tube capacities keyed by neighbor id. teleport stores incoming and outgoing building ids.
+    position. tubes stores adjacent tubes keyed by neighbor id. teleport stores incoming and outgoing building ids.
     population stores the number of astronauts settled in this building during the current month. pods stores pods stopping here.
     initial stores the monthly departing terminal template. arriving stores astronauts that reached the building during the current pod phase.
     departing stores astronauts available to board pods."""
     id: int
     kind: int
     coords: NDArray[int]
-    tubes: dict[int, int] = field(default_factory=dict)
+    tubes: dict[int, Tube] = field(default_factory=dict)
     teleport: tuple[int, int] = (-1, -1)
     population: int = 0
     pods: set[Pod] = field(default_factory=set)
@@ -512,12 +554,23 @@ class Building:
     def print(self):
         """Prints this building month-start debug state to stderr.
         self provides id, kind, coordinates, teleport links, tube links, pod membership, and landing-pad astronauts."""
-        tube_text = " ".join(f"{end_id}:{capacity}" for end_id, capacity in self.tubes.items()) or "-"
+        tube_text = " ".join(f"{end_id}:{tube.capacity}" for end_id, tube in self.tubes.items()) or "-"
         teleport_text = f"{self.teleport[0]}:{self.teleport[1]}"
         pod_text = " ".join(str(pod.id) for pod in self.pods) or "-"
         astronaut_text = " ".join(str(astronaut.kind) for astronaut in self.initial.astronauts) or "-"
         print(f"BUILDING {self.id}, kind={self.kind}, coords={self.coords.tolist()}, tubes={tube_text}, teleport={teleport_text}, pods={pod_text}, "
               f"astronauts={astronaut_text}", file=stderr)
+
+
+@dataclass(slots=True)
+class Tube:
+    """Stores one magnetic tube.
+    start_id and end_id store the canonical endpoint ids. capacity stores how many pods can use the tube per day.
+    demand stores current directed passenger demand keyed by source building id."""
+    start_id: int
+    end_id: int
+    capacity: int
+    demand: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True, eq=False)
@@ -546,9 +599,9 @@ class Pod:
         buildings stores current building terminals and tube links. Returns the building id appended to path."""
         keys = []
         for start_id, end_id in self.service_edges:
+            tube = buildings[start_id].tubes[end_id]
             for source_id, destination_id in ((start_id, end_id), (end_id, start_id)):
-                demand = sum(1 for astronaut in buildings[source_id].departing.astronauts if np.any(astronaut.paths[:, 1] == destination_id))
-                demand = min(POD_CAPACITY, demand)
+                demand = min(POD_CAPACITY, tube.demand[source_id])
                 if self.path:
                     keys.append((-demand, len(buildings[source_id].pods), self.distance_matrix[self.path[-1]][source_id], source_id, destination_id))
                 else:
@@ -629,9 +682,9 @@ class Astronaut:
 @dataclass(slots=True)
 class SimulationSummary:
     """Stores the result of one monthly movement simulation.
-    score is the total score earned during the month. wait_times maps building id to person-days by astronaut type."""
+    score is the total score earned during the month. tube_demands maps canonical tube edges to cumulative demand."""
     score: int = 0
-    wait_times: dict[int, dict[int, int]] = field(default_factory=dict)
+    tube_demands: dict[tuple[int, int], int] = field(default_factory=dict)
 
 
 def play():

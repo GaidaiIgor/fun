@@ -141,30 +141,6 @@ class GameState:
             actions.append(" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]))
         return actions
 
-    def upgrade_routes(self) -> tuple[list[str], SimulationSummary]:
-        """Repeatedly upgrades the highest-demand affordable tube edge and adds a pod to it.
-        Returns upgrade and pod creation action strings plus the final monthly simulation result after no more upgrade is affordable."""
-        actions = []
-        while True:
-            simulation_result = self.simulate_month()
-            edges = list(simulation_result.tube_demands)
-            lengths = np.array([linalg.norm(self.buildings[edge[0]].coords - self.buildings[edge[1]].coords) for edge in edges])
-            capacities = np.array([self.buildings[edge[0]].tubes[edge[1]].capacity for edge in edges], dtype=int)
-            demands = np.array([simulation_result.tube_demands[edge] for edge in edges], dtype=int)
-            upgrade_costs = (lengths * 10).astype(int) * (capacities + 1)
-            candidates = (upgrade_costs + POD_COST <= self.resources) & (demands > 0)
-            if not np.any(candidates):
-                return actions, simulation_result
-            best_index = int(np.argmax(np.where(candidates, demands, -1)))
-            best_edge = edges[best_index]
-            best_upgrade_cost = int(upgrade_costs[best_index])
-            self.resources -= best_upgrade_cost
-            self.buildings[best_edge[0]].tubes[best_edge[1]].capacity += 1
-            pod = self.build_pod({best_edge})
-            pod.path = [best_edge[index % 2] for index in range(MONTH_DAYS + 1)]
-            actions.append(f"UPGRADE {best_edge[0]} {best_edge[1]}")
-            actions.append(" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]))
-
     def assign_unserviced_edges(self, unserviced_edges: set[tuple[int, int]]) -> set[Pod]:
         """Assigns unserviced edges to adjacent existing pods when rerouting is affordable.
         unserviced_edges stores canonical tube edges still without service and is mutated by removing assigned edges.
@@ -192,6 +168,17 @@ class GameState:
                 return edge, min(dynamic_pods or available_pods, key=lambda pod: len(pod.service_edges))
         return None
 
+    def add_service_edge(self, edge: tuple[int, int], pod: Pod):
+        """Adds a service edge to a pod and updates all dependent planning state.
+        edge is the canonical tube edge being assigned. pod is the pod receiving the edge."""
+        if not pod.dynamic:
+            self.resources -= POD_REROUTE_COST
+            pod.dynamic = True
+        pod.service_edges.add(edge)
+        pod.path = []
+        for building_id in edge:
+            self.buildings[building_id].pods.add(pod)
+
     def reduce_pod_load(self) -> tuple[list[Pod], set[Pod]]:
         """Tries to build new pods or reroute existing pods to alleviate highest workload.
         Returns new pods and original pods that need rebuild actions."""
@@ -199,6 +186,8 @@ class GameState:
         rerouted_pods = set()
         while True:
             pod = max(self.pods, key=lambda pod: len(pod.service_edges))
+            if len(pod.service_edges) == 1:
+                break
             overlap_found, overlap_removed, pod_rerouted = self.remove_overlapping_edges(pod)
             if overlap_found:
                 if not overlap_removed:
@@ -206,7 +195,7 @@ class GameState:
                 if pod_rerouted:
                     rerouted_pods.add(pod)
                 continue
-            if self.resources < POD_COST or len(pod.service_edges) <= 1:
+            if self.resources < POD_COST:
                 break
             new_service_area = self.split_service_area(pod)
             new_pods.append(self.build_pod(new_service_area))
@@ -234,17 +223,6 @@ class GameState:
         for edge in overlapped_edges:
             self.remove_service_edge(edge, pod)
         return True, True, pod_rerouted
-
-    def add_service_edge(self, edge: tuple[int, int], pod: Pod):
-        """Adds a service edge to a pod and updates all dependent planning state.
-        edge is the canonical tube edge being assigned. pod is the pod receiving the edge."""
-        if not pod.dynamic:
-            self.resources -= POD_REROUTE_COST
-            pod.dynamic = True
-        pod.service_edges.add(edge)
-        pod.path = []
-        for building_id in edge:
-            self.buildings[building_id].pods.add(pod)
 
     def remove_service_edge(self, edge: tuple[int, int], pod: Pod):
         """Removes a service edge from a pod and updates all dependent planning state.
@@ -302,6 +280,30 @@ class GameState:
             else:
                 return False
         return True
+
+    def upgrade_routes(self) -> tuple[list[str], SimulationSummary]:
+        """Repeatedly upgrades the highest-demand affordable tube edge and adds a pod to it.
+        Returns upgrade and pod creation action strings plus the final monthly simulation result after no more upgrade is affordable."""
+        actions = []
+        while True:
+            simulation_result = self.simulate_month()
+            edges = list(simulation_result.tube_demands)
+            lengths = np.array([linalg.norm(self.buildings[edge[0]].coords - self.buildings[edge[1]].coords) for edge in edges])
+            capacities = np.array([self.buildings[edge[0]].tubes[edge[1]].capacity for edge in edges], dtype=int)
+            demands = np.array([simulation_result.tube_demands[edge] for edge in edges], dtype=int)
+            upgrade_costs = (lengths * 10).astype(int) * (capacities + 1)
+            candidates = (upgrade_costs + POD_COST <= self.resources) & (demands > 0)
+            if not np.any(candidates):
+                return actions, simulation_result
+            best_index = int(np.argmax(np.where(candidates, demands, -1)))
+            best_edge = edges[best_index]
+            best_upgrade_cost = int(upgrade_costs[best_index])
+            self.resources -= best_upgrade_cost
+            self.buildings[best_edge[0]].tubes[best_edge[1]].capacity += 1
+            pod = self.build_pod({best_edge})
+            pod.path = [best_edge[index % 2] for index in range(MONTH_DAYS + 1)]
+            actions.append(f"UPGRADE {best_edge[0]} {best_edge[1]}")
+            actions.append(" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]))
 
     def build_pod(self, service_edges: set[tuple[int, int]]) -> Pod:
         """Creates a dynamic pod serving a continuous area.

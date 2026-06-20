@@ -323,8 +323,10 @@ class GameState:
                 break
             else:
                 break
-        first_path_edge = Tube.get_standard_order(pod.path[0], pod.path[1])
-        return remaining_area if first_path_edge in moving_area else moving_area
+        if pod.path:
+            first_path_edge = Tube.get_standard_order(pod.path[0], pod.path[1])
+            return remaining_area if first_path_edge in moving_area else moving_area
+        return moving_area
 
     @staticmethod
     def is_service_area_connected(edges: set[tuple[int, int]]) -> bool:

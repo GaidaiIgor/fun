@@ -83,38 +83,100 @@ class GameState:
         Returns tube action strings for the edges added to self."""
         actions = []
         while True:
-            self.update_paths()
-            source_building, target_building = self.find_missing_path_buildings()
-            if source_building is None:
+            components = self.get_components()
+            if len(components) == 1:
                 break
-            cost = int(linalg.norm(source_building.coords - target_building.coords) * 10)
+            connection = self.find_best_connection(components)
+            if connection is None:
+                break
+            source_building, target_building, cost = connection
             if cost > self.resources:
                 break
-            self.build_tube(source_building, target_building, cost)
+            self.build_tube(source_building, target_building)
             actions.append(f"TUBE {source_building.id} {target_building.id}")
         return actions
 
-    def find_missing_path_buildings(self) -> tuple[Building, Building]:
-        """Finds the next landing pad and target module not connected by any astronaut path.
-        Returns source and target buildings, or None when all kinds have paths."""
+    def get_components(self) -> list[list[Building]]:
+        """Finds connected components in the current tube graph.
+        Returns a list of components, where each component contains the buildings connected by existing tubes."""
+        components = []
+        visited_ids = set()
         for building in self.buildings.values():
-            if building.kind == 0:
-                initial_kinds = {astronaut.kind for astronaut in building.initial.astronauts}
-                reachable_kinds = {astronaut.kind for astronaut in building.initial.astronauts if astronaut.paths.size}
-                unreachable_kinds = initial_kinds - reachable_kinds
-                for astronaut_kind in unreachable_kinds:
-                    targets = (target for target in self.buildings.values() if target.kind == astronaut_kind)
-                    target = min(targets, key=lambda target: linalg.norm(building.coords - target.coords))
-                    return building, target
-        return None, None
+            if building.id in visited_ids:
+                continue
+            component = []
+            pending_ids = {building.id}
+            visited_ids.add(building.id)
+            while pending_ids:
+                current = self.buildings[pending_ids.pop()]
+                component.append(current)
+                for neighbor_id in current.tubes:
+                    if neighbor_id not in visited_ids:
+                        visited_ids.add(neighbor_id)
+                        pending_ids.add(neighbor_id)
+            components.append(component)
+        return components
 
-    def build_tube(self, start: Building, end: Building, cost: int):
+    def find_best_connection(self, components: list[list[Building]]) -> tuple[Building, Building, int]:
+        """Finds the cheapest buildable tube between two disconnected components.
+        components stores disconnected building groups. Returns the selected endpoint buildings and tube cost, or None when no edge can be built."""
+        best_connection = None
+        best_cost = 0
+        for component_index, component in enumerate(components):
+            for other_component in components[component_index + 1:]:
+                for start in component:
+                    for end in other_component:
+                        if not self.can_build_tube(start, end):
+                            continue
+                        cost = int(linalg.norm(start.coords - end.coords) * 10)
+                        if best_connection is None or cost < best_cost:
+                            best_connection = start, end, cost
+                            best_cost = cost
+        return best_connection
+
+    def can_build_tube(self, start: Building, end: Building) -> bool:
+        """Checks whether a tube can be built without crossing tubes or passing through buildings.
+        start and end identify the proposed tube endpoints. Returns whether the proposed segment avoids invalid intersections."""
+        for tube in self.get_tubes():
+            if self.do_tubes_intersect(start, end, tube.start, tube.end):
+                return False
+        for building in self.buildings.values():
+            if building.id not in (start.id, end.id) and self.is_building_on_segment(building, start, end):
+                return False
+        return True
+
+    @staticmethod
+    def do_tubes_intersect(start: Building, end: Building, other_start: Building, other_end: Building) -> bool:
+        """Checks whether two tube segments cross away from their endpoints.
+        start and end identify the proposed tube. other_start and other_end identify an existing tube.
+        Returns whether the two segments strictly cross, excluding collinear contact and endpoint contact."""
+        return GameState.get_orientation(start, end, other_start) * GameState.get_orientation(start, end, other_end) < 0 \
+            and GameState.get_orientation(other_start, other_end, start) * GameState.get_orientation(other_start, other_end, end) < 0
+
+    @staticmethod
+    def get_orientation(start: Building, end: Building, point: Building) -> int:
+        """Calculates the side of a directed segment where a point lies.
+        start and end identify the directed segment. point identifies the tested building.
+        Returns 1 or -1 for opposite sides of the directed segment, and 0 when the three buildings are collinear."""
+        product = (point.coords[1] - start.coords[1]) * (end.coords[0] - start.coords[0]) \
+                  - (end.coords[1] - start.coords[1]) * (point.coords[0] - start.coords[0])
+        return np.sign(product).item()
+
+    @staticmethod
+    def is_building_on_segment(building: Building, start: Building, end: Building) -> bool:
+        """Checks whether a building lies on a tube segment.
+        building identifies the tested building. start and end identify the segment endpoints.
+        Returns whether the sum of endpoint-to-building distances equals the segment length within epsilon."""
+        distance_delta = linalg.norm(start.coords - building.coords) + linalg.norm(building.coords - end.coords) - linalg.norm(start.coords - end.coords)
+        return abs(distance_delta) < 1e-7
+
+    def build_tube(self, start: Building, end: Building):
         """Adds a planned tube edge to the current game snapshot.
-        start and end identify the buildings connected by the tube. cost gives the resources spent on the tube."""
+        start and end identify the buildings connected by the tube."""
         tube = Tube(start, end, 1)
         start.tubes[end.id] = tube
         end.tubes[start.id] = tube
-        self.resources -= cost
+        self.resources -= int(linalg.norm(start.coords - end.coords) * 10)
 
     def develop_pods(self) -> list[str]:
         """Makes decisions regarding pod development.
@@ -488,7 +550,7 @@ class GameState:
                         continue
                     remaining_astronauts.append(astronaut)
                 buildings[start_id].departing.astronauts = remaining_astronauts
-                pod.path_index = pod.next_path_index()
+                pod.path_index = pod.get_next_path_index()
                 tube_uses[edge] = tube_uses.get(edge, 0) + 1
 
     @staticmethod
@@ -628,10 +690,10 @@ class Pod:
     def get_building_ids(self) -> tuple[int, int]:
         """Gets this pod current and next building ids.
         Returns current and next building ids, or the current id twice when this pod has stopped at the end of a non-looping path."""
-        next_index = self.next_path_index()
+        next_index = self.get_next_path_index()
         return self.path[self.path_index], self.path[next_index]
 
-    def next_path_index(self) -> int:
+    def get_next_path_index(self) -> int:
         """Gets the next path index from path_index.
         Returns path_index when this pod has stopped at the end of a non-looping path."""
         if self.path_index == len(self.path) - 1:

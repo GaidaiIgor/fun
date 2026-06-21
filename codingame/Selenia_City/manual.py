@@ -182,41 +182,39 @@ class GameState:
         """Makes decisions regarding pod development.
         Returns pod action strings generated for new and rerouted pods."""
         all_edges = {(tube.start.id, tube.end.id) for tube in self.get_tubes()}
-        new_pods = []
-        rerouted_pods = set()
+        new_pods = set()
         if not self.pods:
             if all_edges and self.resources >= POD_COST:
-                new_pods.append(self.build_pod(all_edges))
+                new_pods.add(self.build_pod(all_edges))
         if self.pods:
-            serviced_edges = {edge for pod in self.pods for edge in pod.service_edges}
+            serviced_edges = {edge for pod in self.pods for edge in pod.proposed_service_edges}
             unserviced_edges = {edge for edge in all_edges if edge not in serviced_edges}
-            rerouted_pods = self.assign_unserviced_edges(unserviced_edges)
-            split_pods = self.reduce_pod_load()
-            new_pods.extend(split_pods[0])
-            rerouted_pods.update(split_pods[1])
+            self.assign_unserviced_edges(unserviced_edges)
+            new_pods.update(self.reduce_pod_load())
+        rerouted_pods = {pod for pod in self.pods if pod not in new_pods and pod.proposed_service_edges != pod.service_edges}
         if not new_pods and not rerouted_pods:
             return []
+        for pod in rerouted_pods:
+            self.resources -= POD_REROUTE_COST
+            pod.dynamic = True
+            pod.path = []
         self.simulate_month()
         actions = [" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]) for pod in new_pods]
         for pod in rerouted_pods:
             actions.append(f"DESTROY {pod.id}")
             actions.append(" ".join(["POD", str(pod.id), *(str(building_id) for building_id in pod.path)]))
+            pod.service_edges = set(pod.proposed_service_edges)
         return actions
 
-    def assign_unserviced_edges(self, unserviced_edges: set[tuple[int, int]]) -> set[Pod]:
+    def assign_unserviced_edges(self, unserviced_edges: set[tuple[int, int]]):
         """Assigns unserviced edges to adjacent existing pods when rerouting is affordable.
-        unserviced_edges stores canonical tube edges still without service and is mutated by removing assigned edges.
-        Returns pods that must be rebuilt after receiving new service edges."""
-        rerouted_pods = set()
+        unserviced_edges stores canonical tube edges still without service and is mutated by removing assigned edges."""
         while unserviced_edges:
             assignment = self.find_unserviced_edge_pod(unserviced_edges)
             if assignment is None:
                 break
-            if not assignment[1].dynamic:
-                rerouted_pods.add(assignment[1])
             self.add_service_edge(assignment[0], assignment[1])
             unserviced_edges.remove(assignment[0])
-        return rerouted_pods
 
     def find_unserviced_edge_pod(self, unserviced_edges: set[tuple[int, int]]) -> tuple[tuple[int, int], Pod]:
         """Finds an unserviced edge and an adjacent pod that can serve it.
@@ -227,84 +225,68 @@ class GameState:
             if self.resources < POD_REROUTE_COST:
                 available_pods = dynamic_pods
             if available_pods:
-                return edge, min(dynamic_pods or available_pods, key=lambda pod: len(pod.service_edges))
+                return edge, min(dynamic_pods or available_pods, key=lambda pod: len(pod.proposed_service_edges))
         return None
 
     def add_service_edge(self, edge: tuple[int, int], pod: Pod):
         """Adds a service edge to a pod and updates all dependent planning state.
         edge is the canonical tube edge being assigned. pod is the pod receiving the edge."""
-        if not pod.dynamic:
-            self.resources -= POD_REROUTE_COST
-            pod.dynamic = True
-        pod.service_edges.add(edge)
-        pod.path = []
+        pod.proposed_service_edges.add(edge)
         for building_id in edge:
             self.buildings[building_id].pods.add(pod)
 
-    def reduce_pod_load(self) -> tuple[list[Pod], set[Pod]]:
+    def reduce_pod_load(self) -> set[Pod]:
         """Tries to build new pods or reroute existing pods to alleviate highest workload.
-        Returns new pods and original pods that need rebuild actions."""
-        new_pods = []
-        rerouted_pods = set()
+        Returns new pods built to split overloaded service areas."""
+        new_pods = set()
         while True:
-            pod = max(self.pods, key=lambda pod: len(pod.service_edges))
-            if len(pod.service_edges) == 1:
+            pod = max(self.pods, key=lambda pod: len(pod.proposed_service_edges))
+            if len(pod.proposed_service_edges) == 1:
                 break
-            overlap_found, overlap_removed, pod_rerouted = self.remove_overlapping_edges(pod)
+            overlap_found, overlap_removed = self.remove_overlapping_edges(pod)
             if overlap_found:
                 if not overlap_removed:
                     break
-                if pod_rerouted:
-                    rerouted_pods.add(pod)
                 continue
             if self.resources < POD_COST:
                 break
             new_service_area = self.split_service_area(pod)
-            new_pods.append(self.build_pod(new_service_area))
-            if not pod.dynamic and self.resources < POD_REROUTE_COST:
-                break
-            if not pod.dynamic:
-                rerouted_pods.add(pod)
+            new_pods.add(self.build_pod(new_service_area))
             for edge in new_service_area:
                 self.remove_service_edge(edge, pod)
-        return new_pods, rerouted_pods
+        return new_pods
 
-    def remove_overlapping_edges(self, pod: Pod) -> tuple[bool, bool, bool]:
+    def remove_overlapping_edges(self, pod: Pod) -> tuple[bool, bool]:
         """Removes service edges from a pod when those edges are already served by another pod.
         pod is the pod whose service area is checked.
-        Returns whether overlapping edges existed, whether they were removed, and whether pod was rerouted."""
+        Returns whether overlapping edges existed and whether they were removed."""
         overlapped_edges = set()
         for other_pod in self.pods:
             if other_pod is not pod:
-                overlapped_edges.update(pod.service_edges & other_pod.service_edges)
+                overlapped_edges.update(pod.proposed_service_edges & other_pod.proposed_service_edges)
         if not overlapped_edges:
-            return False, False, False
-        if not pod.dynamic and self.resources < POD_REROUTE_COST:
-            return True, False, False
-        pod_rerouted = not pod.dynamic
+            return False, False
+        if pod.proposed_service_edges - overlapped_edges != pod.service_edges and not pod.dynamic and self.resources < POD_REROUTE_COST:
+            return True, False
         for edge in overlapped_edges:
             self.remove_service_edge(edge, pod)
-        return True, True, pod_rerouted
+        return True, True
 
     def remove_service_edge(self, edge: tuple[int, int], pod: Pod):
         """Removes a service edge from a pod and updates all dependent planning state.
         edge is the canonical tube edge being removed. pod is the pod losing the edge."""
-        if not pod.dynamic:
-            self.resources -= POD_REROUTE_COST
-            pod.dynamic = True
-        pod.service_edges.remove(edge)
-        pod.path = []
+        pod.proposed_service_edges.remove(edge)
         for building_id in edge:
-            if all(building_id not in service_edge for service_edge in pod.service_edges):
+            if all(building_id not in service_edge for service_edge in pod.proposed_service_edges):
                 self.buildings[building_id].pods.remove(pod)
 
     def split_service_area(self, pod: Pod) -> set[tuple[int, int]]:
         """Splits a connected pod service area into two service areas.
         pod gives the existing pod being split. Returns the connected service edge set assigned to a new pod after assigning the side with
         pod first path edge to pod."""
-        target_size = len(pod.service_edges) // 2
-        for edge in pod.service_edges:
-            remaining_area = pod.service_edges - {edge}
+        target_size = len(pod.proposed_service_edges) // 2
+        for edge in pod.proposed_service_edges:
+            remaining_area = pod.proposed_service_edges - {edge}
             if not self.is_service_area_connected(remaining_area):
                 continue
             moving_area = {edge}
@@ -323,6 +305,10 @@ class GameState:
                 break
             else:
                 break
+        if moving_area == pod.service_edges:
+            return remaining_area
+        if remaining_area == pod.service_edges:
+            return moving_area
         if pod.path:
             first_path_edge = Tube.get_standard_order(pod.path[0], pod.path[1])
             return remaining_area if first_path_edge in moving_area else moving_area
@@ -372,7 +358,7 @@ class GameState:
     def build_pod(self, service_edges: set[tuple[int, int]]) -> Pod:
         """Creates a dynamic pod serving a continuous area.
         service_edges gives canonical tube edges served by the new pod. Returns the pod added to self."""
-        pod = Pod(max((pod.id for pod in self.pods), default=0) + 1, [], dynamic=True, service_edges=service_edges)
+        pod = Pod(max((pod.id for pod in self.pods), default=0) + 1, [], dynamic=True, service_edges=service_edges, proposed_service_edges=set(service_edges))
         self.pods.append(pod)
         for building_id in {building_id for edge in service_edges for building_id in edge}:
             self.buildings[building_id].pods.add(pod)
@@ -417,7 +403,7 @@ class GameState:
         self provides dynamic pods. Each dynamic pod receives tube-only shortest distances among its service edge nodes."""
         for pod in self.pods:
             if pod.dynamic:
-                service_nodes = {building_id for edge in pod.service_edges for building_id in edge}
+                service_nodes = {building_id for edge in pod.proposed_service_edges for building_id in edge}
                 pod.distance_matrix, _ = self.get_shortest_distances_paths(service_nodes, use_teleports=False, return_paths=False)
 
     def get_shortest_distances_paths(self, nodes: set[int], use_teleports: bool = True, return_paths: bool = True) -> tuple[DistanceMatrix, PathsByPair]:
@@ -647,14 +633,16 @@ class Tube:
 class Pod:
     """Stores one transport pod and its monthly movement state.
     id is the pod identifier. path stores the itinerary. path_index stores the current index in path. seats stores empty seats.
-    service_edges stores tube edges served by this pod. dynamic selects whether the path is generated during simulation.
+    service_edges stores existing tube edges served by this pod. proposed_service_edges stores planned tube edges for the current month.
+    dynamic selects whether the path is generated during simulation.
     distance_matrix stores tube-only shortest distances among service edge nodes for dynamic routing."""
     id: int
     path: list[int]
     path_index: int = 0
     seats: int = 0
     dynamic: bool = False
-    service_edges: set[tuple[int, int]] = None
+    service_edges: set[tuple[int, int]] = field(default_factory=set)
+    proposed_service_edges: set[tuple[int, int]] = field(default_factory=set)
     distance_matrix: DistanceMatrix = None
 
     def print(self):
@@ -668,7 +656,7 @@ class Pod:
         """Chooses and appends this service pod next stop.
         buildings stores current building terminals and tube links. Returns the building id appended to path."""
         keys = []
-        for start_id, end_id in self.service_edges:
+        for start_id, end_id in self.proposed_service_edges:
             tube = buildings[start_id].tubes[end_id]
             for source_id, destination_id in ((start_id, end_id), (end_id, start_id)):
                 demand = min(POD_CAPACITY, tube.demand[source_id])

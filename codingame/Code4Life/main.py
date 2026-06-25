@@ -12,6 +12,7 @@ TYPES = ['A', 'B', 'C', 'D', 'E']
 
 turn = 0
 mol_wait = 0
+recently_dropped = set()  # Track IDs dropped this visit to DIAGNOSIS
 
 while True:
     turn += 1
@@ -46,6 +47,10 @@ while True:
     pos = me['target']
     eta = me['eta']
     te = sum(me['expertise'])
+
+    # Clear recently_dropped when we leave DIAGNOSIS
+    if pos != "DIAGNOSIS" and eta == 0:
+        recently_dropped.clear()
 
     def ecost(s):
         return [max(0, s['cost'][i] - me['expertise'][i]) for i in range(5)]
@@ -121,11 +126,10 @@ while True:
         return [max(0, total[i] - me['storage'][i]) for i in range(5)]
 
     def pick_rank():
-        # Always rank 2 minimum; rank 3 with good expertise
         if remaining < 25:
             return 2 if te >= 6 else 1
         if te >= 8: return 3
-        return 2  # Start with rank 2 from the beginning
+        return 2
 
     producible = [s for s in my_diag if can_make(s)]
     subset = best_subset()
@@ -148,7 +152,6 @@ while True:
 
     def should_get_more():
         if len(my_all) >= 3: return False
-        # If we have 2+ viable diagnosed samples with work, proceed
         viable = [s for s in subset if not is_blocked(s)]
         if len(viable) >= 2 and tot_need > 0:
             return False
@@ -167,39 +170,21 @@ while True:
             if producible:
                 best = max(producible, key=lambda s: s['health'])
                 return f"CONNECT {best['id']}"
-
-            # After producing everything: check remaining samples
-            # Drop low-value samples that would waste a full cycle
-            low_val = [s for s in my_diag if s['health'] <= 1 and etotal(s) > 2]
-            if low_val and pos == "LABORATORY":
-                # Don't bother - go get new samples instead
-                # But we can't drop from LAB, so just go to DIAGNOSIS if we want to drop
-                # Actually let's just proceed normally and drop at DIAGNOSIS
-                pass
-
             return where_next()
 
         # ---- MOLECULES ----
         if pos == "MOLECULES":
-            # ONLY leave for LAB when:
-            # 1. All molecules collected (tot_need == 0)
-            # 2. Can't hold more (held >= 10)
-            # 3. Late game and have producible
             if tot_need == 0 and (producible or subset):
                 mol_wait = 0
                 return "GOTO LABORATORY"
-
             if held() >= 10:
                 mol_wait = 0
                 if producible:
                     return "GOTO LABORATORY"
                 return "GOTO DIAGNOSIS"
-
             if not subset and not producible:
                 mol_wait = 0
                 return where_next()
-
-            # Late game: score what we can
             if remaining < 15 and producible:
                 mol_wait = 0
                 return "GOTO LABORATORY"
@@ -210,23 +195,15 @@ while True:
                     mol_wait = 0
                     return f"CONNECT {TYPES[i]}"
 
-            # Can't collect what we need right now
+            # Can't collect - wait up to 2 turns
             mol_wait += 1
-
-            # If we have producible and can't collect more, go produce
-            if producible and not any_needed_avail():
-                mol_wait = 0
-                return "GOTO LABORATORY"
-
-            # Wait briefly for molecules
-            if mol_wait <= 2 and remaining > 25 and any_needed_avail():
+            if mol_wait <= 2 and remaining > 25:
                 return "WAIT"
 
+            # Gave up waiting
             mol_wait = 0
-            # If we have producible, go produce
             if producible:
                 return "GOTO LABORATORY"
-            # Give up on current samples
             return "GOTO DIAGNOSIS"
 
         # ---- DIAGNOSIS ----
@@ -237,34 +214,33 @@ while True:
             # Drop infeasible
             infeas = [s for s in my_diag if not feasible(s)]
             if infeas:
+                recently_dropped.add(infeas[0]['id'])
                 return f"CONNECT {infeas[0]['id']}"
 
-            # Drop low-value samples (1 HP, costs > 2 molecules) to make room for better
+            # Drop low-value samples when full
             if len(my_all) >= 3:
                 low_val = [s for s in my_diag if s['health'] <= 1 and etotal(s) > 2]
                 if low_val:
-                    debug(f"  Drop low-value {low_val[0]['id']} (hp={low_val[0]['health']})")
+                    recently_dropped.add(low_val[0]['id'])
+                    debug(f"  Drop low-val {low_val[0]['id']}")
                     return f"CONNECT {low_val[0]['id']}"
 
             # Drop blocked samples when all subset samples are blocked
             if blocked and (not subset or all(is_blocked(s) for s in subset)):
                 worst = min(blocked, key=lambda s: s['health'])
+                recently_dropped.add(worst['id'])
                 debug(f"  Drop blocked {worst['id']}")
                 return f"CONNECT {worst['id']}"
 
-            # If room and should get more
+            # If room and should get more - ONLY pick unblocked, non-recently-dropped cloud samples
             if len(my_all) < 3 and should_get_more():
-                # Prefer unblocked cloud samples
                 good_cloud = sorted(
-                    [s for s in cloud if feasible(s) and not is_blocked(s)],
+                    [s for s in cloud if feasible(s) and not is_blocked(s)
+                     and s['id'] not in recently_dropped],
                     key=sample_score, reverse=True)
                 if good_cloud:
                     return f"CONNECT {good_cloud[0]['id']}"
-                any_cloud = sorted(
-                    [s for s in cloud if feasible(s)],
-                    key=sample_score, reverse=True)
-                if any_cloud and any_cloud[0]['health'] >= 10:
-                    return f"CONNECT {any_cloud[0]['id']}"
+                # No good cloud samples - go to SAMPLES
                 return "GOTO SAMPLES"
 
             # Figure out where to go - prevent self-loop
@@ -272,6 +248,7 @@ while True:
             if dest == "GOTO DIAGNOSIS":
                 if my_diag:
                     worst = min(my_diag, key=lambda s: sample_score(s))
+                    recently_dropped.add(worst['id'])
                     debug(f"  Emergency drop {worst['id']}")
                     return f"CONNECT {worst['id']}"
                 return "GOTO SAMPLES"
@@ -291,7 +268,8 @@ while True:
             return dest
 
         # ---- START ----
-        good_cloud = [s for s in cloud if feasible(s) and sample_score(s) > 5]
+        good_cloud = [s for s in cloud if feasible(s) and not is_blocked(s)
+                      and sample_score(s) > 5]
         if good_cloud:
             return "GOTO DIAGNOSIS"
         return "GOTO SAMPLES"
@@ -303,7 +281,6 @@ while True:
             return "GOTO LABORATORY"
         if any(not feasible(s) for s in my_diag):
             return "GOTO DIAGNOSIS"
-        # Drop low-value at diagnosis
         if len(my_all) >= 3 and any(s['health'] <= 1 and etotal(s) > 2 for s in my_diag):
             return "GOTO DIAGNOSIS"
         if subset and all(is_blocked(s) for s in subset):

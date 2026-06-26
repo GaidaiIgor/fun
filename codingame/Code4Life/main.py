@@ -71,6 +71,32 @@ def choose_rank(me):
     return 3
 
 
+def project_value_of_gain(gain, me, projects):
+    """Value of gaining 1 expertise in `gain` type, summed across science projects.
+
+    For each project that (a) we still need this type for and (b) is not already
+    complete, add 50 / remaining_total_expertise_needed. Projects close to done
+    weigh more — a gain that finishes a project is worth the full 50.
+    """
+    if gain not in TYPES:
+        return 0.0
+    gi = TYPES.index(gain)
+    value = 0.0
+    for proj in projects:
+        if me['expertise'][gi] >= proj[gi]:
+            continue
+        rem = sum(max(0, proj[i] - me['expertise'][i]) for i in range(5))
+        if rem <= 0:
+            continue
+        value += 50.0 / rem
+    return value
+
+
+def priority_score(s, me, projects):
+    """Higher is better. Combines sample health with project advancement value."""
+    return s['health'] + project_value_of_gain(s.get('gain', '0'), me, projects)
+
+
 def pick_molecule_index(me, sorted_feasible, available):
     """Decide which molecule index to CONNECT for, considering multi-sample reservation.
 
@@ -97,19 +123,25 @@ def decide(me, opp, available, samples, projects):
         return "WAIT|moving"
 
     my_samples = [s for s in samples if s['carried_by'] == 0]
+    cloud_samples = [s for s in samples if s['carried_by'] == -1]
     diagnosed = [s for s in my_samples if is_diagnosed(s)]
     undiagnosed = [s for s in my_samples if not is_diagnosed(s)]
     n_samples = len(my_samples)
 
     feasible_diag = [s for s in diagnosed if not is_impossible(s, me)]
     impossible_diag = [s for s in diagnosed if is_impossible(s, me)]
-    sorted_feasible = sorted(feasible_diag, key=lambda s: -s['health'])
+    sorted_feasible = sorted(feasible_diag, key=lambda s: -priority_score(s, me, projects))
     completable_now = [s for s in feasible_diag if can_complete_now(s, me)]
 
-    # 1. At LAB and have a producible sample -> produce highest health
+    # Useful cloud samples — diagnosed cloud samples we could feasibly fund
+    cloud_useful = [s for s in cloud_samples if not is_impossible(s, me)]
+    cloud_useful.sort(key=lambda s: -priority_score(s, me, projects))
+    best_cloud_score = priority_score(cloud_useful[0], me, projects) if cloud_useful else 0
+
+    # 1. At LAB and have a producible sample -> produce highest-priority one
     if me['target'] == 'LABORATORY' and completable_now:
-        target = max(completable_now, key=lambda s: s['health'])
-        return f"CONNECT {target['id']}|produce {target['id']} h={target['health']}"
+        target = max(completable_now, key=lambda s: priority_score(s, me, projects))
+        return f"CONNECT {target['id']}|produce {target['id']} h={target['health']} g={target.get('gain','?')} pri={priority_score(target, me, projects):.0f}"
 
     # 2. At SAMPLES and inventory not full -> grab another
     if me['target'] == 'SAMPLES' and n_samples < 3:
@@ -120,7 +152,12 @@ def decide(me, opp, available, samples, projects):
     if me['target'] == 'DIAGNOSIS' and undiagnosed:
         return f"CONNECT {undiagnosed[0]['id']}|diagnose {undiagnosed[0]['id']}"
 
-    # 3b. At DIAGNOSIS with impossible diagnosed samples (and no undiagnosed) -> dump
+    # 3a. At DIAGNOSIS with n<3 and a useful cloud sample -> pull (cheaper than SAMPLES)
+    if me['target'] == 'DIAGNOSIS' and n_samples < 3 and cloud_useful:
+        best = cloud_useful[0]
+        return f"CONNECT {best['id']}|pull cloud {best['id']} h={best['health']} g={best.get('gain','?')} pri={best_cloud_score:.0f}"
+
+    # 3b. At DIAGNOSIS with impossible diagnosed (and no undiagnosed) -> dump
     if me['target'] == 'DIAGNOSIS' and impossible_diag and not undiagnosed:
         return f"CONNECT {impossible_diag[0]['id']}|drop impossible {impossible_diag[0]['id']}"
 
@@ -136,8 +173,12 @@ def decide(me, opp, available, samples, projects):
     if completable_now:
         return f"GOTO LABORATORY|produce ready={[s['id'] for s in completable_now]}"
 
-    # 5b. Inventory not full -> SAMPLES (always batch to 3 before progressing)
+    # 5b. Inventory not full -> SAMPLES or DIAGNOSIS (whichever yields a better sample)
     if n_samples < 3:
+        # A high-priority cloud sample beats a random rank pick. Threshold 25 ≈ a
+        # mid-rank-2 sample with no project value, so anything notably better detours.
+        if cloud_useful and best_cloud_score > 25:
+            return f"GOTO DIAGNOSIS|cloud has pri={best_cloud_score:.0f} {cloud_useful[0]['id']}"
         return f"GOTO SAMPLES|need {3 - n_samples} more"
 
     # 5c. Have undiagnosed -> DIAGNOSIS
@@ -186,8 +227,8 @@ def main():
             f"t{turn} score={me['score']}/{opp['score']} "
             f"tgt={me['target']} eta={me['eta']} "
             f"stor={me['storage']} exp={me['expertise']} avail={available} "
-            f"mine={[(s['id'], s['rank'], 'D' if is_diagnosed(s) else 'U', s['health'], s['cost']) for s in samples if s['carried_by']==0]} "
-            f"cloud={[s['id'] for s in samples if s['carried_by']==-1]} "
+            f"mine={[(s['id'], s['rank'], 'D' if is_diagnosed(s) else 'U', s['gain'], s['health'], s['cost']) for s in samples if s['carried_by']==0]} "
+            f"cloud={[(s['id'], s['rank'], 'D' if is_diagnosed(s) else 'U', s['gain'], s['health']) for s in samples if s['carried_by']==-1]} "
             f"-> {cmd} ({reason})"
         )
         print(cmd)

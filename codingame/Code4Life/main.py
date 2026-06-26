@@ -1,306 +1,195 @@
 import sys
 
-def debug(msg):
-    print(msg, file=sys.stderr)
-
-project_count = int(input())
-projects = []
-for _ in range(project_count):
-    projects.append(list(map(int, input().split())))
-
 TYPES = ['A', 'B', 'C', 'D', 'E']
 
-turn = 0
-mol_wait = 0
-recently_dropped = set()  # Track IDs dropped this visit to DIAGNOSIS
 
-while True:
-    turn += 1
-    remaining = 200 - turn
+def log(*args):
+    print(*args, file=sys.stderr, flush=True)
 
-    players = []
-    for i in range(2):
-        parts = input().split()
-        players.append({
-            'target': parts[0], 'eta': int(parts[1]), 'score': int(parts[2]),
-            'storage': [int(x) for x in parts[3:8]],
-            'expertise': [int(x) for x in parts[8:13]],
-        })
-    me, opp = players[0], players[1]
-    avail = list(map(int, input().split()))
 
-    n_samp = int(input())
-    samples = []
-    for _ in range(n_samp):
-        p = input().split()
-        samples.append({
-            'id': int(p[0]), 'carriedBy': int(p[1]), 'rank': int(p[2]),
-            'gain': p[3], 'health': int(p[4]),
-            'cost': [int(x) for x in p[5:10]],
-        })
+def read_player():
+    parts = input().split()
+    return {
+        'target': parts[0],
+        'eta': int(parts[1]),
+        'score': int(parts[2]),
+        'storage': [int(x) for x in parts[3:8]],
+        'expertise': [int(x) for x in parts[8:13]],
+    }
 
-    my_all = [s for s in samples if s['carriedBy'] == 0]
-    my_undiag = [s for s in my_all if s['health'] < 0]
-    my_diag = [s for s in my_all if s['health'] >= 0]
-    cloud = [s for s in samples if s['carriedBy'] == -1]
 
-    pos = me['target']
-    eta = me['eta']
-    te = sum(me['expertise'])
+def read_sample():
+    parts = input().split()
+    return {
+        'id': int(parts[0]),
+        'carried_by': int(parts[1]),
+        'rank': int(parts[2]),
+        'gain': parts[3],
+        'health': int(parts[4]),
+        'cost': [int(x) for x in parts[5:10]],
+    }
 
-    # Clear recently_dropped when we leave DIAGNOSIS
-    if pos != "DIAGNOSIS" and eta == 0:
-        recently_dropped.clear()
 
-    def ecost(s):
-        return [max(0, s['cost'][i] - me['expertise'][i]) for i in range(5)]
+def is_diagnosed(s):
+    # Undiagnosed samples have negative cost fields.
+    return s['cost'][0] >= 0
 
-    def etotal(s):
-        return sum(ecost(s))
 
-    def can_make(s):
-        c = ecost(s)
-        return all(me['storage'][i] >= c[i] for i in range(5))
+def needed_molecules(s, me):
+    return [max(0, s['cost'][i] - me['expertise'][i] - me['storage'][i]) for i in range(5)]
 
-    def feasible(s):
-        return etotal(s) <= 10
 
-    def held():
-        return sum(me['storage'])
+def can_complete_now(s, me):
+    return sum(needed_molecules(s, me)) == 0
 
-    def is_blocked(s):
-        c = ecost(s)
-        for i in range(5):
-            need_more = c[i] - me['storage'][i]
-            if need_more > 0 and avail[i] < need_more:
-                return True
+
+def can_complete_eventually(s, me, available):
+    need = needed_molecules(s, me)
+    if sum(me['storage']) + sum(need) > 10:
         return False
-
-    def science_bonus(s):
-        if s['gain'] == '0':
-            return 0
-        gi = TYPES.index(s['gain'])
-        best = 0
-        for p in projects:
-            rem = [max(0, p[i] - me['expertise'][i]) for i in range(5)]
-            tr = sum(rem)
-            if tr > 0 and rem[gi] > 0:
-                best = max(best, max(0, 15 - tr) * 3)
-        return best
-
-    def sample_score(s):
-        t = etotal(s)
-        base = s['health'] + science_bonus(s)
-        if t == 0:
-            return 1000 + base
-        c = ecost(s)
-        penalty = 0
-        for i in range(5):
-            shortfall = max(0, c[i] - me['storage'][i])
-            if shortfall > 0:
-                if avail[i] == 0:
-                    penalty += shortfall * 50
-                elif avail[i] < shortfall:
-                    penalty += (shortfall - avail[i]) * 10
-        return (base - penalty) / t
-
-    def best_subset():
-        good = sorted([s for s in my_diag if feasible(s)], key=sample_score, reverse=True)
-        good = [s for s in good if sample_score(s) > -10]
-        result, needed_per_type = [], [0] * 5
-        for s in good:
-            c = ecost(s)
-            new_needed = [needed_per_type[i] + c[i] for i in range(5)]
-            peak = sum(max(new_needed[i], me['storage'][i]) for i in range(5))
-            if peak <= 10:
-                result.append(s)
-                needed_per_type = new_needed
-        return result
-
-    def mol_need(sub):
-        total = [0] * 5
-        for s in sub:
-            c = ecost(s)
-            for i in range(5):
-                total[i] += c[i]
-        return [max(0, total[i] - me['storage'][i]) for i in range(5)]
-
-    def pick_rank():
-        if remaining < 25:
-            return 2 if te >= 6 else 1
-        if te >= 8: return 3
-        return 2
-
-    producible = [s for s in my_diag if can_make(s)]
-    subset = best_subset()
-    needed = mol_need(subset)
-    tot_need = sum(needed)
-    prod_value = sum(s['health'] for s in producible)
-    blocked = [s for s in my_diag if is_blocked(s) and not can_make(s)]
-
-    debug(f"T{turn} @{pos} eta={eta} sc={me['score']} opp={opp['score']} "
-          f"st={me['storage']} ex={me['expertise']} avl={avail} h={held()}")
-    debug(f"  #a={len(my_all)} #u={len(my_undiag)} #d={len(my_diag)} "
-          f"#p={len(producible)}(v={prod_value}) #b={len(blocked)} rem={remaining}")
-    if subset:
-        debug(f"  sub={[(s['id'],s['health'],etotal(s)) for s in subset]} "
-              f"need={needed} tot={tot_need}")
-
-    if eta > 0:
-        print("WAIT")
-        continue
-
-    def should_get_more():
-        if len(my_all) >= 3: return False
-        viable = [s for s in subset if not is_blocked(s)]
-        if len(viable) >= 2 and tot_need > 0:
+    for i in range(5):
+        if need[i] > available[i]:
             return False
-        if len(my_all) == 0: return True
-        if remaining < 20: return len(my_diag) == 0 and len(my_undiag) == 0
-        return True
+    return True
 
-    def any_needed_avail():
-        return any(needed[i] > 0 and avail[i] > 0 for i in range(5))
 
-    def act():
-        global mol_wait
+def fits_in_storage(s, me):
+    """Could this sample fit if we picked up all needed molecules (ignoring availability)?"""
+    need = needed_molecules(s, me)
+    return sum(me['storage']) + sum(need) <= 10
 
-        # ---- LABORATORY ----
-        if pos == "LABORATORY":
-            if producible:
-                best = max(producible, key=lambda s: s['health'])
-                return f"CONNECT {best['id']}"
-            return where_next()
 
-        # ---- MOLECULES ----
-        if pos == "MOLECULES":
-            if tot_need == 0 and (producible or subset):
-                mol_wait = 0
-                return "GOTO LABORATORY"
-            if held() >= 10:
-                mol_wait = 0
-                if producible:
-                    return "GOTO LABORATORY"
-                return "GOTO DIAGNOSIS"
-            if not subset and not producible:
-                mol_wait = 0
-                return where_next()
-            if remaining < 15 and producible:
-                mol_wait = 0
-                return "GOTO LABORATORY"
+def choose_rank(me):
+    total_exp = sum(me['expertise'])
+    if total_exp < 3:
+        return 1
+    if total_exp < 8:
+        return 2
+    return 3
 
-            # Try to collect
-            for i in range(5):
-                if needed[i] > 0 and avail[i] > 0:
-                    mol_wait = 0
-                    return f"CONNECT {TYPES[i]}"
 
-            # Can't collect - wait up to 2 turns
-            mol_wait += 1
-            if mol_wait <= 2 and remaining > 25:
-                return "WAIT"
+def priority_sort(samples, me, available):
+    """Order samples we own by usefulness: completable-now first, then by health/cost ratio."""
+    def key(s):
+        n = needed_molecules(s, me)
+        total_need = sum(n)
+        now = total_need == 0
+        ratio = s['health'] / (total_need + 1)
+        # higher health & lower remaining need first; completable_now is the strongest tiebreaker
+        return (-int(now), -s['health'], -ratio, total_need)
+    return sorted(samples, key=key)
 
-            # Gave up waiting
-            mol_wait = 0
-            if producible:
-                return "GOTO LABORATORY"
-            return "GOTO DIAGNOSIS"
 
-        # ---- DIAGNOSIS ----
-        if pos == "DIAGNOSIS":
-            if my_undiag:
-                return f"CONNECT {my_undiag[0]['id']}"
+def next_molecule_for(s, me, available):
+    """Return index of molecule type to pick up next for this sample, or None."""
+    need = needed_molecules(s, me)
+    for i in range(5):
+        if need[i] > 0 and available[i] > 0:
+            return i
+    return None
 
-            # Drop infeasible
-            infeas = [s for s in my_diag if not feasible(s)]
-            if infeas:
-                recently_dropped.add(infeas[0]['id'])
-                return f"CONNECT {infeas[0]['id']}"
 
-            # Drop low-value samples when full
-            if len(my_all) >= 3:
-                low_val = [s for s in my_diag if s['health'] <= 1 and etotal(s) > 2]
-                if low_val:
-                    recently_dropped.add(low_val[0]['id'])
-                    debug(f"  Drop low-val {low_val[0]['id']}")
-                    return f"CONNECT {low_val[0]['id']}"
+def decide(me, opp, available, samples, projects):
+    if me['eta'] > 0:
+        return "WAIT|moving"
 
-            # Drop blocked samples when all subset samples are blocked
-            if blocked and (not subset or all(is_blocked(s) for s in subset)):
-                worst = min(blocked, key=lambda s: s['health'])
-                recently_dropped.add(worst['id'])
-                debug(f"  Drop blocked {worst['id']}")
-                return f"CONNECT {worst['id']}"
+    my_samples = [s for s in samples if s['carried_by'] == 0]
+    diagnosed = [s for s in my_samples if is_diagnosed(s)]
+    undiagnosed = [s for s in my_samples if not is_diagnosed(s)]
 
-            # If room and should get more - ONLY pick unblocked, non-recently-dropped cloud samples
-            if len(my_all) < 3 and should_get_more():
-                good_cloud = sorted(
-                    [s for s in cloud if feasible(s) and not is_blocked(s)
-                     and s['id'] not in recently_dropped],
-                    key=sample_score, reverse=True)
-                if good_cloud:
-                    return f"CONNECT {good_cloud[0]['id']}"
-                # No good cloud samples - go to SAMPLES
-                return "GOTO SAMPLES"
+    # Split diagnosed by feasibility
+    completable_eventually = [s for s in diagnosed if can_complete_eventually(s, me, available)]
+    completable_now = [s for s in diagnosed if can_complete_now(s, me)]
+    impossible = [s for s in diagnosed
+                  if not fits_in_storage(s, me)]  # cost > capacity even with expertise
 
-            # Figure out where to go - prevent self-loop
-            dest = where_next()
-            if dest == "GOTO DIAGNOSIS":
-                if my_diag:
-                    worst = min(my_diag, key=lambda s: sample_score(s))
-                    recently_dropped.add(worst['id'])
-                    debug(f"  Emergency drop {worst['id']}")
-                    return f"CONNECT {worst['id']}"
-                return "GOTO SAMPLES"
-            return dest
+    sorted_diag = priority_sort(completable_eventually, me, available)
 
-        # ---- SAMPLES ----
-        if pos == "SAMPLES":
-            if len(my_all) < 3 and should_get_more():
-                return f"CONNECT {pick_rank()}"
-            if my_undiag:
-                return "GOTO DIAGNOSIS"
-            dest = where_next()
-            if dest == "GOTO SAMPLES":
-                if len(my_all) < 3:
-                    return f"CONNECT {pick_rank()}"
-                return "GOTO DIAGNOSIS"
-            return dest
+    # 1. At LAB and a completable sample exists -> produce highest-health one
+    if completable_now:
+        target = max(completable_now, key=lambda s: s['health'])
+        if me['target'] == 'LABORATORY':
+            return f"CONNECT {target['id']}|produce {target['id']} h={target['health']}"
+        else:
+            return f"GOTO LABORATORY|head to lab for {target['id']}"
 
-        # ---- START ----
-        good_cloud = [s for s in cloud if feasible(s) and not is_blocked(s)
-                      and sample_score(s) > 5]
-        if good_cloud:
-            return "GOTO DIAGNOSIS"
-        return "GOTO SAMPLES"
+    # 2. Have a still-feasible diagnosed sample -> go get molecules
+    if sorted_diag:
+        focus = sorted_diag[0]
+        idx = next_molecule_for(focus, me, available)
+        if idx is not None:
+            if me['target'] == 'MOLECULES':
+                return f"CONNECT {TYPES[idx]}|pickup for sample {focus['id']}"
+            else:
+                return f"GOTO MOLECULES|need mols for {focus['id']} need={needed_molecules(focus, me)}"
+        # focus needs nothing or no available next mol -> fall through; if completable now we'd have caught it above
 
-    def where_next():
-        if my_undiag:
-            return "GOTO DIAGNOSIS"
-        if producible:
-            return "GOTO LABORATORY"
-        if any(not feasible(s) for s in my_diag):
-            return "GOTO DIAGNOSIS"
-        if len(my_all) >= 3 and any(s['health'] <= 1 and etotal(s) > 2 for s in my_diag):
-            return "GOTO DIAGNOSIS"
-        if subset and all(is_blocked(s) for s in subset):
-            return "GOTO DIAGNOSIS"
-        if not my_all:
-            good_cloud = [s for s in cloud if feasible(s) and not is_blocked(s)]
-            return "GOTO DIAGNOSIS" if good_cloud else "GOTO SAMPLES"
-        if subset and tot_need > 0:
-            if any_needed_avail():
-                return "GOTO MOLECULES"
-            return "GOTO DIAGNOSIS"
-        if subset:
-            return "GOTO LABORATORY"
-        if should_get_more():
-            good_cloud = [s for s in cloud if feasible(s) and not is_blocked(s)]
-            return "GOTO DIAGNOSIS" if good_cloud else "GOTO SAMPLES"
-        if my_diag:
-            return "GOTO DIAGNOSIS"
-        return "GOTO SAMPLES"
+    # 3. Undiagnosed samples -> diagnose them
+    if undiagnosed:
+        if me['target'] == 'DIAGNOSIS':
+            return f"CONNECT {undiagnosed[0]['id']}|diagnose {undiagnosed[0]['id']}"
+        else:
+            return f"GOTO DIAGNOSIS|to diagnose {len(undiagnosed)} sample(s)"
 
-    action = act()
-    debug(f"  -> {action}")
-    print(action)
+    # 4. Dump impossible diagnosed samples back to cloud
+    if impossible:
+        if me['target'] == 'DIAGNOSIS':
+            return f"CONNECT {impossible[0]['id']}|drop impossible {impossible[0]['id']}"
+        else:
+            return f"GOTO DIAGNOSIS|drop impossible {impossible[0]['id']}"
+
+    # 5. Less than 3 samples -> pick more
+    if len(my_samples) < 3:
+        if me['target'] == 'SAMPLES':
+            rank = choose_rank(me)
+            return f"CONNECT {rank}|pick rank {rank} (exp_sum={sum(me['expertise'])})"
+        else:
+            return f"GOTO SAMPLES|need more samples ({len(my_samples)}/3)"
+
+    # 6. Stuck: have 3 diagnosed samples but waiting for molecules. Wait at MOLECULES.
+    if diagnosed and not sorted_diag:
+        # All our diagnosed samples are blocked by global availability — wait, opponent may release mols.
+        if me['target'] == 'MOLECULES':
+            return "WAIT|blocked, wait for molecules"
+        else:
+            return "GOTO MOLECULES|wait at mol module"
+
+    return "WAIT|fallback"
+
+
+def main():
+    project_count = int(input())
+    projects = []
+    for _ in range(project_count):
+        projects.append([int(x) for x in input().split()])
+    log(f"projects: {projects}")
+
+    while True:
+        me = read_player()
+        opp = read_player()
+        available = [int(x) for x in input().split()]
+        sample_count = int(input())
+        samples = [read_sample() for _ in range(sample_count)]
+
+        action = decide(me, opp, available, samples, projects)
+
+        # Split command from reason for stderr logging
+        if '|' in action:
+            cmd, reason = action.split('|', 1)
+            cmd = cmd.strip()
+        else:
+            cmd, reason = action, ''
+
+        log(
+            f"t? me.score={me['score']} opp.score={opp['score']} "
+            f"target={me['target']} eta={me['eta']} "
+            f"stor={me['storage']} exp={me['expertise']} avail={available} "
+            f"my_samples={[(s['id'], s['rank'], 'D' if is_diagnosed(s) else 'U', s['health'], s['cost']) for s in samples if s['carried_by']==0]} "
+            f"cloud={[s['id'] for s in samples if s['carried_by']==-1]} "
+            f"-> {cmd} ({reason})"
+        )
+        print(cmd)
+
+
+if __name__ == '__main__':
+    main()

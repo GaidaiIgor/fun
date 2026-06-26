@@ -44,6 +44,10 @@ def can_complete_now(s, me):
     return sum(needed_molecules(s, me)) == 0
 
 
+def needed_count(s, me):
+    return sum(needed_molecules(s, me))
+
+
 def total_need_after_exp(s, me):
     """Total molecules required given current expertise, ignoring storage."""
     return sum(max(0, s['cost'][i] - me['expertise'][i]) for i in range(5))
@@ -133,8 +137,15 @@ def decide(me, opp, available, samples, projects):
     sorted_feasible = sorted(feasible_diag, key=lambda s: -priority_score(s, me, projects))
     completable_now = [s for s in feasible_diag if can_complete_now(s, me)]
 
-    # Useful cloud samples — diagnosed cloud samples we could feasibly fund
-    cloud_useful = [s for s in cloud_samples if not is_impossible(s, me)]
+    # Useful cloud samples — feasible AND with positive project value. Without a
+    # project bonus, a random SAMPLES pick is in expectation as good as the cloud
+    # sample, and a pulled sample with low priority just locks an inventory slot
+    # (observed in prior run: sample 11 pulled with no project value, never funded).
+    cloud_useful = [
+        s for s in cloud_samples
+        if not is_impossible(s, me)
+        and project_value_of_gain(s.get('gain', '0'), me, projects) > 0
+    ]
     cloud_useful.sort(key=lambda s: -priority_score(s, me, projects))
     best_cloud_score = priority_score(cloud_useful[0], me, projects) if cloud_useful else 0
 
@@ -173,10 +184,16 @@ def decide(me, opp, available, samples, projects):
     if completable_now:
         return f"GOTO LABORATORY|produce ready={[s['id'] for s in completable_now]}"
 
-    # 5b. Inventory not full -> SAMPLES or DIAGNOSIS (whichever yields a better sample)
+    # 5b. Inventory not full -> top-off, cloud detour, or SAMPLES (in that order).
     if n_samples < 3:
-        # A high-priority cloud sample beats a random rank pick. Threshold 25 ≈ a
-        # mid-rank-2 sample with no project value, so anything notably better detours.
+        # Top-off: if a remaining diagnosed sample needs <=2 more molecules, head
+        # back to MOLECULES to finish it before starting a fresh cycle. Avoids the
+        # 1-sample-per-cycle trap where we abandon a near-ready sample to backfill
+        # inventory and pay full cycle overhead to come back to it.
+        close = [s for s in feasible_diag if 0 < needed_count(s, me) <= 2]
+        if close and me['target'] != 'MOLECULES':
+            return f"GOTO MOLECULES|top-off close={[s['id'] for s in close]}"
+        # Detour to DIAGNOSIS only for cloud samples with real project value.
         if cloud_useful and best_cloud_score > 25:
             return f"GOTO DIAGNOSIS|cloud has pri={best_cloud_score:.0f} {cloud_useful[0]['id']}"
         return f"GOTO SAMPLES|need {3 - n_samples} more"

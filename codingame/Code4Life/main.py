@@ -1,6 +1,8 @@
 import sys
 
 TYPES = ['A', 'B', 'C', 'D', 'E']
+MOL_POOL_CAP = 5  # max molecules of each type in circulation
+STORAGE_CAP = 10
 
 
 def log(*args):
@@ -48,8 +50,16 @@ def total_need_after_exp(s, me):
 
 
 def is_impossible(s, me):
-    """Sample cost (with expertise reduction) exceeds storage capacity (10)."""
-    return total_need_after_exp(s, me) > 10
+    """Per-type cost exceeds pool (5), or total exceeds storage capacity (10).
+
+    The pool of each type has at most 5 molecules in circulation; if a single sample
+    needs more than 5 of one type after expertise, it can never be held in storage
+    in sufficient quantity to produce. Drop such samples instead of hoarding.
+    """
+    for i in range(5):
+        if s['cost'][i] - me['expertise'][i] > MOL_POOL_CAP:
+            return True
+    return total_need_after_exp(s, me) > STORAGE_CAP
 
 
 def choose_rank(me):
@@ -67,7 +77,7 @@ def pick_molecule_index(me, sorted_feasible, available):
     For each sample in priority order, reserve its post-expertise cost from storage.
     Pick the first molecule type that the current sample needs and is available.
     """
-    if sum(me['storage']) >= 10:
+    if sum(me['storage']) >= STORAGE_CAP:
         return None
     reserved = [0] * 5
     for s in sorted_feasible:

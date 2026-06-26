@@ -31,7 +31,6 @@ def read_sample():
 
 
 def is_diagnosed(s):
-    # Undiagnosed samples have negative cost fields.
     return s['cost'][0] >= 0
 
 
@@ -43,49 +42,43 @@ def can_complete_now(s, me):
     return sum(needed_molecules(s, me)) == 0
 
 
-def can_complete_eventually(s, me, available):
-    need = needed_molecules(s, me)
-    if sum(me['storage']) + sum(need) > 10:
-        return False
-    for i in range(5):
-        if need[i] > available[i]:
-            return False
-    return True
+def total_need_after_exp(s, me):
+    """Total molecules required given current expertise, ignoring storage."""
+    return sum(max(0, s['cost'][i] - me['expertise'][i]) for i in range(5))
 
 
-def fits_in_storage(s, me):
-    """Could this sample fit if we picked up all needed molecules (ignoring availability)?"""
-    need = needed_molecules(s, me)
-    return sum(me['storage']) + sum(need) <= 10
+def is_impossible(s, me):
+    """Sample cost (with expertise reduction) exceeds storage capacity (10)."""
+    return total_need_after_exp(s, me) > 10
 
 
 def choose_rank(me):
     total_exp = sum(me['expertise'])
     if total_exp < 3:
         return 1
-    if total_exp < 8:
+    if total_exp < 7:
         return 2
     return 3
 
 
-def priority_sort(samples, me, available):
-    """Order samples we own by usefulness: completable-now first, then by health/cost ratio."""
-    def key(s):
-        n = needed_molecules(s, me)
-        total_need = sum(n)
-        now = total_need == 0
-        ratio = s['health'] / (total_need + 1)
-        # higher health & lower remaining need first; completable_now is the strongest tiebreaker
-        return (-int(now), -s['health'], -ratio, total_need)
-    return sorted(samples, key=key)
+def pick_molecule_index(me, sorted_feasible, available):
+    """Decide which molecule index to CONNECT for, considering multi-sample reservation.
 
-
-def next_molecule_for(s, me, available):
-    """Return index of molecule type to pick up next for this sample, or None."""
-    need = needed_molecules(s, me)
-    for i in range(5):
-        if need[i] > 0 and available[i] > 0:
-            return i
+    For each sample in priority order, reserve its post-expertise cost from storage.
+    Pick the first molecule type that the current sample needs and is available.
+    """
+    if sum(me['storage']) >= 10:
+        return None
+    reserved = [0] * 5
+    for s in sorted_feasible:
+        effective_storage = [max(0, me['storage'][i] - reserved[i]) for i in range(5)]
+        need = [max(0, s['cost'][i] - me['expertise'][i] - effective_storage[i]) for i in range(5)]
+        for i in range(5):
+            if need[i] > 0 and available[i] > 0:
+                return i
+        # Sample is fully covered. Reserve its post-expertise cost.
+        for i in range(5):
+            reserved[i] += max(0, s['cost'][i] - me['expertise'][i])
     return None
 
 
@@ -96,64 +89,62 @@ def decide(me, opp, available, samples, projects):
     my_samples = [s for s in samples if s['carried_by'] == 0]
     diagnosed = [s for s in my_samples if is_diagnosed(s)]
     undiagnosed = [s for s in my_samples if not is_diagnosed(s)]
+    n_samples = len(my_samples)
 
-    # Split diagnosed by feasibility
-    completable_eventually = [s for s in diagnosed if can_complete_eventually(s, me, available)]
-    completable_now = [s for s in diagnosed if can_complete_now(s, me)]
-    impossible = [s for s in diagnosed
-                  if not fits_in_storage(s, me)]  # cost > capacity even with expertise
+    feasible_diag = [s for s in diagnosed if not is_impossible(s, me)]
+    impossible_diag = [s for s in diagnosed if is_impossible(s, me)]
+    sorted_feasible = sorted(feasible_diag, key=lambda s: -s['health'])
+    completable_now = [s for s in feasible_diag if can_complete_now(s, me)]
 
-    sorted_diag = priority_sort(completable_eventually, me, available)
-
-    # 1. At LAB and a completable sample exists -> produce highest-health one
-    if completable_now:
+    # 1. At LAB and have a producible sample -> produce highest health
+    if me['target'] == 'LABORATORY' and completable_now:
         target = max(completable_now, key=lambda s: s['health'])
-        if me['target'] == 'LABORATORY':
-            return f"CONNECT {target['id']}|produce {target['id']} h={target['health']}"
-        else:
-            return f"GOTO LABORATORY|head to lab for {target['id']}"
+        return f"CONNECT {target['id']}|produce {target['id']} h={target['health']}"
 
-    # 2. Have a still-feasible diagnosed sample -> go get molecules
-    if sorted_diag:
-        focus = sorted_diag[0]
-        idx = next_molecule_for(focus, me, available)
+    # 2. At SAMPLES and inventory not full -> grab another
+    if me['target'] == 'SAMPLES' and n_samples < 3:
+        rank = choose_rank(me)
+        return f"CONNECT {rank}|pick r{rank} ({n_samples}/3 exp={sum(me['expertise'])})"
+
+    # 3. At DIAGNOSIS and have undiagnosed -> diagnose one
+    if me['target'] == 'DIAGNOSIS' and undiagnosed:
+        return f"CONNECT {undiagnosed[0]['id']}|diagnose {undiagnosed[0]['id']}"
+
+    # 3b. At DIAGNOSIS with impossible diagnosed samples (and no undiagnosed) -> dump
+    if me['target'] == 'DIAGNOSIS' and impossible_diag and not undiagnosed:
+        return f"CONNECT {impossible_diag[0]['id']}|drop impossible {impossible_diag[0]['id']}"
+
+    # 4. At MOLECULES -> opportunistically pick up a useful molecule
+    if me['target'] == 'MOLECULES' and sorted_feasible:
+        idx = pick_molecule_index(me, sorted_feasible, available)
         if idx is not None:
-            if me['target'] == 'MOLECULES':
-                return f"CONNECT {TYPES[idx]}|pickup for sample {focus['id']}"
-            else:
-                return f"GOTO MOLECULES|need mols for {focus['id']} need={needed_molecules(focus, me)}"
-        # focus needs nothing or no available next mol -> fall through; if completable now we'd have caught it above
+            return f"CONNECT {TYPES[idx]}|pickup {TYPES[idx]} for sorted={[s['id'] for s in sorted_feasible]}"
 
-    # 3. Undiagnosed samples -> diagnose them
+    # 5. Decide where to go next
+
+    # 5a. Producible sample ready -> head to LAB
+    if completable_now:
+        return f"GOTO LABORATORY|produce ready={[s['id'] for s in completable_now]}"
+
+    # 5b. Inventory not full -> SAMPLES (always batch to 3 before progressing)
+    if n_samples < 3:
+        return f"GOTO SAMPLES|need {3 - n_samples} more"
+
+    # 5c. Have undiagnosed -> DIAGNOSIS
     if undiagnosed:
-        if me['target'] == 'DIAGNOSIS':
-            return f"CONNECT {undiagnosed[0]['id']}|diagnose {undiagnosed[0]['id']}"
-        else:
-            return f"GOTO DIAGNOSIS|to diagnose {len(undiagnosed)} sample(s)"
+        return f"GOTO DIAGNOSIS|diagnose {len(undiagnosed)}"
 
-    # 4. Dump impossible diagnosed samples back to cloud
-    if impossible:
-        if me['target'] == 'DIAGNOSIS':
-            return f"CONNECT {impossible[0]['id']}|drop impossible {impossible[0]['id']}"
-        else:
-            return f"GOTO DIAGNOSIS|drop impossible {impossible[0]['id']}"
-
-    # 5. Less than 3 samples -> pick more
-    if len(my_samples) < 3:
-        if me['target'] == 'SAMPLES':
-            rank = choose_rank(me)
-            return f"CONNECT {rank}|pick rank {rank} (exp_sum={sum(me['expertise'])})"
-        else:
-            return f"GOTO SAMPLES|need more samples ({len(my_samples)}/3)"
-
-    # 6. Stuck: have 3 diagnosed samples but waiting for molecules. Wait at MOLECULES.
-    if diagnosed and not sorted_diag:
-        # All our diagnosed samples are blocked by global availability — wait, opponent may release mols.
+    # 5d. Have feasible diagnosed needing mols -> MOLECULES (or wait if already there)
+    if feasible_diag:
         if me['target'] == 'MOLECULES':
-            return "WAIT|blocked, wait for molecules"
-        else:
-            return "GOTO MOLECULES|wait at mol module"
+            return "WAIT|wait for mols to refill"
+        return "GOTO MOLECULES|fund samples"
 
+    # 5e. All diagnosed are impossible -> DIAGNOSIS to dump
+    if impossible_diag:
+        return "GOTO DIAGNOSIS|drop impossibles"
+
+    # Fallback
     return "WAIT|fallback"
 
 
@@ -164,7 +155,9 @@ def main():
         projects.append([int(x) for x in input().split()])
     log(f"projects: {projects}")
 
+    turn = 0
     while True:
+        turn += 1
         me = read_player()
         opp = read_player()
         available = [int(x) for x in input().split()]
@@ -173,7 +166,6 @@ def main():
 
         action = decide(me, opp, available, samples, projects)
 
-        # Split command from reason for stderr logging
         if '|' in action:
             cmd, reason = action.split('|', 1)
             cmd = cmd.strip()
@@ -181,10 +173,10 @@ def main():
             cmd, reason = action, ''
 
         log(
-            f"t? me.score={me['score']} opp.score={opp['score']} "
-            f"target={me['target']} eta={me['eta']} "
+            f"t{turn} score={me['score']}/{opp['score']} "
+            f"tgt={me['target']} eta={me['eta']} "
             f"stor={me['storage']} exp={me['expertise']} avail={available} "
-            f"my_samples={[(s['id'], s['rank'], 'D' if is_diagnosed(s) else 'U', s['health'], s['cost']) for s in samples if s['carried_by']==0]} "
+            f"mine={[(s['id'], s['rank'], 'D' if is_diagnosed(s) else 'U', s['health'], s['cost']) for s in samples if s['carried_by']==0]} "
             f"cloud={[s['id'] for s in samples if s['carried_by']==-1]} "
             f"-> {cmd} ({reason})"
         )

@@ -16,6 +16,7 @@ MAX_STORAGE = 10
 GAME_TURNS = 200
 STOCK_WAIT_LIMIT = 3
 SAMPLE_TOP_UP_LIMIT = GAME_TURNS - 45
+FOCUS_TURN = GAME_TURNS - 40
 Vector = tuple[int, ...]
 Projects = list[Vector]
 
@@ -56,7 +57,7 @@ def main():
     except EOFError:
         return
     projects = [tuple(map(int, input().split())) for _ in range(project_count)]
-    print(f"projects={";".join(vector_text(project) for project in projects)}", file=stderr)
+    print(f"projects={';'.join(vector_text(project) for project in projects)}", file=stderr)
     rejected_ids = set()
     stalled_ids = set()
     stock_waits = {}
@@ -113,10 +114,6 @@ def choose_diagnosis_action(turn: int, projects: Projects, rejected_ids: set[int
         rejected_ids.add(sample.sample_id)
         stalled_ids.discard(sample.sample_id)
         return f"CONNECT {sample.sample_id}", f"dropping stalled sample {sample.sample_id}"
-    bad = worst_rejected_sample(projects, robot, diagnosed)
-    if bad is not None:
-        rejected_ids.add(bad.sample_id)
-        return f"CONNECT {bad.sample_id}", f"dropping weak sample {bad.sample_id}"
     if len(mine) < MAX_SAMPLES:
         cloud = choose_cloud_sample(turn, projects, rejected_ids, robot, samples, diagnosed)
         if cloud is not None:
@@ -133,7 +130,8 @@ def choose_diagnosis_action(turn: int, projects: Projects, rejected_ids: set[int
         if len(mine) < MAX_SAMPLES and turn <= SAMPLE_TOP_UP_LIMIT:
             return "GOTO SAMPLES", "stock blocked, filling open sample slot"
     if diagnosed:
-        sample = worst_sample(projects, robot, diagnosed)
+        bad = worst_rejected_sample(projects, robot, diagnosed)
+        sample = bad if bad is not None else worst_sample(projects, robot, diagnosed)
         rejected_ids.add(sample.sample_id)
         return f"CONNECT {sample.sample_id}", f"no timely viable plan, dropping {sample.sample_id}"
     if turn > GAME_TURNS - 22:
@@ -144,7 +142,7 @@ def choose_diagnosis_action(turn: int, projects: Projects, rejected_ids: set[int
 def choose_molecules_action(turn: int, projects: Projects, stalled_ids: set[int], stock_waits: dict[tuple[int, ...], int], robot: Robot, \
         opponent: Robot, available: Vector, diagnosed: list[Sample]) -> tuple[str, str]:
     ready_plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, NO_STOCK, True, True)
-    plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, FULL_STOCK, True, False)
+    plan = molecule_completion_plan(turn, projects, robot, diagnosed)
     if plan is None:
         if ready_plan is not None:
             return "GOTO LABORATORY", "finish reachable sample"
@@ -163,6 +161,10 @@ def choose_molecules_action(turn: int, projects: Projects, stalled_ids: set[int]
     wait_limit = STOCK_WAIT_LIMIT + (3 if opponent.target == "LABORATORY" and opponent.eta <= 2 else 0)
     if stock_waits[key] <= wait_limit and turn <= GAME_TURNS - 28:
         return "WAIT", f"waiting for stock {stock_waits[key]}"
+    if turn >= FOCUS_TURN:
+        if enough_time_after_wait(turn, plan):
+            return "WAIT", f"late stock wait {stock_waits[key]}"
+        return "WAIT", "too late to chase blocked stock"
     if len(diagnosed) < MAX_SAMPLES and turn <= SAMPLE_TOP_UP_LIMIT:
         stock_waits.clear()
         return "GOTO SAMPLES", "stock blocked, filling open sample slot"
@@ -215,6 +217,22 @@ def timely_completion_plan(turn: int, module: str, projects: Projects, robot: Ro
     return best
 
 
+def molecule_completion_plan(turn: int, projects: Projects, robot: Robot, samples: list[Sample]) -> Plan | None:
+    if turn >= FOCUS_TURN:
+        return timely_single_sample_plan(turn, robot.target, projects, robot, samples, FULL_STOCK, True, False)
+    return timely_completion_plan(turn, robot.target, projects, robot, samples, FULL_STOCK, True, False)
+
+
+def timely_single_sample_plan(turn: int, module: str, projects: Projects, robot: Robot, samples: list[Sample], available: Vector, \
+        require_stock: bool, require_ready: bool) -> Plan | None:
+    best = None
+    for sample in samples:
+        plan = evaluate_order(projects, robot, (sample,), available, require_stock)
+        if plan is not None and (not require_ready or sum(plan.missing) == 0) and enough_time(turn, module, plan) and better_plan(plan, best):
+            best = plan
+    return best
+
+
 def choose_cloud_sample(turn: int, projects: Projects, rejected_ids: set[int], robot: Robot, samples: list[Sample], diagnosed: list[Sample]) -> Sample | None:
     best = None
     best_plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, FULL_STOCK, True, False)
@@ -235,9 +253,6 @@ def worst_rejected_sample(projects: Projects, robot: Robot, samples: list[Sample
 
 
 def sample_is_bad(projects: Projects, robot: Robot, sample: Sample) -> bool:
-    need = effective_need(sample, robot.expertise)
-    if sum(need) > MAX_STORAGE or any(need[index] > FULL_STOCK[index] + robot.storage[index] for index in range(len(MOLECULES))):
-        return True
     return sample.health <= 1 and sum(robot.expertise) >= 3 and gain_bonus(projects, robot.expertise, sample.gain) < 10
 
 
@@ -288,6 +303,10 @@ def enough_time(turn: int, module: str, plan: Plan) -> bool:
     return turn + estimated_plan_turns(module, plan) < GAME_TURNS
 
 
+def enough_time_after_wait(turn: int, plan: Plan) -> bool:
+    return turn + 1 + estimated_plan_turns("MOLECULES", plan) < GAME_TURNS
+
+
 def estimated_plan_turns(module: str, plan: Plan) -> int:
     missing = sum(plan.missing)
     if module == "DIAGNOSIS":
@@ -320,8 +339,16 @@ def gain_bonus(projects: Projects, expertise: Vector, gain: str) -> float:
         total_missing = sum(missing)
         if total_missing == 0 or missing[index] == 0:
             continue
-        bonus = max(bonus, 50 if total_missing == 1 else 8 + 32 / total_missing)
+        bonus = max(bonus, project_bonus(total_missing))
     return bonus
+
+
+def project_bonus(total_missing: int) -> float:
+    if total_missing == 1:
+        return 50
+    if total_missing == 2:
+        return 34
+    return 12 + 36 / total_missing
 
 
 def desired_sample_count(turn: int) -> int:

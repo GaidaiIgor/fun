@@ -20,8 +20,16 @@ def pick_rank(expertise):
 
 def compute_best_plan(diagnosed, storage, expertise, available):
     """Best subset of diagnosed.
-    Ranking: gatherable subsets dominate non-gatherable, then higher HP wins, then lower cost wins.
+    Score: (HP, gatherable, -cost).
+    - Higher HP wins.
+    - Tiebreak: prefer plans whose full need is covered by current storage+avail (so we
+      can complete them without waiting for refills).
+    - Tiebreak: lower total cost.
     Constraint: peak inventory <= 10.
+
+    CRITICAL: HP must come first in the tuple. v4 had (gatherable, HP, -cost) and the
+    empty subset is trivially "gatherable" (no needs, no shortfall), so it scored (1,0,0)
+    and beat every non-empty blocked plan -> bot did nothing for 95 turns.
     """
     n = len(diagnosed)
     best_plan = []
@@ -38,10 +46,8 @@ def compute_best_plan(diagnosed, storage, expertise, available):
             continue
         total_health = sum(s['health'] for s in subset)
         total_c = sum(total_needed)
-        # "Gatherable" = storage + currently-available system mols cover the plan's full need.
-        # Doesn't predict the future (opp might take some), but a good safety filter.
         gatherable = all(storage[i] + available[i] >= total_needed[i] for i in range(5))
-        score = (1 if gatherable else 0, total_health, -total_c)
+        score = (total_health, 1 if gatherable else 0, -total_c)
         if score > best_score:
             best_score = score
             best_plan = subset
@@ -114,22 +120,22 @@ def decide(me, opp, available, samples):
     if target == 'DIAGNOSIS' and undiagnosed:
         return f"CONNECT {undiagnosed[0]['id']}"
 
-    # NOTE: Drop-blocker logic from v3 has been removed. Sending a diagnosed
-    # sample to the cloud gives the opponent a chance to grab and produce it
-    # (this is exactly how v3 lost 220-247 via sample 19). If our plan is
-    # non-gatherable, we just wait or pivot to fresh samples.
+    # NOTE: No drop-blocker logic. v3 sent sample 19 to cloud as a "blocker" and opp
+    # downloaded it and scored the deciding 40 HP. A diagnosed sample on the cloud is
+    # a partial deal the opponent can finish with their different expertise. Just hold
+    # blockers - if we can't make them, neither can opp, since they're in our hand.
 
     if target == 'MOLECULES':
         cands = [(available[i], i) for i in range(5) if still_need[i] > 0 and available[i] > 0]
         if cands:
-            cands.sort()  # least-available first
+            cands.sort()  # least-available first (race opp for scarce mols)
             return f"CONNECT {MOL_NAMES[cands[0][1]]}"
-        # No needed mol available right now.
+        # Nothing to gather right now.
         if producible_in_plan:
-            return "GOTO LABORATORY"  # produce what we have
+            return "GOTO LABORATORY"
         if sum(still_need) > 0:
             if len(my_samples) < 3:
-                return "GOTO SAMPLES"  # add options
+                return "GOTO SAMPLES"  # find new options
             return "WAIT"  # 3 samples and fully stuck; wait for opp to release
 
     if target == 'SAMPLES' and len(my_samples) < 3:
@@ -150,7 +156,7 @@ def decide(me, opp, available, samples):
             return "GOTO LABORATORY"
         if len(my_samples) < 3:
             return "GOTO SAMPLES"
-        return "GOTO MOLECULES"  # park at MOL waiting for opp to release
+        return "GOTO MOLECULES"  # park at MOL waiting for refills
 
     if producible_in_plan:
         return "GOTO LABORATORY"

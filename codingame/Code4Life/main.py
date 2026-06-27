@@ -8,33 +8,28 @@ MOL_NAMES = ['A', 'B', 'C', 'D', 'E']
 # --- Helpers ---
 
 def net_cost(sample, expertise):
-    """Molecules needed for a sample after applying expertise discount."""
     return [max(0, sample['cost'][i] - expertise[i]) for i in range(5)]
 
 def can_produce(sample, storage, expertise):
-    """Whether we currently have enough molecules to make this sample."""
     return all(sample['cost'][i] - expertise[i] <= storage[i] for i in range(5))
 
 def pick_rank(expertise):
-    """Pick which rank of sample to grab based on current expertise level."""
-    total = sum(expertise)
-    if total < 3:
-        return 1
-    elif total < 7:
-        return 2
-    else:
+    """Skip rank 1 (low HP, unreliable). Rank 2 until enough expertise for rank 3."""
+    if sum(expertise) >= 8:
         return 3
+    return 2
 
-def compute_best_plan(diagnosed, storage, expertise, available):
+def compute_best_plan(diagnosed, storage, expertise):
     """
-    Enumerate subsets of diagnosed samples; return the highest-health subset that:
-      - Fits in 10-molecule inventory at peak (storage + gathered)
-      - Is feasibly gatherable given current availability
-    Also return total molecule demand for that plan.
+    Highest-HP subset of diagnosed samples whose peak inventory fits in 10 mols.
+    NOTE: deliberately does NOT require availability to currently cover the need
+    -- we plan, then gather what we can and wait at MOLECULES for the rest.
+    Tiebreak: prefer lower total cost (frees room/turns for later).
     """
     n = len(diagnosed)
     best_plan = []
     best_health = -1
+    best_cost = 1000
     for mask in range(1 << n):
         subset = [diagnosed[i] for i in range(n) if mask & (1 << i)]
         total_needed = [0]*5
@@ -42,24 +37,15 @@ def compute_best_plan(diagnosed, storage, expertise, available):
             nc = net_cost(s, expertise)
             for i in range(5):
                 total_needed[i] += nc[i]
-        # Peak inventory check (max of what's already there vs. what we need)
         peak = sum(max(storage[i], total_needed[i]) for i in range(5))
         if peak > 10:
             continue
-        # Feasibility: can we gather what we still need?
-        ok = True
-        for i in range(5):
-            still = max(0, total_needed[i] - storage[i])
-            if still > available[i]:
-                ok = False
-                break
-        if not ok:
-            continue
         total_health = sum(s['health'] for s in subset)
-        if total_health > best_health:
+        total_c = sum(total_needed)
+        if total_health > best_health or (total_health == best_health and total_c < best_cost):
             best_health = total_health
+            best_cost = total_c
             best_plan = subset
-    # Recompute total_needed for the chosen plan
     total_needed = [0]*5
     for s in best_plan:
         nc = net_cost(s, expertise)
@@ -101,23 +87,23 @@ def decide(me, opp, available, samples):
     diagnosed   = [s for s in my_samples if s['gain'] != '0']
     target = me['target']
 
-    # Drop diagnosed samples we can NEVER produce (net cost > 10).
+    # Drop diagnosed samples with net cost > 10 (can never make them).
     for s in diagnosed:
         if sum(net_cost(s, me['expertise'])) > 10:
-            log(f"  Dropping impossible sample {s['id']} (net_cost={sum(net_cost(s, me['expertise']))})")
+            log(f"  Drop impossible sample {s['id']} net_cost={sum(net_cost(s, me['expertise']))}")
             if target == 'DIAGNOSIS':
                 return f"CONNECT {s['id']}"
             return "GOTO DIAGNOSIS"
 
-    plan, total_needed = compute_best_plan(diagnosed, me['storage'], me['expertise'], available)
+    plan, total_needed = compute_best_plan(diagnosed, me['storage'], me['expertise'])
     still_need = [max(0, total_needed[i] - me['storage'][i]) for i in range(5)]
     producible_in_plan = [s for s in plan if can_produce(s, me['storage'], me['expertise'])]
 
     log(f"  diag={len(diagnosed)} undiag={len(undiagnosed)} "
-        f"plan_size={len(plan)} plan_hp={sum(s['health'] for s in plan)} "
-        f"still_need={still_need} can_produce={len(producible_in_plan)}")
+        f"plan={[s['id'] for s in plan]} hp={sum(s['health'] for s in plan)} "
+        f"still_need={still_need} can_produce={[s['id'] for s in producible_in_plan]}")
 
-    # --- Module-specific actions when already AT a module ---
+    # --- Module-specific actions (when AT a module) ---
     if target == 'LABORATORY' and producible_in_plan:
         producible_in_plan.sort(key=lambda s: -s['health'])
         return f"CONNECT {producible_in_plan[0]['id']}"
@@ -126,37 +112,46 @@ def decide(me, opp, available, samples):
         return f"CONNECT {undiagnosed[0]['id']}"
 
     if target == 'MOLECULES':
-        for i in range(5):
-            if still_need[i] > 0 and available[i] > 0:
-                return f"CONNECT {MOL_NAMES[i]}"
-        # fall through (nothing useful to gather here right now)
+        # Gather scarce needed molecule first so opp doesn't race us for it.
+        cands = [(available[i], i) for i in range(5) if still_need[i] > 0 and available[i] > 0]
+        if cands:
+            cands.sort()  # least-available first
+            return f"CONNECT {MOL_NAMES[cands[0][1]]}"
+        # Nothing useful to gather right now.
+        if producible_in_plan and sum(still_need) == 0:
+            return "GOTO LABORATORY"
+        if sum(still_need) > 0:
+            # KEY FIX: wait HERE for needed mols to free up.
+            # Don't wander off and lose position.
+            return "WAIT"
+        # plan empty & nothing to do here -> fall through to defaults
 
     if target == 'SAMPLES' and len(my_samples) < 3:
         return f"CONNECT {pick_rank(me['expertise'])}"
 
     # --- Decide next destination ---
 
-    # Diagnose any in hand first (so we know real costs before gathering)
+    # Diagnose first so we know real costs before planning gather.
     if undiagnosed:
         return "GOTO DIAGNOSIS"
 
-    # Ready to produce: nothing more to gather AND we have producibles
+    # Got everything for plan -> produce.
     if producible_in_plan and sum(still_need) == 0:
         return "GOTO LABORATORY"
 
-    # Still need molecules and some are available -> go gather
-    if sum(still_need) > 0 and any(still_need[i] > 0 and available[i] > 0 for i in range(5)):
+    # KEY FIX: go to MOLECULES even if needed mols not currently available.
+    # We'll wait there for opp to release them.
+    if sum(still_need) > 0:
         return "GOTO MOLECULES"
 
-    # Can't gather (blocked by availability) but have something to make
+    # Edge: producible but partial gather blocked -> at least go produce what we can.
     if producible_in_plan:
         return "GOTO LABORATORY"
 
-    # Fill up samples if we have less than 3
+    # Fill up on samples.
     if len(my_samples) < 3:
         return "GOTO SAMPLES"
 
-    # Last resort: wait for opponent to release molecules
     return "WAIT"
 
 # --- Init ---
@@ -181,13 +176,6 @@ while True:
     log(f"=== T{turn} | tgt={me['target']} eta={me['eta']} "
         f"score={me['score']} (opp:{opp['score']}) | "
         f"stor={me['storage']} exp={me['expertise']} | avail={available}")
-    sample_brief = [
-        (s['id'],
-         'M' if s['carried_by']==0 else ('O' if s['carried_by']==1 else 'C'),
-         s['rank'], s['gain'], s['health'], s['cost'])
-        for s in samples
-    ]
-    log(f"  samples: {sample_brief}")
 
     try:
         action = decide(me, opp, available, samples)

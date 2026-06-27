@@ -25,6 +25,9 @@ def remaining_cost(sample, storage, expertise):
     need = total_needed(sample, expertise)
     return sum(max(0, need[i] - storage[i]) for i in range(5))
 
+def value(sample, storage, expertise):
+    return sample["health"] / (remaining_cost(sample, storage, expertise) + 1)
+
 while True:
     players = []
     for _ in range(2):
@@ -38,7 +41,7 @@ while True:
         })
 
     me = players[0]
-    total_expertise = sum(me["expertise"])
+    total_exp = sum(me["expertise"])
 
     available = list(map(int, input().split()))
     sample_count = int(input())
@@ -63,15 +66,15 @@ while True:
     undiagnosed = [s for s in my_samples if s["cost"][0] == -1]
     diagnosed = [s for s in my_samples if s["cost"][0] != -1]
 
-    # ---- PHASE SELECTION ----
-    if total_expertise < 6:
+    # ---- Phase ----
+    if total_exp < 6:
         target_rank = 1
-    elif total_expertise < 12:
+    elif total_exp < 12:
         target_rank = 2
     else:
-        target_rank = 2  # keep stable for now
+        target_rank = 3
 
-    # 1. Get samples
+    # ---- Get samples ----
     if len(my_samples) < 3:
         if me["target"] != "SAMPLES":
             print("GOTO SAMPLES")
@@ -79,7 +82,7 @@ while True:
             print(f"CONNECT {target_rank}")
         continue
 
-    # 2. Diagnose
+    # ---- Diagnose ----
     if undiagnosed:
         if me["target"] != "DIAGNOSIS":
             print("GOTO DIAGNOSIS")
@@ -87,7 +90,7 @@ while True:
             print(f"CONNECT {undiagnosed[0]['id']}")
         continue
 
-    # 3. Produce ASAP
+    # ---- Produce immediately ----
     for s in diagnosed:
         if can_complete(s, me["storage"], me["expertise"]):
             if me["target"] != "LABORATORY":
@@ -96,7 +99,6 @@ while True:
                 print(f"CONNECT {s['id']}")
             break
     else:
-        # 4. Filter feasible
         feasible = [
             s for s in diagnosed
             if is_possible(s, me["storage"], me["expertise"], available)
@@ -110,10 +112,10 @@ while True:
                 print(f"CONNECT {worst['id']}")
             continue
 
-        # prioritize lowest remaining cost
-        target = min(feasible, key=lambda s: remaining_cost(s, me["storage"], me["expertise"]))
+        # VALUE-based target
+        target = max(feasible, key=lambda s: value(s, me["storage"], me["expertise"]))
 
-        # 5. Go to molecules
+        # ---- Molecules ----
         if me["target"] != "MOLECULES":
             print("GOTO MOLECULES")
             continue

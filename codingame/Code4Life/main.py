@@ -25,30 +25,20 @@ def remaining_cost(sample, storage, expertise):
     need = total_needed(sample, expertise)
     return sum(max(0, need[i] - storage[i]) for i in range(5))
 
-def pick_target(diagnosed, storage, expertise, available):
-    feasible = [
-        s for s in diagnosed
-        if is_possible(s, storage, expertise, available)
-    ]
-    if not feasible:
-        return None
-    return min(feasible, key=lambda s: remaining_cost(s, storage, expertise))
+def sample_value(sample, storage, expertise):
+    # lower is better
+    return remaining_cost(sample, storage, expertise) - sample["health"] * 0.1
 
 while True:
     players = []
     for _ in range(2):
         inputs = input().split()
-        target = inputs[0]
-        eta = int(inputs[1])
-        score = int(inputs[2])
-        storage = list(map(int, inputs[3:8]))
-        expertise = list(map(int, inputs[8:13]))
         players.append({
-            "target": target,
-            "eta": eta,
-            "score": score,
-            "storage": storage,
-            "expertise": expertise
+            "target": inputs[0],
+            "eta": int(inputs[1]),
+            "score": int(inputs[2]),
+            "storage": list(map(int, inputs[3:8])),
+            "expertise": list(map(int, inputs[8:13]))
         })
 
     me = players[0]
@@ -92,50 +82,56 @@ while True:
             print(f"CONNECT {undiagnosed[0]['id']}")
         continue
 
-    # 3. Produce if possible
-    doable = [
-        s for s in diagnosed
-        if can_complete(s, me["storage"], me["expertise"])
-    ]
-
-    if doable:
-        if me["target"] != "LABORATORY":
-            print("GOTO LABORATORY")
-        else:
-            print(f"CONNECT {doable[0]['id']}")
-        continue
-
-    # 4. Pick target sample
-    target_sample = pick_target(diagnosed, me["storage"], me["expertise"], available)
-
-    # 5. Drop only if NOTHING is possible
-    if target_sample is None:
-        if me["target"] != "DIAGNOSIS":
-            print("GOTO DIAGNOSIS")
-        else:
-            worst = max(diagnosed, key=lambda s: sum(s["cost"]))
-            print(f"CONNECT {worst['id']}")
-        continue
-
-    # 6. Go to molecules
-    if me["target"] != "MOLECULES":
-        print("GOTO MOLECULES")
-        continue
-
-    # 7. Collect only what target needs
-    need = total_needed(target_sample, me["expertise"])
-
-    best_type = None
-    best_need = -1
-
-    for i in range(5):
-        missing = max(0, need[i] - me["storage"][i])
-        if missing > 0 and available[i] > 0:
-            if missing > best_need:
-                best_need = missing
-                best_type = i
-
-    if best_type is not None and sum(me["storage"]) < 10:
-        print("CONNECT " + "ABCDE"[best_type])
+    # 3. Produce immediately if possible
+    for s in diagnosed:
+        if can_complete(s, me["storage"], me["expertise"]):
+            if me["target"] != "LABORATORY":
+                print("GOTO LABORATORY")
+            else:
+                print(f"CONNECT {s['id']}")
+            break
     else:
-        print("WAIT")
+        # 4. Pick best target
+        feasible = [
+            s for s in diagnosed
+            if is_possible(s, me["storage"], me["expertise"], available)
+        ]
+
+        if not feasible:
+            # Drop worst
+            if me["target"] != "DIAGNOSIS":
+                print("GOTO DIAGNOSIS")
+            else:
+                worst = max(diagnosed, key=lambda s: sum(s["cost"]))
+                print(f"CONNECT {worst['id']}")
+            continue
+
+        target = min(feasible, key=lambda s: sample_value(s, me["storage"], me["expertise"]))
+
+        # 5. Go to molecules
+        if me["target"] != "MOLECULES":
+            print("GOTO MOLECULES")
+            continue
+
+        need = total_needed(target, me["expertise"])
+
+        best_type = None
+        best_missing = -1
+
+        for i in range(5):
+            missing = max(0, need[i] - me["storage"][i])
+
+            # only take what we actually need
+            if missing > 0 and available[i] > 0:
+                # avoid filling storage with junk
+                if sum(me["storage"]) >= 10:
+                    continue
+
+                if missing > best_missing:
+                    best_missing = missing
+                    best_type = i
+
+        if best_type is not None:
+            print("CONNECT " + "ABCDE"[best_type])
+        else:
+            print("WAIT")

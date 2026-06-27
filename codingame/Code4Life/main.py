@@ -141,6 +141,16 @@ def choose_diagnosis_action(turn: int, projects: Projects, rejected_ids: set[int
 
 def choose_molecules_action(turn: int, projects: Projects, stalled_ids: set[int], stock_waits: dict[tuple[int, ...], int], robot: Robot, \
         opponent: Robot, available: Vector, diagnosed: list[Sample]) -> tuple[str, str]:
+    """Chooses the next molecule-module command.
+    :param turn: Current game turn.
+    :param projects: Project requirements used to value expertise gains.
+    :param stalled_ids: Sample ids marked for diagnosis cleanup after stock stalls.
+    :param stock_waits: Counts consecutive waits for blocked molecule plans.
+    :param robot: Current robot state.
+    :param opponent: Opponent robot state used to tune short stock waits.
+    :param available: Molecule stock available this turn.
+    :param diagnosed: Diagnosed samples carried by the bot.
+    :return: Bot command and stderr reason."""
     ready_plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, NO_STOCK, True, True)
     plan = molecule_completion_plan(turn, projects, robot, diagnosed)
     if plan is None:
@@ -153,6 +163,12 @@ def choose_molecules_action(turn: int, projects: Projects, stalled_ids: set[int]
     if molecule is not None:
         stock_waits.clear()
         return f"CONNECT {molecule}", f"collecting {molecule} for {[sample.sample_id for sample in plan.samples]}"
+    if turn >= FOCUS_TURN:
+        alternate = collectable_molecule_plan(turn, projects, robot, available, diagnosed)
+        if alternate is not None:
+            stock_waits.clear()
+            molecule = next_molecule(alternate, available)
+            return f"CONNECT {molecule}", f"switching to collectable {molecule} for {[sample.sample_id for sample in alternate.samples]}"
     if ready_plan is not None:
         return "GOTO LABORATORY", "finish ready subset before stock wait"
     key = tuple(sample.sample_id for sample in plan.samples) + (-1,) + \
@@ -221,6 +237,22 @@ def molecule_completion_plan(turn: int, projects: Projects, robot: Robot, sample
     if turn >= FOCUS_TURN:
         return timely_single_sample_plan(turn, robot.target, projects, robot, samples, FULL_STOCK, True, False)
     return timely_completion_plan(turn, robot.target, projects, robot, samples, FULL_STOCK, True, False)
+
+
+def collectable_molecule_plan(turn: int, projects: Projects, robot: Robot, available: Vector, samples: list[Sample]) -> Plan | None:
+    """Finds a timely single-sample plan that can collect at least one molecule now.
+    :param turn: Current game turn.
+    :param projects: Project requirements used to value expertise gains.
+    :param robot: Current robot state.
+    :param available: Molecule stock available this turn.
+    :param samples: Diagnosed samples carried by the bot.
+    :return: Best plan with a currently available next molecule, if one exists."""
+    best = None
+    for sample in samples:
+        plan = evaluate_order(projects, robot, (sample,), FULL_STOCK, True)
+        if plan is not None and enough_time(turn, robot.target, plan) and next_molecule(plan, available) is not None and better_plan(plan, best):
+            best = plan
+    return best
 
 
 def timely_single_sample_plan(turn: int, module: str, projects: Projects, robot: Robot, samples: list[Sample], available: Vector, \

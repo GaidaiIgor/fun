@@ -1,138 +1,290 @@
-import sys
+"""Plays a two-robot medicine production arena from standard input."""
+from __future__ import annotations
 
-def debug(*args):
-    print(*args, file=sys.stderr)
+from dataclasses import dataclass
+from itertools import permutations
+from sys import stderr
 
-project_count = int(input())
-for _ in range(project_count):
-    input()
 
-def total_needed(sample, expertise):
-    return [
-        max(0, sample["cost"][i] - expertise[i])
-        for i in range(5)
-    ]
+MOLECULES = ("A", "B", "C", "D", "E")
+MODULES = {"SAMPLES", "DIAGNOSIS", "MOLECULES", "LABORATORY"}
+MOLECULE_INDEX = {molecule: index for index, molecule in enumerate(MOLECULES)}
+FULL_STOCK = (5, 5, 5, 5, 5)
+MAX_SAMPLES = 3
+MAX_STORAGE = 10
+GAME_TURNS = 200
+Vector = tuple[int, ...]
+Projects = list[Vector]
 
-def can_complete(sample, storage, expertise):
-    need = total_needed(sample, expertise)
-    return all(storage[i] >= need[i] for i in range(5))
 
-def is_possible(sample, storage, expertise, available):
-    need = total_needed(sample, expertise)
-    return all(storage[i] + available[i] >= need[i] for i in range(5))
+@dataclass(slots=True)
+class Robot:
+    target: str
+    eta: int
+    score: int
+    storage: Vector
+    expertise: Vector
 
-def remaining_cost(sample, storage, expertise):
-    need = total_needed(sample, expertise)
-    return sum(max(0, need[i] - storage[i]) for i in range(5))
 
-def value(sample, storage, expertise):
-    return sample["health"] / (remaining_cost(sample, storage, expertise) + 1)
+@dataclass(slots=True)
+class Sample:
+    sample_id: int
+    carried_by: int
+    rank: int
+    gain: str
+    health: int
+    cost: Vector
 
-while True:
-    players = []
-    for _ in range(2):
-        inputs = input().split()
-        players.append({
-            "target": inputs[0],
-            "eta": int(inputs[1]),
-            "score": int(inputs[2]),
-            "storage": list(map(int, inputs[3:8])),
-            "expertise": list(map(int, inputs[8:13]))
-        })
+    @property
+    def diagnosed(self) -> bool:
+        return self.health > 0 and min(self.cost) >= 0
 
-    me = players[0]
-    total_exp = sum(me["expertise"])
 
-    available = list(map(int, input().split()))
-    sample_count = int(input())
+@dataclass(slots=True)
+class Plan:
+    samples: tuple[Sample, ...]
+    missing: Vector
+    value: float
 
-    samples = []
-    for _ in range(sample_count):
-        inputs = input().split()
-        samples.append({
-            "id": int(inputs[0]),
-            "carried_by": int(inputs[1]),
-            "rank": int(inputs[2]),
-            "gain": inputs[3],
-            "health": int(inputs[4]),
-            "cost": list(map(int, inputs[5:10]))
-        })
 
-    if me["eta"] > 0:
-        print("WAIT")
-        continue
+def main():
+    try:
+        project_count = int(input())
+    except EOFError:
+        return
+    projects = [tuple(map(int, input().split())) for _ in range(project_count)]
+    rejected_ids = set()
+    turn = 0
+    while True:
+        try:
+            robots = [read_robot(input()) for _ in range(2)]
+        except EOFError:
+            return
+        available = tuple(map(int, input().split()))
+        samples = [read_sample(input()) for _ in range(int(input()))]
+        action, reason = choose_action(turn, projects, rejected_ids, robots, available, samples)
+        log_turn(turn, robots[0], samples, action, reason)
+        print(action)
+        turn += 1
 
-    my_samples = [s for s in samples if s["carried_by"] == 0]
-    undiagnosed = [s for s in my_samples if s["cost"][0] == -1]
-    diagnosed = [s for s in my_samples if s["cost"][0] != -1]
 
-    # ---- Phase ----
-    if total_exp < 6:
-        target_rank = 1
-    elif total_exp < 12:
-        target_rank = 2
-    else:
-        target_rank = 3
+def choose_action(turn: int, projects: Projects, rejected_ids: set[int], robots: list[Robot], available: Vector, samples: list[Sample]) -> tuple[str, str]:
+    me = robots[0]
+    mine = [sample for sample in samples if sample.carried_by == 0]
+    diagnosed = [sample for sample in mine if sample.diagnosed]
+    undiagnosed = [sample for sample in mine if not sample.diagnosed]
+    if me.eta > 0:
+        return "WAIT", f"traveling eta={me.eta}"
+    if me.target not in MODULES:
+        return "GOTO SAMPLES", "leaving start"
+    if me.target == "SAMPLES":
+        return choose_samples_action(turn, me, mine)
+    if me.target == "DIAGNOSIS":
+        return choose_diagnosis_action(turn, projects, rejected_ids, me, samples, mine, diagnosed, undiagnosed)
+    if me.target == "MOLECULES":
+        return choose_molecules_action(projects, me, available, diagnosed)
+    return choose_laboratory_action(projects, me, diagnosed, undiagnosed)
 
-    # ---- Get samples ----
-    if len(my_samples) < 3:
-        if me["target"] != "SAMPLES":
-            print("GOTO SAMPLES")
-        else:
-            print(f"CONNECT {target_rank}")
-        continue
 
-    # ---- Diagnose ----
+def choose_samples_action(turn: int, robot: Robot, mine: list[Sample]) -> tuple[str, str]:
+    if turn > GAME_TURNS - 16 and not mine:
+        return "WAIT", "too late for a new sample cycle"
+    if len(mine) < desired_sample_count(turn):
+        rank = desired_rank(turn, robot)
+        return f"CONNECT {rank}", f"taking rank {rank}"
+    return "GOTO DIAGNOSIS", "sample rack full enough"
+
+
+def choose_diagnosis_action(turn: int, projects: Projects, rejected_ids: set[int], robot: Robot, samples: list[Sample], \
+        mine: list[Sample], diagnosed: list[Sample], undiagnosed: list[Sample]) -> tuple[str, str]:
     if undiagnosed:
-        if me["target"] != "DIAGNOSIS":
-            print("GOTO DIAGNOSIS")
-        else:
-            print(f"CONNECT {undiagnosed[0]['id']}")
-        continue
+        sample = max(undiagnosed, key=lambda item: (item.rank, -item.sample_id))
+        return f"CONNECT {sample.sample_id}", f"diagnosing {sample.sample_id}"
+    bad = worst_rejected_sample(projects, robot, diagnosed)
+    if bad is not None:
+        rejected_ids.add(bad.sample_id)
+        return f"CONNECT {bad.sample_id}", f"dropping weak sample {bad.sample_id}"
+    if len(mine) < MAX_SAMPLES:
+        cloud = choose_cloud_sample(projects, rejected_ids, robot, samples, diagnosed)
+        if cloud is not None:
+            return f"CONNECT {cloud.sample_id}", f"taking cloud sample {cloud.sample_id}"
+    if completion_plan(projects, robot, diagnosed, FULL_STOCK, True, False) is not None:
+        if any(sample_can_finish(sample, robot.storage, robot.expertise) for sample in diagnosed):
+            return "GOTO LABORATORY", "already have medicine ready"
+        return "GOTO MOLECULES", "diagnosed work is viable"
+    if diagnosed:
+        sample = worst_sample(projects, robot, diagnosed)
+        rejected_ids.add(sample.sample_id)
+        return f"CONNECT {sample.sample_id}", f"no viable plan, dropping {sample.sample_id}"
+    if turn > GAME_TURNS - 16:
+        return "WAIT", "no time to restart"
+    return "GOTO SAMPLES", "need samples"
 
-    # ---- Produce immediately ----
-    for s in diagnosed:
-        if can_complete(s, me["storage"], me["expertise"]):
-            if me["target"] != "LABORATORY":
-                print("GOTO LABORATORY")
-            else:
-                print(f"CONNECT {s['id']}")
-            break
-    else:
-        feasible = [
-            s for s in diagnosed
-            if is_possible(s, me["storage"], me["expertise"], available)
-        ]
 
-        if not feasible:
-            if me["target"] != "DIAGNOSIS":
-                print("GOTO DIAGNOSIS")
-            else:
-                worst = max(diagnosed, key=lambda s: sum(s["cost"]))
-                print(f"CONNECT {worst['id']}")
+def choose_molecules_action(projects: Projects, robot: Robot, available: Vector, diagnosed: list[Sample]) -> tuple[str, str]:
+    plan = completion_plan(projects, robot, diagnosed, available, True, False)
+    if plan is None:
+        if any(sample_can_finish(sample, robot.storage, robot.expertise) for sample in diagnosed):
+            return "GOTO LABORATORY", "finish reachable sample"
+        return "GOTO DIAGNOSIS", "molecule stock blocks current samples"
+    if sum(plan.missing) == 0:
+        return "GOTO LABORATORY", "all planned molecules ready"
+    molecule = next_molecule(plan, available)
+    return f"CONNECT {molecule}", f"collecting {molecule} for {[sample.sample_id for sample in plan.samples]}"
+
+
+def choose_laboratory_action(projects: Projects, robot: Robot, diagnosed: list[Sample], undiagnosed: list[Sample]) -> tuple[str, str]:
+    plan = completion_plan(projects, robot, diagnosed, (0, 0, 0, 0, 0), True, True)
+    if plan is not None:
+        return f"CONNECT {plan.samples[0].sample_id}", f"researching {plan.samples[0].sample_id}"
+    if diagnosed:
+        return "GOTO MOLECULES", "need more molecules"
+    if undiagnosed:
+        return "GOTO DIAGNOSIS", "carrying undiagnosed samples"
+    return "GOTO SAMPLES", "cycle complete"
+
+
+def completion_plan(projects: Projects, robot: Robot, samples: list[Sample], available: Vector, require_stock: bool, require_ready: bool) -> Plan | None:
+    best = None
+    for size in range(1, len(samples) + 1):
+        for order in permutations(samples, size):
+            plan = evaluate_order(projects, robot, order, available, require_stock)
+            if plan is not None and (not require_ready or sum(plan.missing) == 0) and better_plan(plan, best):
+                best = plan
+    return best
+
+
+def choose_cloud_sample(projects: Projects, rejected_ids: set[int], robot: Robot, samples: list[Sample], diagnosed: list[Sample]) -> Sample | None:
+    best = None
+    best_plan = completion_plan(projects, robot, diagnosed, FULL_STOCK, True, False)
+    for sample in samples:
+        if sample.carried_by == -1 and sample.diagnosed and sample.sample_id not in rejected_ids and not sample_is_bad(projects, robot, sample):
+            plan = completion_plan(projects, robot, diagnosed + [sample], FULL_STOCK, True, False)
+            if plan is not None and sample in plan.samples and better_plan(plan, best_plan):
+                best = sample
+                best_plan = plan
+    return best
+
+
+def worst_rejected_sample(projects: Projects, robot: Robot, samples: list[Sample]) -> Sample | None:
+    bad_samples = [sample for sample in samples if sample_is_bad(projects, robot, sample)]
+    if not bad_samples:
+        return None
+    return worst_sample(projects, robot, bad_samples)
+
+
+def sample_is_bad(projects: Projects, robot: Robot, sample: Sample) -> bool:
+    need = effective_need(sample, robot.expertise)
+    if sum(need) > MAX_STORAGE or any(need[index] > FULL_STOCK[index] + robot.storage[index] for index in range(len(MOLECULES))):
+        return True
+    return sample.health <= 1 and sum(robot.expertise) >= 3 and gain_bonus(projects, robot.expertise, sample.gain) < 10
+
+
+def worst_sample(projects: Projects, robot: Robot, samples: list[Sample]) -> Sample:
+    return min(samples, key=lambda sample: sample_value(projects, robot.expertise, sample) - sum(effective_need(sample, robot.expertise)))
+
+
+def evaluate_order(projects: Projects, robot: Robot, order: tuple[Sample, ...], available: Vector, require_stock: bool) -> Plan | None:
+    inventory = list(robot.storage)
+    expertise = list(robot.expertise)
+    missing = [0, 0, 0, 0, 0]
+    value = 0
+    for sample in order:
+        if not sample.diagnosed:
+            return None
+        need = effective_need(sample, tuple(expertise))
+        for index in range(len(MOLECULES)):
+            if inventory[index] < need[index]:
+                missing[index] += need[index] - inventory[index]
+                inventory[index] = need[index]
+            inventory[index] -= need[index]
+        value += sample_value(projects, tuple(expertise), sample)
+        expertise[MOLECULE_INDEX[sample.gain]] += 1
+    if sum(robot.storage) + sum(missing) > MAX_STORAGE:
+        return None
+    if require_stock and any(missing[index] > available[index] for index in range(len(MOLECULES))):
+        return None
+    return Plan(order, tuple(missing), value)
+
+
+def better_plan(plan: Plan, best: Plan | None) -> bool:
+    if best is None:
+        return True
+    plan_missing = sum(plan.missing)
+    best_missing = sum(best.missing)
+    return (plan.value - plan_missing, plan.value, len(plan.samples), -plan_missing) > (best.value - best_missing, best.value, len(best.samples), -best_missing)
+
+
+def next_molecule(plan: Plan, available: tuple[int, ...]) -> str:
+    index = min((index for index in range(len(MOLECULES)) if plan.missing[index] > 0), key=lambda item: (available[item], -plan.missing[item]))
+    return MOLECULES[index]
+
+
+def sample_can_finish(sample: Sample, storage: Vector, expertise: Vector) -> bool:
+    need = effective_need(sample, expertise)
+    return all(storage[index] >= need[index] for index in range(len(MOLECULES)))
+
+
+def effective_need(sample: Sample, expertise: Vector) -> Vector:
+    return tuple(max(0, sample.cost[index] - expertise[index]) for index in range(len(MOLECULES)))
+
+
+def sample_value(projects: Projects, expertise: Vector, sample: Sample) -> float:
+    return sample.health + gain_bonus(projects, expertise, sample.gain)
+
+
+def gain_bonus(projects: Projects, expertise: Vector, gain: str) -> float:
+    index = MOLECULE_INDEX[gain]
+    bonus = 3 if expertise[index] < 3 else 0
+    for project in projects:
+        missing = [max(0, project[item] - expertise[item]) for item in range(len(MOLECULES))]
+        total_missing = sum(missing)
+        if total_missing == 0 or missing[index] == 0:
             continue
+        bonus = max(bonus, 50 if total_missing == 1 else 8 + 32 / total_missing)
+    return bonus
 
-        # VALUE-based target
-        target = max(feasible, key=lambda s: value(s, me["storage"], me["expertise"]))
 
-        # ---- Molecules ----
-        if me["target"] != "MOLECULES":
-            print("GOTO MOLECULES")
-            continue
+def desired_sample_count(turn: int) -> int:
+    return 1 if turn > GAME_TURNS - 30 else MAX_SAMPLES
 
-        need = total_needed(target, me["expertise"])
 
-        best_type = None
-        best_missing = -1
+def desired_rank(turn: int, robot: Robot) -> int:
+    expertise = sum(robot.expertise)
+    if turn > GAME_TURNS - 45:
+        return 1 if expertise < 8 else 2
+    if expertise < 4:
+        return 1
+    if expertise < 10:
+        return 2
+    return 3
 
-        for i in range(5):
-            missing = max(0, need[i] - me["storage"][i])
-            if missing > 0 and available[i] > 0:
-                if missing > best_missing:
-                    best_missing = missing
-                    best_type = i
 
-        if best_type is not None and sum(me["storage"]) < 10:
-            print("CONNECT " + "ABCDE"[best_type])
-        else:
-            print("WAIT")
+def read_robot(line: str) -> Robot:
+    parts = line.split()
+    return Robot(parts[0], int(parts[1]), int(parts[2]), tuple(map(int, parts[3:8])), tuple(map(int, parts[8:13])))
+
+
+def read_sample(line: str) -> Sample:
+    parts = line.split()
+    return Sample(int(parts[0]), int(parts[1]), int(parts[2]), parts[3], int(parts[4]), tuple(map(int, parts[5:10])))
+
+
+def log_turn(turn: int, robot: Robot, samples: list[Sample], action: str, reason: str):
+    mine = [sample for sample in samples if sample.carried_by == 0]
+    sample_text = ";".join(sample_log(sample) for sample in mine) or "none"
+    print(f"T{turn} {robot.target}/{robot.eta} score={robot.score} storage={vector_text(robot.storage)} " \
+          f"exp={vector_text(robot.expertise)} samples={sample_text} action={action} reason={reason}", file=stderr)
+
+
+def sample_log(sample: Sample) -> str:
+    status = "diag" if sample.diagnosed else "raw"
+    return f"{sample.sample_id}:r{sample.rank}:{status}:h{sample.health}:g{sample.gain}:c{vector_text(sample.cost)}"
+
+
+def vector_text(values: Vector) -> str:
+    return ",".join(str(value) for value in values)
+
+
+if __name__ == "__main__":
+    main()

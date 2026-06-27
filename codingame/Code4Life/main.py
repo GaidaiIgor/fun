@@ -3,7 +3,6 @@ import sys
 def debug(*args):
     print(*args, file=sys.stderr)
 
-# Read projects (ignored for now, because optimization later)
 project_count = int(input())
 for _ in range(project_count):
     input()
@@ -21,6 +20,19 @@ def can_complete(sample, storage, expertise):
 def is_possible(sample, storage, expertise, available):
     need = total_needed(sample, expertise)
     return all(storage[i] + available[i] >= need[i] for i in range(5))
+
+def remaining_cost(sample, storage, expertise):
+    need = total_needed(sample, expertise)
+    return sum(max(0, need[i] - storage[i]) for i in range(5))
+
+def pick_target(diagnosed, storage, expertise, available):
+    feasible = [
+        s for s in diagnosed
+        if is_possible(s, storage, expertise, available)
+    ]
+    if not feasible:
+        return None
+    return min(feasible, key=lambda s: remaining_cost(s, storage, expertise))
 
 while True:
     players = []
@@ -64,7 +76,7 @@ while True:
     undiagnosed = [s for s in my_samples if s["cost"][0] == -1]
     diagnosed = [s for s in my_samples if s["cost"][0] != -1]
 
-    # Step 1: Need samples
+    # 1. Get samples
     if len(my_samples) < 3:
         if me["target"] != "SAMPLES":
             print("GOTO SAMPLES")
@@ -72,7 +84,7 @@ while True:
             print("CONNECT 2")
         continue
 
-    # Step 2: Diagnose
+    # 2. Diagnose
     if undiagnosed:
         if me["target"] != "DIAGNOSIS":
             print("GOTO DIAGNOSIS")
@@ -80,23 +92,12 @@ while True:
             print(f"CONNECT {undiagnosed[0]['id']}")
         continue
 
-    # Step 3: Drop impossible samples
-    impossible = [
-        s for s in diagnosed
-        if not is_possible(s, me["storage"], me["expertise"], available)
-    ]
-    if impossible:
-        if me["target"] != "DIAGNOSIS":
-            print("GOTO DIAGNOSIS")
-        else:
-            print(f"CONNECT {impossible[0]['id']}")
-        continue
-
-    # Step 4: Produce if possible
+    # 3. Produce if possible
     doable = [
         s for s in diagnosed
         if can_complete(s, me["storage"], me["expertise"])
     ]
+
     if doable:
         if me["target"] != "LABORATORY":
             print("GOTO LABORATORY")
@@ -104,24 +105,35 @@ while True:
             print(f"CONNECT {doable[0]['id']}")
         continue
 
-    # Step 5: Gather molecules
+    # 4. Pick target sample
+    target_sample = pick_target(diagnosed, me["storage"], me["expertise"], available)
+
+    # 5. Drop only if NOTHING is possible
+    if target_sample is None:
+        if me["target"] != "DIAGNOSIS":
+            print("GOTO DIAGNOSIS")
+        else:
+            worst = max(diagnosed, key=lambda s: sum(s["cost"]))
+            print(f"CONNECT {worst['id']}")
+        continue
+
+    # 6. Go to molecules
     if me["target"] != "MOLECULES":
         print("GOTO MOLECULES")
         continue
 
-    # Choose molecule to pick
-    best_type = None
-    best_score = -1
+    # 7. Collect only what target needs
+    need = total_needed(target_sample, me["expertise"])
 
-    for s in diagnosed:
-        need = total_needed(s, me["expertise"])
-        for i in range(5):
-            if need[i] > me["storage"][i] and available[i] > 0:
-                # prioritize high deficit and scarcity
-                score = need[i] * 10 + (5 - available[i])
-                if score > best_score:
-                    best_score = score
-                    best_type = i
+    best_type = None
+    best_need = -1
+
+    for i in range(5):
+        missing = max(0, need[i] - me["storage"][i])
+        if missing > 0 and available[i] > 0:
+            if missing > best_need:
+                best_need = missing
+                best_type = i
 
     if best_type is not None and sum(me["storage"]) < 10:
         print("CONNECT " + "ABCDE"[best_type])

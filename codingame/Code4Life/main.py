@@ -14,7 +14,8 @@ NO_STOCK = (0, 0, 0, 0, 0)
 MAX_SAMPLES = 3
 MAX_STORAGE = 10
 GAME_TURNS = 200
-STOCK_WAIT_LIMIT = 2
+STOCK_WAIT_LIMIT = 3
+SAMPLE_TOP_UP_LIMIT = GAME_TURNS - 45
 Vector = tuple[int, ...]
 Projects = list[Vector]
 
@@ -55,6 +56,7 @@ def main():
     except EOFError:
         return
     projects = [tuple(map(int, input().split())) for _ in range(project_count)]
+    print(f"projects={";".join(vector_text(project) for project in projects)}", file=stderr)
     rejected_ids = set()
     stalled_ids = set()
     stock_waits = {}
@@ -85,10 +87,10 @@ def choose_action(turn: int, projects: Projects, rejected_ids: set[int], stalled
     if me.target == "SAMPLES":
         return choose_samples_action(turn, me, mine)
     if me.target == "DIAGNOSIS":
-        return choose_diagnosis_action(turn, projects, rejected_ids, stalled_ids, me, samples, mine, diagnosed, undiagnosed)
+        return choose_diagnosis_action(turn, projects, rejected_ids, stalled_ids, me, available, samples, mine, diagnosed, undiagnosed)
     if me.target == "MOLECULES":
-        return choose_molecules_action(turn, projects, stalled_ids, stock_waits, me, available, diagnosed)
-    return choose_laboratory_action(turn, projects, rejected_ids, stalled_ids, me, diagnosed, undiagnosed)
+        return choose_molecules_action(turn, projects, stalled_ids, stock_waits, me, robots[1], available, diagnosed)
+    return choose_laboratory_action(turn, projects, rejected_ids, stalled_ids, me, available, diagnosed, undiagnosed)
 
 
 def choose_samples_action(turn: int, robot: Robot, mine: list[Sample]) -> tuple[str, str]:
@@ -100,8 +102,8 @@ def choose_samples_action(turn: int, robot: Robot, mine: list[Sample]) -> tuple[
     return "GOTO DIAGNOSIS", "sample rack full enough"
 
 
-def choose_diagnosis_action(turn: int, projects: Projects, rejected_ids: set[int], stalled_ids: set[int], robot: Robot, samples: list[Sample], \
-        mine: list[Sample], diagnosed: list[Sample], undiagnosed: list[Sample]) -> tuple[str, str]:
+def choose_diagnosis_action(turn: int, projects: Projects, rejected_ids: set[int], stalled_ids: set[int], robot: Robot, available: Vector, \
+        samples: list[Sample], mine: list[Sample], diagnosed: list[Sample], undiagnosed: list[Sample]) -> tuple[str, str]:
     if undiagnosed:
         sample = max(undiagnosed, key=lambda item: (item.rank, -item.sample_id))
         return f"CONNECT {sample.sample_id}", f"diagnosing {sample.sample_id}"
@@ -119,11 +121,17 @@ def choose_diagnosis_action(turn: int, projects: Projects, rejected_ids: set[int
         cloud = choose_cloud_sample(turn, projects, rejected_ids, robot, samples, diagnosed)
         if cloud is not None:
             return f"CONNECT {cloud.sample_id}", f"taking cloud sample {cloud.sample_id}"
-    plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, FULL_STOCK, True, False)
+    plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, available, True, False)
     if plan is not None:
         if any(sample_can_finish(sample, robot.storage, robot.expertise) for sample in diagnosed):
             return "GOTO LABORATORY", "already have medicine ready"
         return "GOTO MOLECULES", "diagnosed work is viable"
+    plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, FULL_STOCK, True, False)
+    if plan is not None:
+        if next_molecule(plan, available) is not None:
+            return "GOTO MOLECULES", "collecting partial blocked plan"
+        if len(mine) < MAX_SAMPLES and turn <= SAMPLE_TOP_UP_LIMIT:
+            return "GOTO SAMPLES", "stock blocked, filling open sample slot"
     if diagnosed:
         sample = worst_sample(projects, robot, diagnosed)
         rejected_ids.add(sample.sample_id)
@@ -133,8 +141,8 @@ def choose_diagnosis_action(turn: int, projects: Projects, rejected_ids: set[int
     return "GOTO SAMPLES", "need samples"
 
 
-def choose_molecules_action(turn: int, projects: Projects, stalled_ids: set[int], stock_waits: dict[tuple[int, ...], int], \
-        robot: Robot, available: Vector, diagnosed: list[Sample]) -> tuple[str, str]:
+def choose_molecules_action(turn: int, projects: Projects, stalled_ids: set[int], stock_waits: dict[tuple[int, ...], int], robot: Robot, \
+        opponent: Robot, available: Vector, diagnosed: list[Sample]) -> tuple[str, str]:
     ready_plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, NO_STOCK, True, True)
     plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, FULL_STOCK, True, False)
     if plan is None:
@@ -152,25 +160,34 @@ def choose_molecules_action(turn: int, projects: Projects, stalled_ids: set[int]
     key = tuple(sample.sample_id for sample in plan.samples) + (-1,) + \
         tuple(index for index in range(len(MOLECULES)) if plan.missing[index] > 0 and available[index] == 0)
     stock_waits[key] = stock_waits.get(key, 0) + 1
-    if stock_waits[key] <= STOCK_WAIT_LIMIT and turn <= GAME_TURNS - 28:
+    wait_limit = STOCK_WAIT_LIMIT + (3 if opponent.target == "LABORATORY" and opponent.eta <= 2 else 0)
+    if stock_waits[key] <= wait_limit and turn <= GAME_TURNS - 28:
         return "WAIT", f"waiting for stock {stock_waits[key]}"
+    if len(diagnosed) < MAX_SAMPLES and turn <= SAMPLE_TOP_UP_LIMIT:
+        stock_waits.clear()
+        return "GOTO SAMPLES", "stock blocked, filling open sample slot"
     sample = worst_sample(projects, robot, list(plan.samples))
     stalled_ids.add(sample.sample_id)
     return "GOTO DIAGNOSIS", f"stock stalled sample {sample.sample_id}"
 
 
-def choose_laboratory_action(turn: int, projects: Projects, rejected_ids: set[int], stalled_ids: set[int], robot: Robot, \
+def choose_laboratory_action(turn: int, projects: Projects, rejected_ids: set[int], stalled_ids: set[int], robot: Robot, available: Vector, \
         diagnosed: list[Sample], undiagnosed: list[Sample]) -> tuple[str, str]:
     plan = completion_plan(projects, robot, diagnosed, NO_STOCK, True, True)
     if plan is not None:
         return f"CONNECT {plan.samples[0].sample_id}", f"researching {plan.samples[0].sample_id}"
     if diagnosed:
+        current_plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, available, True, False)
+        if current_plan is not None:
+            return "GOTO MOLECULES", "need more molecules"
         future_plan = timely_completion_plan(turn, robot.target, projects, robot, diagnosed, FULL_STOCK, True, False)
         if future_plan is None:
             sample = worst_sample(projects, robot, diagnosed)
             rejected_ids.add(sample.sample_id)
             stalled_ids.add(sample.sample_id)
             return "GOTO DIAGNOSIS", f"dropping lab leftover {sample.sample_id}"
+        if next_molecule(future_plan, available) is None and len(diagnosed) + len(undiagnosed) < MAX_SAMPLES and turn <= SAMPLE_TOP_UP_LIMIT:
+            return "GOTO SAMPLES", "leftover stock blocked, filling sample slot"
         return "GOTO MOLECULES", "need more molecules"
     if undiagnosed:
         return "GOTO DIAGNOSIS", "carrying undiagnosed samples"
@@ -308,16 +325,18 @@ def gain_bonus(projects: Projects, expertise: Vector, gain: str) -> float:
 
 
 def desired_sample_count(turn: int) -> int:
-    return 1 if turn > GAME_TURNS - 30 else MAX_SAMPLES
+    if turn > GAME_TURNS - 30:
+        return 1
+    return 2 if turn > GAME_TURNS - 50 else MAX_SAMPLES
 
 
 def desired_rank(turn: int, robot: Robot) -> int:
     expertise = sum(robot.expertise)
-    if turn > GAME_TURNS - 45:
+    if turn > GAME_TURNS - 28:
         return 1 if expertise < 8 else 2
     if expertise < 3:
         return 1
-    if expertise < 10:
+    if expertise < 8:
         return 2
     return 3
 

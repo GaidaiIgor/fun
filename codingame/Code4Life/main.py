@@ -25,10 +25,6 @@ def remaining_cost(sample, storage, expertise):
     need = total_needed(sample, expertise)
     return sum(max(0, need[i] - storage[i]) for i in range(5))
 
-def sample_value(sample, storage, expertise):
-    # lower is better
-    return remaining_cost(sample, storage, expertise) - sample["health"] * 0.1
-
 while True:
     players = []
     for _ in range(2):
@@ -42,6 +38,7 @@ while True:
         })
 
     me = players[0]
+    total_expertise = sum(me["expertise"])
 
     available = list(map(int, input().split()))
     sample_count = int(input())
@@ -66,12 +63,20 @@ while True:
     undiagnosed = [s for s in my_samples if s["cost"][0] == -1]
     diagnosed = [s for s in my_samples if s["cost"][0] != -1]
 
+    # ---- PHASE SELECTION ----
+    if total_expertise < 6:
+        target_rank = 1
+    elif total_expertise < 12:
+        target_rank = 2
+    else:
+        target_rank = 2  # keep stable for now
+
     # 1. Get samples
     if len(my_samples) < 3:
         if me["target"] != "SAMPLES":
             print("GOTO SAMPLES")
         else:
-            print("CONNECT 2")
+            print(f"CONNECT {target_rank}")
         continue
 
     # 2. Diagnose
@@ -82,7 +87,7 @@ while True:
             print(f"CONNECT {undiagnosed[0]['id']}")
         continue
 
-    # 3. Produce immediately if possible
+    # 3. Produce ASAP
     for s in diagnosed:
         if can_complete(s, me["storage"], me["expertise"]):
             if me["target"] != "LABORATORY":
@@ -91,14 +96,13 @@ while True:
                 print(f"CONNECT {s['id']}")
             break
     else:
-        # 4. Pick best target
+        # 4. Filter feasible
         feasible = [
             s for s in diagnosed
             if is_possible(s, me["storage"], me["expertise"], available)
         ]
 
         if not feasible:
-            # Drop worst
             if me["target"] != "DIAGNOSIS":
                 print("GOTO DIAGNOSIS")
             else:
@@ -106,7 +110,8 @@ while True:
                 print(f"CONNECT {worst['id']}")
             continue
 
-        target = min(feasible, key=lambda s: sample_value(s, me["storage"], me["expertise"]))
+        # prioritize lowest remaining cost
+        target = min(feasible, key=lambda s: remaining_cost(s, me["storage"], me["expertise"]))
 
         # 5. Go to molecules
         if me["target"] != "MOLECULES":
@@ -120,18 +125,12 @@ while True:
 
         for i in range(5):
             missing = max(0, need[i] - me["storage"][i])
-
-            # only take what we actually need
             if missing > 0 and available[i] > 0:
-                # avoid filling storage with junk
-                if sum(me["storage"]) >= 10:
-                    continue
-
                 if missing > best_missing:
                     best_missing = missing
                     best_type = i
 
-        if best_type is not None:
+        if best_type is not None and sum(me["storage"]) < 10:
             print("CONNECT " + "ABCDE"[best_type])
         else:
             print("WAIT")

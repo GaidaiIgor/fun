@@ -62,9 +62,9 @@ def collection_ranks(expertise):
     workhorse for most of the game, and only commit to expensive rank-3 once
     expertise has made them cheap enough not to crater throughput."""
     et = sum(expertise)
-    if et >= 16:
+    if et >= 14:
         return [3, 3, 3]
-    if et >= 11:
+    if et >= 9:
         return [3, 3, 2]
     if et >= 4:
         return [2, 2, 2]

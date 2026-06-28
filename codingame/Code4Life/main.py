@@ -205,14 +205,15 @@ def decide(loc, eta, storage, expertise, available, samples, stuck, projects=Non
             return "CONNECT %d" % infeasible[0].id, 0
         return "GOTO DIAGNOSIS", 0
 
-    # ---- 2. COLLECT: when no diagnosed sample is completable right now, fill the
-    #         sample buffer to 3 (a fresh batch, or refilling around a blocked
-    #         leftover). Collecting the whole batch BEFORE diagnosing amortises
-    #         travel; refilling instead of idling keeps tempo high; and because we
-    #         never store a valuable diagnosed sample to the cloud, the opponent
-    #         can't harvest our leftovers.
-    if len(carried) < MAX_SAMPLES and not choose_targets(
-            diag, storage, expertise, available, projects):
+    # ---- 2. COLLECT: keep the sample buffer FULL (3). Whenever we are between
+    #         gather cycles (no molecules in hand) and short of 3 samples, top up
+    #         before diagnosing -- a fuller pipeline means more options for the
+    #         lab batch and higher throughput. Collecting the whole batch before
+    #         diagnosing amortises travel; because we never store a valuable
+    #         diagnosed sample to the cloud, the opponent can't harvest leftovers.
+    if len(carried) < MAX_SAMPLES and (
+            sum(storage) == 0
+            or not choose_targets(diag, storage, expertise, available, projects)):
         if loc == "SAMPLES":
             ranks = collection_ranks(expertise)
             return "CONNECT %d" % ranks[len(carried)], 0

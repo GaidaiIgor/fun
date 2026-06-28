@@ -55,14 +55,16 @@ class Sample:
 def collection_ranks(expertise):
     """Which sample ranks to grab this collection trip (3 of them).
 
-    Be patient with rank 3: early rank-3 samples often need > 10 molecules
-    (infeasible without expertise) and get wasted.  Instead, farm cheap rank-1
-    first to build balanced expertise fast (also helps science projects), then
-    rank 2, and only commit to rank 3 once expertise makes them cheap."""
+    Throughput-first: more (cheaper) medicines -> more expertise -> more gain
+    variety -> we win the science-project races (the real games are decided by
+    projects, and they are won by accumulating expertise fastest, not by a few
+    high-health medicines).  So farm cheap rank-1 to start, make rank-2 the
+    workhorse for most of the game, and only commit to expensive rank-3 once
+    expertise has made them cheap enough not to crater throughput."""
     et = sum(expertise)
-    if et >= 12:
+    if et >= 16:
         return [3, 3, 3]
-    if et >= 8:
+    if et >= 11:
         return [3, 3, 2]
     if et >= 4:
         return [2, 2, 2]

@@ -24,6 +24,8 @@ TYPES = "ABCDE"
 N = 5
 CAP_MOL = 10
 MAX_SAMPLES = 3
+STALL_ESCAPE = 6     # turns blocked (no molecules, nothing buyable) before we
+                     # shed the least valuable sample to fetch fresh options
 
 
 def log(*a):
@@ -166,7 +168,18 @@ def choose_targets(diag, storage, expertise, available, projects=None):
 # ---------------------------------------------------------------------------
 
 def decide(loc, eta, storage, expertise, available, samples, stuck, projects=None):
-    """Return (command_string, new_stuck)."""
+    """Return (command_string, new_stuck).
+
+    Policy (in priority order):
+      0. research any affordable sample at the lab,
+      1. dump samples that can never be carried (cost > 10 even w/ expertise),
+      2. if a completable plan exists, batch-gather its molecules and research it,
+      3. otherwise keep the pipeline FULL: collect up to 3 samples and diagnose
+         them (high tempo, like a fresh cycle) -- we never dump a *valuable*
+         diagnosed sample (that only feeds the opponent's cloud),
+      4. only when carrying 3 diagnosed-but-blocked samples do we sit at the
+         molecules module and accumulate the scarce type as it refills.
+    """
     if eta > 0:
         return "WAIT", stuck
 
@@ -174,66 +187,105 @@ def decide(loc, eta, storage, expertise, available, samples, stuck, projects=Non
     undiag = [s for s in carried if not s.diagnosed]
     diag = [s for s in carried if s.diagnosed]
 
-    # ---- COLLECT: still building the batch (no diagnosed yet, room for more)
-    if not diag and len(carried) < MAX_SAMPLES:
-        if loc == "SAMPLES":
-            ranks = collection_ranks(expertise)
-            r = ranks[len(carried)]
-            return "CONNECT %d" % r, 0
-        return "GOTO SAMPLES", 0
+    bonus = {s.id: project_bonus(s.gain, expertise, projects) for s in diag}
 
-    # ---- DIAGNOSE undiagnosed samples
-    if undiag:
-        if loc == "DIAGNOSIS":
-            return "CONNECT %d" % undiag[0].id, 0
-        return "GOTO DIAGNOSIS", 0
+    def val(s):
+        return s.health + bonus.get(s.id, 0)
 
-    # ---- everything carried is diagnosed now ----
+    # ---- 0. PRODUCE: research every affordable sample (highest value first).
+    if loc == "LABORATORY":
+        aff = [s for s in diag if affordable(s, storage, expertise)]
+        if aff:
+            return "CONNECT %d" % max(aff, key=val).id, 0
 
-    # Dump samples that can never be carried (need > capacity even w/ expertise)
+    # ---- 1. DUMP unobtainable samples (need > capacity even with expertise).
     infeasible = [s for s in diag if total_need(s, expertise) > CAP_MOL]
     if infeasible:
         if loc == "DIAGNOSIS":
             return "CONNECT %d" % infeasible[0].id, 0
         return "GOTO DIAGNOSIS", 0
 
+    # ---- 2. COLLECT: when no diagnosed sample is completable right now, fill the
+    #         sample buffer to 3 (a fresh batch, or refilling around a blocked
+    #         leftover). Collecting the whole batch BEFORE diagnosing amortises
+    #         travel; refilling instead of idling keeps tempo high; and because we
+    #         never store a valuable diagnosed sample to the cloud, the opponent
+    #         can't harvest our leftovers.
+    if len(carried) < MAX_SAMPLES and not choose_targets(
+            diag, storage, expertise, available, projects):
+        if loc == "SAMPLES":
+            ranks = collection_ranks(expertise)
+            return "CONNECT %d" % ranks[len(carried)], 0
+        return "GOTO SAMPLES", 0
+
+    # ---- 3. DIAGNOSE every undiagnosed sample (whole batch) before gathering.
+    if undiag:
+        if loc == "DIAGNOSIS":
+            return "CONNECT %d" % undiag[0].id, 0
+        return "GOTO DIAGNOSIS", 0
+
+    # ---- 4. COMPLETABLE PLAN: gather its molecules, then research it.
     subset = choose_targets(diag, storage, expertise, available, projects)
-
-    if not subset:
-        # Can't complete anything right now (availability). Wait for refills;
-        # if blocked too long, dump the most expensive sample to change plans.
-        stuck += 1
-        if stuck >= 8 and diag:
-            worst = max(diag, key=lambda s: total_need(s, expertise))
-            if loc == "DIAGNOSIS":
-                return "CONNECT %d" % worst.id, 0
-            return "GOTO DIAGNOSIS", stuck
-        return "WAIT", stuck
-
-    req = required_for_subset(subset, expertise)
-    need_more = any(storage[t] < req[t] for t in range(N))
-
-    if need_more:
+    if subset:
+        req = required_for_subset(subset, expertise)
+        if all(storage[t] >= req[t] for t in range(N)):
+            return "GOTO LABORATORY", 0
         if loc == "MOLECULES":
-            cands = [t for t in range(N) if storage[t] < req[t] and available[t] > 0]
+            held = sum(storage)
+            cands = [t for t in range(N)
+                     if storage[t] < req[t] and available[t] > 0 and held < CAP_MOL]
             if cands:
                 # grab the scarcest needed molecule first (beat the opponent to it)
-                t = min(cands, key=lambda t: available[t])
-                return "CONNECT %s" % TYPES[t], 0
-            # nothing buyable right now: produce what we can, else wait
+                return "CONNECT %s" % TYPES[min(cands, key=lambda t: available[t])], 0
             if any(affordable(s, storage, expertise) for s in subset):
                 return "GOTO LABORATORY", 0
             return "WAIT", stuck + 1
         return "GOTO MOLECULES", 0
 
-    # ---- have all molecules: PRODUCE
-    if loc == "LABORATORY":
-        aff = [s for s in subset if affordable(s, storage, expertise)]
-        if aff:
-            target = max(aff, key=lambda s: s.health)
-            return "CONNECT %d" % target.id, 0
+    # ---- 5. ACCUMULATE: 3 diagnosed samples, none completable (a type is scarce).
+    #         Sit at molecules and grab the scarce type as it refills; single
+    #         focus keeps held <= the sample's need <= 10 so capacity never clogs.
+    if not diag:
         return "WAIT", stuck
-    return "GOTO LABORATORY", 0
+
+    def invested(s):
+        tot = 0
+        c = s.cost
+        for t in range(N):
+            d = c[t] - expertise[t]
+            if d > 0:
+                tot += min(storage[t], d)
+        return tot
+
+    def can_progress(s):
+        held = sum(storage)
+        c = s.cost
+        for t in range(N):
+            if c[t] - expertise[t] > storage[t] and available[t] > 0 and held < CAP_MOL:
+                return True
+        return False
+
+    # Escape a prolonged stall (a needed type stays drained by the opponent):
+    # shed the least-invested / least valuable blocked sample so we can fetch
+    # fresh options that may need types that ARE available. Bounded so we never
+    # idle a whole game; rarely fires against opponents that spend molecules.
+    if stuck >= STALL_ESCAPE:
+        worst = min(diag, key=lambda s: (invested(s), val(s)))
+        if loc == "DIAGNOSIS":
+            return "CONNECT %d" % worst.id, 0      # store to cloud, free a slot
+        return "GOTO DIAGNOSIS", stuck
+
+    prog = [s for s in diag if can_progress(s)]
+    focus = max(prog, key=lambda s: (invested(s), val(s))) if prog else max(diag, key=val)
+    need_f = [max(0, focus.cost[t] - expertise[t]) for t in range(N)]
+    if loc == "MOLECULES":
+        held = sum(storage)
+        cands = [t for t in range(N)
+                 if storage[t] < need_f[t] and available[t] > 0 and held < CAP_MOL]
+        if cands:
+            return "CONNECT %s" % TYPES[min(cands, key=lambda t: available[t])], 0
+        return "WAIT", stuck + 1
+    return "GOTO MOLECULES", stuck + 1
 
 
 # ---------------------------------------------------------------------------
@@ -282,9 +334,9 @@ def main():
             log("ERR", repr(e))
             cmd = "WAIT"
 
-        log("T%d me=%d opp=%d loc=%s eta=%d exp=%s avail=%s -> %s" % (
+        log("T%d me=%d opp=%d loc=%s eta=%d sto=%s exp=%s avail=%s -> %s" % (
             turn, my_score, opp_score, my_target, my_eta,
-            expertise, available, cmd))
+            storage, expertise, available, cmd))
         print(cmd, flush=True)
 
 

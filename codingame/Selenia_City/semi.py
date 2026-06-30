@@ -85,7 +85,7 @@ class Bundle:
     @property
     def fingerprint(self) -> tuple:
         """Returns a stable identity for bundle comparison."""
-        return self.label, self.tubes, self.teleport, tuple((spec.pod_id, tuple(sorted(spec.service_area))) for spec in self.pod_specs), self.upgrades
+        return self.tubes, self.teleport, tuple((spec.pod_id, tuple(sorted(spec.service_area))) for spec in self.pod_specs), self.upgrades
 
 
 @dataclass(slots=True)
@@ -288,7 +288,14 @@ class Planner:
                 continue
             base_bundle = Bundle(pool, self.nominal_cost(tubes, base_specs, (), state), tuple(tubes), pod_specs=tuple(base_specs), label=label)
             bundles.extend(self.expand_pod_upgrade_bundles(base_bundle, state))
-        return bundles
+        unique = []
+        seen = set()
+        for bundle in bundles:
+            if bundle.fingerprint in seen:
+                continue
+            unique.append(bundle)
+            seen.add(bundle.fingerprint)
+        return unique
 
     def bundle_action_text(self, bundle: Bundle) -> str:
         """Formats bundle actions for debug output."""

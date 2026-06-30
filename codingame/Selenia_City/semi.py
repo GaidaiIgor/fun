@@ -270,8 +270,6 @@ class Planner:
             efficiency = float("inf") if cost_gain <= 0 and score_gain > 0 else score_gain / max(1, cost_gain)
             action_text = self.bundle_action_text(candidate_selected, pool, bundle)
             print(f"bundle: {pool}, {action_text}, {score_gain}, {cost_gain}, {efficiency:.3f}", file=stderr)
-            if state.cost > self.resources:
-                continue
             if score_gain > 0:
                 return bundle
         return None

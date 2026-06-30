@@ -268,7 +268,8 @@ class Planner:
             score_gain = self.simulate(state).score - baseline_score
             cost_gain = state.cost - baseline_cost
             efficiency = float("inf") if cost_gain <= 0 and score_gain > 0 else score_gain / max(1, cost_gain)
-            print(f"bundle: {pool}, {self.bundle_action_text(bundle)}, {score_gain}, {cost_gain}, {efficiency:.3f}", file=stderr)
+            action_text = self.bundle_action_text(candidate_selected, pool, bundle)
+            print(f"bundle: {pool}, {action_text}, {score_gain}, {cost_gain}, {efficiency:.3f}", file=stderr)
             if state.cost > self.resources:
                 continue
             if score_gain > 0:
@@ -299,17 +300,28 @@ class Planner:
             seen.add(bundle.fingerprint)
         return unique
 
-    def bundle_action_text(self, bundle: Bundle) -> str:
-        """Formats bundle actions for debug output."""
+    def bundle_action_text(self, selected: dict[Pool, Bundle], pool: Pool, bundle: Bundle) -> str:
+        """Formats bundle actions for debug output with concrete pod ids."""
+        prefix = {other_pool: other_bundle for other_pool, other_bundle in selected.items() if other_pool < pool}
+        return self.bundle_action_text_for_state(bundle, self.replay_bundles(prefix))
+
+    def bundle_action_text_for_state(self, bundle: Bundle, state: PlanState) -> str:
+        """Formats bundle actions as they would resolve when applied to state."""
         actions = []
         actions.extend(f"TUBE {a} {b}" for a, b in bundle.tubes)
         if bundle.teleport != (-1, -1):
             actions.append(f"TELEPORT {bundle.teleport[0]} {bundle.teleport[1]}")
         actions.extend(f"UPGRADE {a} {b}" for a, b in bundle.upgrades)
+        pods = dict(state.pods)
         for spec in bundle.pod_specs:
-            pod_label = str(spec.pod_id) if spec.pod_id else "NEW"
+            if spec.pod_id:
+                pod_id = spec.pod_id
+                del pods[pod_id]
+            else:
+                pod_id = self.next_pod_id(pods)
+            pods[pod_id] = PodPlan(pod_id, [], set(spec.service_area), True)
             area_text = " ".join(f"{a}-{b}" for a, b in sorted(spec.service_area))
-            actions.append(f"POD {pod_label} AUTO({area_text})")
+            actions.append(f"POD {pod_id} AUTO({area_text})")
         return ";".join(actions) if actions else "WAIT"
 
     def path_options(self, pad_id: int, astronaut_type: int, state: PlanState) -> list[tuple[str, list[int], list[Pair], Pair]]:

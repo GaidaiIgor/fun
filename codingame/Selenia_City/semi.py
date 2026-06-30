@@ -365,14 +365,14 @@ class Planner:
         return specs
 
     def best_adjacent_pod(self, edge: Pair, state: PlanState, used_pods: set[int]) -> int:
-        """Finds the largest adjacent persisted service pod for edge."""
+        """Finds the best adjacent service pod for edge."""
         candidates = []
         for pod_id, area in state.service_areas.items():
             if pod_id in used_pods:
                 continue
             nodes = {node for area_edge in area for node in area_edge}
             if edge[0] in nodes or edge[1] in nodes:
-                candidates.append((-len(area), pod_id))
+                candidates.append((pod_id not in state.planned_pods, len(area), pod_id))
         return min(candidates)[1] if candidates else 0
 
     def expand_pod_upgrade_bundles(self, base_bundle: Bundle, state: PlanState) -> list[Bundle]:

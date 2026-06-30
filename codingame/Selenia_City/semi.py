@@ -97,6 +97,7 @@ class PlanState:
     service_areas: dict[int, set[Pair]]
     actions: list[str] = field(default_factory=list)
     placeholders: list[tuple[int, int]] = field(default_factory=list)
+    planned_pods: set[int] = field(default_factory=set)
     cost: int = 0
 
 
@@ -211,7 +212,8 @@ class Planner:
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
         self.service_areas = {pod_id: set(pod.service_area) for pod_id, pod in final_state.pods.items() if pod.service_area}
         print(self.score_debug("after", final_result, final_state.cost), file=stderr)
-        return final_state.actions
+        action_order = {"TUBE": 0, "TELEPORT": 0, "UPGRADE": 1, "DESTROY": 2, "POD": 3}
+        return sorted((action for action in final_state.actions if action), key=lambda action: action_order[action.split()[0]])
 
     def best_candidate(self, selected: dict[Pool, Bundle], current_score: int, current_cost: int) -> Candidate:
         """Finds the most efficient affordable current-generation candidate for selected."""
@@ -429,7 +431,7 @@ class Planner:
             upgrades: tuple[Pair, ...] | list[Pair], state: PlanState) -> int:
         """Estimates bundle cost from tubes, specs, upgrades, and state."""
         cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes if route_key(a, b) not in state.tubes)
-        cost += sum(REROUTE_COST if spec.pod_id else POD_COST for spec in specs)
+        cost += sum(0 if spec.pod_id in state.planned_pods else REROUTE_COST if spec.pod_id else POD_COST for spec in specs)
         capacities = dict(state.tubes)
         for a, b in tubes:
             capacities.setdefault(route_key(a, b), 1)
@@ -443,7 +445,8 @@ class Planner:
         """Applies bundle to a copied state for local candidate generation."""
         pods = {pod_id: PodPlan(pod.id, pod.path[:], set(pod.service_area), pod.dynamic) for pod_id, pod in state.pods.items()}
         service_areas = {pod_id: set(area) for pod_id, area in state.service_areas.items()}
-        copied = PlanState(dict(state.tubes), dict(state.teleports), pods, service_areas, list(state.actions), list(state.placeholders), state.cost)
+        copied = PlanState(dict(state.tubes), dict(state.teleports), pods, service_areas, list(state.actions), list(state.placeholders),
+            set(state.planned_pods), state.cost)
         self.apply_bundle(copied, bundle)
         return copied
 
@@ -491,12 +494,19 @@ class Planner:
                 if spec.pod_id not in state.pods:
                     raise ValueError("missing reroute pod")
                 del state.pods[spec.pod_id]
-                state.cost += REROUTE_COST
-                state.actions.append(f"DESTROY {spec.pod_id}")
                 pod_id = spec.pod_id
+                if pod_id not in state.planned_pods:
+                    state.cost += REROUTE_COST
+                    state.actions.append(f"DESTROY {pod_id}")
+                    state.planned_pods.add(pod_id)
+                    state.placeholders.append((len(state.actions), pod_id))
+                    state.actions.append("")
             else:
                 pod_id = self.next_pod_id(state.pods)
                 state.cost += POD_COST
+                state.planned_pods.add(pod_id)
+                state.placeholders.append((len(state.actions), pod_id))
+                state.actions.append("")
             area = set(spec.service_area)
             if not area or not service_area_connected(area):
                 raise ValueError("invalid service area")
@@ -505,8 +515,6 @@ class Planner:
                     raise ValueError("service area missing tube")
             state.service_areas[pod_id] = area
             state.pods[pod_id] = PodPlan(pod_id, [], area, True)
-            state.placeholders.append((len(state.actions), pod_id))
-            state.actions.append("")
 
     def fill_dynamic_actions(self, state: PlanState, dynamic_paths: dict[int, list[int]]):
         """Replaces pod action placeholders with concrete dynamic_paths."""

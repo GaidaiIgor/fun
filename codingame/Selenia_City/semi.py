@@ -251,8 +251,9 @@ class Planner:
         try:
             baseline_state = self.replay_bundles(baseline_selected)
             baseline_score = self.simulate(baseline_state).score
+            baseline_cost = baseline_state.cost
         except ValueError:
-            baseline_score = -INF
+            return None
         for bundle in sorted(self.generate_bundles(pool, other_state), key=lambda item: (item.rank_cost, item.fingerprint)):
             if bundle.rank_cost <= current.rank_cost or bundle.fingerprint == current.fingerprint:
                 continue
@@ -262,9 +263,13 @@ class Planner:
                 state = self.replay_bundles(candidate_selected)
             except ValueError:
                 continue
+            score_gain = self.simulate(state).score - baseline_score
+            cost_gain = state.cost - baseline_cost
+            efficiency = float("inf") if cost_gain <= 0 and score_gain > 0 else score_gain / max(1, cost_gain)
+            print(f"bundle: {pool}, {self.bundle_action_text(bundle)}, {score_gain}, {cost_gain}, {efficiency:.3f}", file=stderr)
             if state.cost > self.resources:
                 continue
-            if self.simulate(state).score > baseline_score:
+            if score_gain > 0:
                 return bundle
         return None
 
@@ -284,6 +289,19 @@ class Planner:
             base_bundle = Bundle(pool, self.nominal_cost(tubes, base_specs, (), state), tuple(tubes), pod_specs=tuple(base_specs), label=label)
             bundles.extend(self.expand_pod_upgrade_bundles(base_bundle, state))
         return bundles
+
+    def bundle_action_text(self, bundle: Bundle) -> str:
+        """Formats bundle actions for debug output."""
+        actions = []
+        actions.extend(f"TUBE {a} {b}" for a, b in bundle.tubes)
+        if bundle.teleport != (-1, -1):
+            actions.append(f"TELEPORT {bundle.teleport[0]} {bundle.teleport[1]}")
+        actions.extend(f"UPGRADE {a} {b}" for a, b in bundle.upgrades)
+        for spec in bundle.pod_specs:
+            pod_label = str(spec.pod_id) if spec.pod_id else "NEW"
+            area_text = " ".join(f"{a}-{b}" for a, b in sorted(spec.service_area))
+            actions.append(f"POD {pod_label} AUTO({area_text})")
+        return ";".join(actions) if actions else "WAIT"
 
     def path_options(self, pad_id: int, astronaut_type: int, state: PlanState) -> list[tuple[str, list[int], list[Pair], Pair]]:
         """Returns candidate infrastructure paths for pad_id and astronaut_type."""
@@ -903,7 +921,8 @@ class Planner:
         """Formats score diagnostics for label, result, and cost."""
         demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
         return f"score_{label} month {result.score} speed {result.speed} diversity {result.diversity} " \
-            f"delivered {result.delivered}/{demand} stranded {demand - result.delivered} cost {cost}"
+            f"delivered {result.delivered}/{demand} stranded {demand - result.delivered} resources_before {self.resources} " \
+            f"resources_after {self.resources - cost} cost {cost}"
 
 
 def route_key(a: int, b: int) -> Pair:

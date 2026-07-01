@@ -393,7 +393,7 @@ class Planner:
         for pod_level in range(MAX_POD_ADDITIONS + 1):
             pod_bundle = Bundle(base_bundle.pool, self.nominal_cost(base_bundle.tubes, pod_specs, (), state), base_bundle.tubes,
                 pod_specs=tuple(pod_specs), label=f"{base_bundle.label}-pods-{pod_level}")
-            bundles.extend(self.expand_upgrade_bundles(pod_bundle, state))
+            bundles.extend(self.expand_upgrade_bundles(pod_bundle, path_edges, state))
             if pod_level == MAX_POD_ADDITIONS:
                 break
             try:
@@ -401,13 +401,13 @@ class Planner:
             except ValueError:
                 break
             result = self.simulate(projected)
-            edge = self.best_wait_edge(path_edges, result.wait_by_edge)
+            edge = self.best_counter_edge(path_edges, result.wait_by_edge)
             if edge == (-1, -1):
                 break
             pod_specs.append(PodSpec(0, frozenset({edge})))
         return bundles
 
-    def expand_upgrade_bundles(self, bundle: Bundle, state: PlanState) -> list[Bundle]:
+    def expand_upgrade_bundles(self, bundle: Bundle, path_edges: tuple[Pair, ...], state: PlanState) -> list[Bundle]:
         """Adds congestion-upgrade variants for bundle."""
         bundles = []
         upgrades = []
@@ -421,17 +421,15 @@ class Planner:
             except ValueError:
                 break
             result = self.simulate(projected)
-            edge = result.congestion_by_edge.most_common(1)[0][0] if result.congestion_by_edge else (-1, -1)
+            edge = self.best_counter_edge(path_edges, result.congestion_by_edge)
             if edge == (-1, -1):
                 break
             upgrades.append(edge)
         return bundles
 
-    def best_wait_edge(self, path_edges: tuple[Pair, ...], wait_by_edge: Counter[Pair]) -> Pair:
-        """Returns the highest-wait edge among path_edges."""
-        if not wait_by_edge:
-            return -1, -1
-        candidates = [(wait_by_edge[edge], edge) for edge in path_edges if wait_by_edge[edge]]
+    def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair]) -> Pair:
+        """Returns the highest-count edge among path_edges."""
+        candidates = [(counts[edge], edge) for edge in path_edges if counts[edge]]
         return max(candidates, key=lambda item: (item[0], -item[1][0], -item[1][1]))[1] if candidates else (-1, -1)
 
     def nominal_cost(self, tubes: tuple[Pair, ...] | list[Pair], specs: tuple[PodSpec, ...] | list[PodSpec],

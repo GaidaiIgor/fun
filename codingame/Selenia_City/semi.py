@@ -206,7 +206,7 @@ class Planner:
             selected[best.pool] = best.bundle
             current_state = self.replay_bundles(selected)
             current_result = self.simulate(current_state)
-            print(f"selected {best.pool} {best.bundle.label} gain {best.score_gain} cost {best.cost_gain} efficiency {best.efficiency:.3f}", file=stderr)
+            print(f"selected {best.pool}", file=stderr)
         final_state = self.replay_bundles(selected)
         final_result = self.simulate(final_state, keep_dynamic_paths=True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)

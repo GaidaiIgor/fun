@@ -945,9 +945,10 @@ class Planner:
     def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
         """Formats score diagnostics for label, result, and cost."""
         demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
-        return f"score_{label} month {result.score} speed {result.speed} diversity {result.diversity} " \
-            f"delivered {result.delivered}/{demand} stranded {demand - result.delivered} resources_before {self.resources} " \
-            f"resources_after {self.resources - cost} cost {cost}"
+        if label == "before":
+            return f"Before: speed {result.speed}, diversity {result.diversity}"
+        return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
+            f"score: {result.score}, resources: {self.resources - cost}"
 
 
 def route_key(a: int, b: int) -> Pair:

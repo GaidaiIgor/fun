@@ -30,7 +30,6 @@ def run_turn_state(text: str) -> str:
 def parse_turn_state(text: str) -> Planner:
     """Parses resources, buildings, routes, pods, and service areas from text."""
     planner = Planner()
-    service_areas = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -51,15 +50,11 @@ def parse_turn_state(text: str) -> Planner:
             case "teleport":
                 planner.teleports[int(parts[1])] = int(parts[2])
             case "pod":
-                planner.pods[int(parts[1])] = Pod(int(parts[1]), parse_path(" ".join(parts[2:])))
-            case "service":
-                service_areas[int(parts[1])] = parse_service_area(parts[2:])
+                pod_id, service_area, path = parse_pod_line(line)
+                planner.pods[pod_id] = Pod(pod_id, path)
+                planner.service_areas[pod_id] = service_area
             case _:
                 raise ValueError(f"Unknown turn-state line: {line}")
-    missing_services = sorted(set(planner.pods) - set(service_areas))
-    if missing_services:
-        raise ValueError(f"Missing service lines for pods: {missing_services}")
-    planner.service_areas = service_areas
     return planner
 
 
@@ -80,17 +75,23 @@ def parse_demand(text: str) -> tuple[Counter[int], list[int]]:
 
 
 def parse_path(text: str) -> list[int]:
-    """Parses a pod path written with spaces, hyphens, or both."""
-    return [int(item) for item in text.replace("-", " ").split()]
+    """Parses a pod path text written with commas or spaces."""
+    return [int(item) for item in text.replace(",", " ").split()]
 
 
-def parse_service_area(items: list[str]) -> set[tuple[int, int]]:
-    """Parses service-area edges written as a-b tokens."""
+def parse_pod_line(line: str) -> tuple[int, set[tuple[int, int]], list[int]]:
+    """Parses pod id, service area, and path from inline pod line."""
+    pod_text, path_text = line.removeprefix("pod ").split(", path=[")
+    id_text, area_text = pod_text.split(", service={")
+    pod_id = int(id_text.removeprefix("id="))
+    return pod_id, parse_service_area(area_text.removesuffix("}")), parse_path(path_text.removesuffix("]"))
+
+
+def parse_service_area(text: str) -> set[tuple[int, int]]:
+    """Parses service-area text written as comma-separated a-b edges."""
     area = set()
-    for item in items:
+    for item in text.split(", "):
         edge_parts = item.split("-")
-        if len(edge_parts) != 2:
-            raise ValueError(f"Malformed service edge: {item}")
         area.add(route_key(int(edge_parts[0]), int(edge_parts[1])))
     return area
 

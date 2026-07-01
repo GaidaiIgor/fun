@@ -939,10 +939,9 @@ class Planner:
         for a, b in sorted(self.teleports.items()):
             print(f"teleport {a} {b}", file=stderr)
         for pod_id in sorted(self.pods):
-            path_text = "-".join(map(str, self.pods[pod_id].path))
-            print(f"pod {pod_id} {path_text}", file=stderr)
-            area_text = " ".join(f"{a}-{b}" for a, b in sorted(self.service_areas[pod_id]))
-            print(f"service {pod_id} {area_text}", file=stderr)
+            path_text = ", ".join(map(str, self.pods[pod_id].path))
+            area_text = ", ".join(f"{a}-{b}" for a, b in sorted(self.service_areas[pod_id]))
+            print(f"pod id={pod_id}, service={{{area_text}}}, path=[{path_text}]", file=stderr)
 
     def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
         """Formats score diagnostics for label, result, and cost."""

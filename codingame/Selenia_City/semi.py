@@ -288,7 +288,8 @@ class Planner:
             if base_specs is None:
                 continue
             base_bundle = Bundle(pool, self.nominal_cost(tubes, base_specs, (), state), tuple(tubes), pod_specs=tuple(base_specs), label=label)
-            bundles.extend(self.expand_pod_upgrade_bundles(base_bundle, state))
+            path_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
+            bundles.extend(self.expand_pod_upgrade_bundles(base_bundle, path_edges, state))
         unique = []
         seen = set()
         for bundle in bundles:
@@ -385,7 +386,7 @@ class Planner:
                 candidates.append((pod_id not in state.planned_pods, len(area), pod_id))
         return min(candidates)[1] if candidates else 0
 
-    def expand_pod_upgrade_bundles(self, base_bundle: Bundle, state: PlanState) -> list[Bundle]:
+    def expand_pod_upgrade_bundles(self, base_bundle: Bundle, path_edges: tuple[Pair, ...], state: PlanState) -> list[Bundle]:
         """Adds lazy wait-pod and congestion-upgrade variants for base_bundle."""
         bundles = []
         pod_specs = list(base_bundle.pod_specs)
@@ -400,7 +401,7 @@ class Planner:
             except ValueError:
                 break
             result = self.simulate(projected)
-            edge = self.best_wait_edge(base_bundle.tubes, result.wait_by_edge)
+            edge = self.best_wait_edge(path_edges, result.wait_by_edge)
             if edge == (-1, -1):
                 break
             pod_specs.append(PodSpec(0, frozenset({edge})))
@@ -426,16 +427,12 @@ class Planner:
             upgrades.append(edge)
         return bundles
 
-    def best_wait_edge(self, tubes: tuple[Pair, ...], wait_by_edge: Counter[Pair]) -> Pair:
-        """Returns the highest-wait edge relevant to pool and tubes."""
+    def best_wait_edge(self, path_edges: tuple[Pair, ...], wait_by_edge: Counter[Pair]) -> Pair:
+        """Returns the highest-wait edge among path_edges."""
         if not wait_by_edge:
             return -1, -1
-        tube_set = set(tubes)
-        if tube_set:
-            candidates = [(wait, edge) for edge, wait in wait_by_edge.items() if edge in tube_set]
-            if candidates:
-                return max(candidates, key=lambda item: (item[0], -item[1][0], -item[1][1]))[1]
-        return max(wait_by_edge.items(), key=lambda item: (item[1], -item[0][0], -item[0][1]))[0]
+        candidates = [(wait_by_edge[edge], edge) for edge in path_edges if wait_by_edge[edge]]
+        return max(candidates, key=lambda item: (item[0], -item[1][0], -item[1][1]))[1] if candidates else (-1, -1)
 
     def nominal_cost(self, tubes: tuple[Pair, ...] | list[Pair], specs: tuple[PodSpec, ...] | list[PodSpec],
             upgrades: tuple[Pair, ...] | list[Pair], state: PlanState) -> int:

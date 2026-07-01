@@ -544,7 +544,7 @@ class Planner:
             requests, month_over = self.pod_requests(state, pod_positions, dynamic_current, demand)
             if month_over:
                 break
-            moves = self.allocate_tube_capacity(requests, state.tubes, result)
+            moves = self.allocate_tube_capacity(requests, state, demand, result)
             self.board_and_launch(queues, distances, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
             self.settle(day + 1, queues, module_arrivals, result)
         if keep_dynamic_paths:
@@ -697,19 +697,50 @@ class Planner:
         next_id = next_step(active_graph, current, source_id)
         return current, next_id
 
-    def allocate_tube_capacity(self, requests: dict[int, DirectedPair], tubes: dict[Pair, int], result: SimulationResult) -> dict[int, DirectedPair]:
-        """Applies tube capacities to pod requests and records congestion days."""
+    def allocate_tube_capacity(self, requests: dict[int, DirectedPair], state: PlanState, demand: Counter[DirectedPair],
+            result: SimulationResult) -> dict[int, DirectedPair]:
+        """Applies tube capacities, rerouting blocked dynamic pods to available demanded outgoing edges."""
         moves = {}
         by_tube = {}
         for pod_id, move in requests.items():
             by_tube.setdefault(route_key(*move), []).append((pod_id, move))
         for edge, pods in by_tube.items():
-            capacity = tubes[edge]
+            capacity = state.tubes[edge]
             if len(pods) > capacity:
                 result.congestion_by_edge[edge] += 1
             for pod_id, move in sorted(pods)[:capacity]:
                 moves[pod_id] = move
+        used = Counter(route_key(*move) for move in moves.values())
+        service_counts = self.service_counts(state)
+        for pod_id in sorted(set(requests) - set(moves)):
+            pod = state.pods[pod_id]
+            if not pod.dynamic:
+                continue
+            move = self.capacity_fallback_move(pod, requests[pod_id], demand, state, used, service_counts)
+            if move != (-1, -1):
+                moves[pod_id] = move
+                used[route_key(*move)] += 1
         return moves
+
+    def capacity_fallback_move(self, pod: PodPlan, blocked_move: DirectedPair, demand: Counter[DirectedPair], state: PlanState,
+            used: Counter[Pair], service_counts: Counter[Pair]) -> DirectedPair:
+        """Chooses an available demanded outgoing edge from the blocked move source."""
+        source_id = blocked_move[0]
+        allowed_edges = self.dynamic_allowed_edges(pod, source_id, demand, state.tubes)
+        candidates = []
+        for move, count in demand.items():
+            edge = route_key(*move)
+            if move[0] == source_id and move != blocked_move and edge in allowed_edges and used[edge] < state.tubes[edge]:
+                candidates.append((-min(count, POD_CAPACITY), service_counts[edge], move))
+        return min(candidates)[2] if candidates else (-1, -1)
+
+    def dynamic_allowed_edges(self, pod: PodPlan, current_id: int, demand: Counter[DirectedPair], tubes: dict[Pair, int]) -> set[Pair]:
+        """Returns edges the pod may use for same-day capacity fallback."""
+        graph = tube_graph({edge: 1 for edge in pod.service_area})
+        service_loads = any(route_key(*edge) in pod.service_area for edge in demand)
+        if service_loads and current_id in graph:
+            return pod.service_area
+        return set(tubes)
 
     def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], state: PlanState,
             moves: dict[int, DirectedPair], pod_positions: dict[int, int], dynamic_current: dict[int, int],

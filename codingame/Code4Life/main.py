@@ -143,16 +143,13 @@ def best_plan(diag, my_exp, opp_exp, storage, available, projects, tl=999, overh
 def choose_rank(E, k):
     # E = total expertise, k = samples already in hand
     k = min(k, 2)
-    # early expertise rush: rank 1 costs exactly ~3 molecules and buys +1
-    # expertise, which compounds into cheaper medicines and science projects
-    if E <= 4:
-        return (1, 1, 2)[k]
-    if E <= 6:
-        return 2
-    if E <= 9:
+    # full expertise rush (top-of-league meta): rank-1 medicines cost ~3
+    # molecules and gain +1 expertise each; with balanced expertise ~12+
+    # the rank-2/3 cash-out is nearly free and projects land automatically
+    if E <= 10:
+        return 1
+    if E <= 13:
         return (3, 2, 2)[k]
-    if E <= 11:
-        return (3, 3, 2)[k]
     return 3
 
 

@@ -167,9 +167,6 @@ def decide(me, opp, avail, samples, projects, turn, state):
     opp_ids = set(s.id for s in samples if s.carried_by == 1)
     state["opp_mined"] += len(state["cloud_prev"] & opp_ids)
     state["cloud_prev"] = cloud_ids
-    # track long droughts per molecule type (opponent camping the pool)
-    for i in range(5):
-        state["starve"][i] = state["starve"][i] + 1 if avail[i] == 0 else 0
     # withhold gifts only from proven repeat cloud-miners; a default-cautious
     # window clogged the hand against the majority who never mine
     opp_mines = state["opp_mined"] >= 2
@@ -244,12 +241,6 @@ def decide(me, opp, avail, samples, projects, turn, state):
                 junk = [s for s in mine_diag
                         if ages.get(s.id, 0) > 40 and safe(s)
                         and not buyable(s, exp, me.storage, avail)]
-            if not junk and tl > 30:
-                # a needed type has been pool-camped for a long time:
-                # recycle the sample instead of waiting out the drought
-                junk = [s for s in mine_diag if safe(s) and any(
-                        eff_cost(s, exp)[i] > me.storage[i] and state["starve"][i] > 15
-                        for i in range(5))]
             if not junk and tl < 25 and tl > 8:
                 # no time left to finish this sample: free the slot - but a
                 # dump costs a turn, so never strand a still-producible sample
@@ -488,7 +479,7 @@ def main():
     log("projects: %s" % projects)
 
     state = {"wait": 0, "blocked": set(), "age": {},
-             "cloud_prev": set(), "opp_mined": 0, "starve": [0] * 5}
+             "cloud_prev": set(), "opp_mined": 0}
     turn = 0
     while True:
         line = read()

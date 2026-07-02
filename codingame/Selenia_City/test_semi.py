@@ -11,10 +11,14 @@ if not __package__:
 from Selenia_City.semi import Building, Planner, Pod, route_key
 
 TURN_STATE = """
-month 1
-resources 3000
-landing 0 0 0 1,1,1,1,1,1,1,1,1,1
-module 1 1 10 0
+month 2
+resources 1000
+landing 0 80 60 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
+module 1 1 40 30
+module 2 2 120 30
+tube 0 1 1
+tube 0 2 1
+pod id=1, service={0-1, 0-2}, path=[0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 0, 1, 0, 2, 0, 1, 0]
 """
 def run_turn_state(text: str) -> str:
     """Parses text into a Planner, runs debug printing and choose_actions, and returns the command."""

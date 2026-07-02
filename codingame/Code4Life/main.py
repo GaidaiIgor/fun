@@ -143,11 +143,20 @@ def choose_rank(E, k):
 def decide(me, opp, avail, samples, projects, turn, state):
     """Returns command. state persists across turns:
     state["wait"]: consecutive blocked-waits at MOLECULES
-    state["blocked"]: ids of carried samples marked unbuyable (pool starved)"""
+    state["blocked"]: ids of carried samples marked unbuyable (pool starved)
+    state["age"]: turns each diagnosed sample has spent in hand"""
     wait_count = state["wait"]
     mine = [s for s in samples if s.carried_by == 0]
     mine_diag = [s for s in mine if s.diagnosed]
     mine_undiag = [s for s in mine if not s.diagnosed]
+    # how long each diagnosed sample has been stuck in hand
+    ages = state["age"]
+    held_ids = set(s.id for s in mine_diag)
+    for i in list(ages.keys()):
+        if i not in held_ids:
+            del ages[i]
+    for i in held_ids:
+        ages[i] = ages.get(i, 0) + 1
     exp = me.expertise
     E = sum(exp)
     tl = 201 - turn  # turns remaining, including this one
@@ -196,6 +205,10 @@ def decide(me, opp, avail, samples, projects, turn, state):
             cmd, why = "CONNECT %d" % mine_undiag[0].id, "diagnose"
         else:
             junk = [s for s in mine_diag if not feasible(s, exp)]
+            if not junk:
+                # stale: stuck in hand for ages and still not buyable
+                junk = [s for s in mine_diag
+                        if ages.get(s.id, 0) > 40 and not buyable(s, exp, me.storage, avail)]
             if not junk and tl < 25 and tl > 8:
                 # no time left to finish this sample: free the slot
                 for s in mine_diag:
@@ -275,9 +288,9 @@ def decide(me, opp, avail, samples, projects, turn, state):
                 if sum(me.storage) < CARRY and 3 + len(p["perm"]) + 1 <= tl:
                     spend = sum(sum(eff_cost(s, exp)) for s in p["perm"])
                     junk_after = sum(me.storage) - min(spend, sum(me.storage)) + 1
-                    if junk_after <= 4:
+                    if junk_after <= 5:
                         for i in range(5):
-                            if opp_need[i] > 0 and 1 <= avail[i] <= 2 and avail[i] <= opp_need[i]:
+                            if opp_need[i] > 0 and 1 <= avail[i] <= 3 and avail[i] <= opp_need[i]:
                                 deny = i if deny is None or avail[i] < avail[deny] else deny
                 if deny is not None:
                     cmd, why = "CONNECT %s" % TYPES[deny], "deny %s (opp needs %d)" % (TYPES[deny], opp_need[deny])
@@ -378,7 +391,7 @@ def main():
         projects.append([int(x) for x in read().split()])
     log("projects: %s" % projects)
 
-    state = {"wait": 0, "blocked": set()}
+    state = {"wait": 0, "blocked": set(), "age": {}}
     turn = 0
     while True:
         line = read()

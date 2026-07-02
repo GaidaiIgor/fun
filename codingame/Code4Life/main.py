@@ -79,7 +79,10 @@ def gain_bonus(gidx, my_exp, opp_exp, projects, tl):
         if tot > 0 and rem[gidx] > 0:
             # discount projects the opponent is closer to winning
             opp_rem = sum(max(0, p[i] - opp_exp[i]) for i in range(5))
-            w = 1.0 if tot <= opp_rem else max(0.15, float(opp_rem) / (tot + opp_rem))
+            # nearly-complete projects stay worth chasing even when behind:
+            # the opponent may never draw the finishing gain
+            floor = 0.4 if tot <= 2 else 0.15
+            w = 1.0 if tot <= opp_rem else max(floor, float(opp_rem) / (tot + opp_rem))
             b += w * 50.0 / tot
             if tot == 1 and opp_rem <= 2:
                 b += 15.0  # sprint: land the decisive expertise first
@@ -318,13 +321,18 @@ def decide(me, opp, avail, samples, projects, turn, state):
                             starved.add(i)
             if cands_s and sum(me.storage) < CARRY:
                 # pool is blocking a full plan: pre-gather what IS available
-                # for the most valuable such sample
-                tgt = max(cands_s, key=lambda s: sample_value(s, exp, opp.expertise, projects, tl))
-                e = eff_cost(tgt, exp)
-                needs = [i for i in range(5) if e[i] - me.storage[i] > 0 and avail[i] > 0]
-                if needs:
-                    i = min(needs, key=lambda j: avail[j])
-                    cmd, why = "CONNECT %s" % TYPES[i], "partial gather for %d" % tgt.id
+                # for the most valuable such sample that can still finish
+                # in the remaining turns (missing + travel 3 + produce 1)
+                timely = [s for s in cands_s
+                          if sum(max(0, eff_cost(s, exp)[i] - me.storage[i])
+                                 for i in range(5)) + 4 <= tl]
+                if timely:
+                    tgt = max(timely, key=lambda s: sample_value(s, exp, opp.expertise, projects, tl))
+                    e = eff_cost(tgt, exp)
+                    needs = [i for i in range(5) if e[i] - me.storage[i] > 0 and avail[i] > 0]
+                    if needs:
+                        i = min(needs, key=lambda j: avail[j])
+                        cmd, why = "CONNECT %s" % TYPES[i], "partial gather for %d" % tgt.id
             if cmd is None:
                 # will the opponent's future lab spend return a starved type?
                 opp_spend = [0] * 5
@@ -351,7 +359,16 @@ def decide(me, opp, avail, samples, projects, turn, state):
                             state["blocked"].add(s.id)
                     cmd, why = "GOTO DIAGNOSIS", "stuck, dump blocked %s" % sorted(state["blocked"])
                 else:
-                    cmd, why, waited = "WAIT", "stuck, hold position", True
+                    # dead turns anyway: starve the opponent if possible
+                    deny = None
+                    if sum(me.storage) < CARRY - 1:
+                        for i in range(5):
+                            if opp_need[i] > 0 and 1 <= avail[i] <= 3 and avail[i] <= opp_need[i]:
+                                deny = i if deny is None or avail[i] < avail[deny] else deny
+                    if deny is not None:
+                        cmd, why = "CONNECT %s" % TYPES[deny], "idle deny %s" % TYPES[deny]
+                    else:
+                        cmd, why, waited = "WAIT", "stuck, hold position", True
 
     elif me.target == "LABORATORY":
         p = best_plan(mine_diag, exp, opp.expertise, me.storage, [0] * 5, projects,

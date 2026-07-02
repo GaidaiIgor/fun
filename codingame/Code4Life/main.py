@@ -57,6 +57,16 @@ def buyable(s, exp, storage, avail):
     return all(take[i] <= avail[i] for i in range(5)) and sum(storage) + sum(take) <= CARRY
 
 
+def gift_risk(s, opp_exp, tl):
+    # points the opponent likely gains if we dump this sample to the cloud
+    if tl < 10:
+        return 0.0
+    e = [max(0, s.cost[i] - opp_exp[i]) for i in range(5)]
+    if max(e) <= 5 and sum(e) <= 9:
+        return float(s.health)
+    return 0.0
+
+
 def project_active(p, my_exp, opp_exp):
     if all(my_exp[i] >= p[i] for i in range(5)):
         return False
@@ -152,6 +162,12 @@ def decide(me, opp, avail, samples, projects, turn, state):
     mine = [s for s in samples if s.carried_by == 0]
     mine_diag = [s for s in mine if s.diagnosed]
     mine_undiag = [s for s in mine if not s.diagnosed]
+    # does this opponent mine the cloud? (samples that moved cloud -> their hand)
+    cloud_ids = set(s.id for s in samples if s.carried_by == -1)
+    opp_ids = set(s.id for s in samples if s.carried_by == 1)
+    state["opp_mined"] += len(state["cloud_prev"] & opp_ids)
+    state["cloud_prev"] = cloud_ids
+    opp_mines = state["opp_mined"] > 0 or turn < 80
     # how long each diagnosed sample has been stuck in hand
     ages = state["age"]
     held_ids = set(s.id for s in mine_diag)
@@ -174,6 +190,12 @@ def decide(me, opp, avail, samples, projects, turn, state):
         (avail, opp.target, opp.eta, opp.score, opp.expertise, sum(opp.storage),
          len([s for s in samples if s.carried_by == 1])))
     log("  hand: %s" % hand)
+    cloud = [s for s in samples if s.carried_by == -1 and s.diagnosed]
+    if cloud:
+        log("  cloud: %s" % " | ".join(
+            "%d:h%d e%d o%d" % (s.id, s.health, sum(eff_cost(s, exp)),
+                                sum(max(0, s.cost[i] - opp.expertise[i]) for i in range(5)))
+            for s in sorted(cloud, key=lambda x: -x.health)[:6]))
 
     waited = False
     cmd = None
@@ -207,11 +229,16 @@ def decide(me, opp, avail, samples, projects, turn, state):
         if mine_undiag:
             cmd, why = "CONNECT %d" % mine_undiag[0].id, "diagnose"
         else:
-            junk = [s for s in mine_diag if not feasible(s, exp)]
+            # dumping feeds cloud-mining opponents: withhold gifts from them
+            # except in emergencies (weak opponents never touch the cloud)
+            def safe(s):
+                return not opp_mines or gift_risk(s, opp.expertise, tl) < 25
+            junk = [s for s in mine_diag if not feasible(s, exp) and safe(s)]
             if not junk:
                 # stale: stuck in hand for ages and still not buyable
                 junk = [s for s in mine_diag
-                        if ages.get(s.id, 0) > 40 and not buyable(s, exp, me.storage, avail)]
+                        if ages.get(s.id, 0) > 40 and safe(s)
+                        and not buyable(s, exp, me.storage, avail)]
             if not junk and tl < 25 and tl > 8:
                 # no time left to finish this sample: free the slot - but a
                 # dump costs a turn, so never strand a still-producible sample
@@ -219,16 +246,18 @@ def decide(me, opp, avail, samples, projects, turn, state):
                 for s in mine_diag:
                     missing = sum(max(0, eff_cost(s, exp)[i] - me.storage[i]) for i in range(5))
                     needed = 5 if missing == 0 else missing + 7
-                    if needed > tl:
+                    if needed > tl and safe(s):
                         hopeless.append(s)
-                    else:
+                    elif needed <= tl:
                         min_slack = min(min_slack, tl - needed)
                 if hopeless and min_slack >= 2:
                     junk = hopeless
             if not junk and state["blocked"]:
                 # samples we marked while starved at MOLECULES: dump those that
                 # still cannot be bought (pool starved or storage clogged) and
-                # are not part of a currently workable multi-sample plan
+                # are not part of a currently workable multi-sample plan.
+                # This is the deadlock escape, so gifts are allowed here -
+                # but dump the cheapest gift first
                 p_now = best_plan(mine_diag, exp, opp.expertise, me.storage, avail,
                                   projects, tl=tl, overhead=6)
                 keep = set(s.id for s in p_now["perm"]) if p_now else set()
@@ -239,8 +268,10 @@ def decide(me, opp, avail, samples, projects, turn, state):
                 if not junk:
                     state["blocked"].clear()
             if junk:
+                junk.sort(key=lambda s: gift_risk(s, opp.expertise, tl))
                 state["blocked"].discard(junk[0].id)
-                cmd, why = "CONNECT %d" % junk[0].id, "dump %d" % junk[0].id
+                cmd, why = "CONNECT %d" % junk[0].id, "dump %d (gift %d)" % (
+                    junk[0].id, gift_risk(junk[0], opp.expertise, tl))
             else:
                 if len(mine) < 3:
                     best_c, best_ratio = None, 0.0
@@ -422,7 +453,8 @@ def main():
         projects.append([int(x) for x in read().split()])
     log("projects: %s" % projects)
 
-    state = {"wait": 0, "blocked": set(), "age": {}}
+    state = {"wait": 0, "blocked": set(), "age": {},
+             "cloud_prev": set(), "opp_mined": 0}
     turn = 0
     while True:
         line = read()

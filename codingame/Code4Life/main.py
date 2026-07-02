@@ -81,6 +81,9 @@ def gain_bonus(gidx, my_exp, opp_exp, projects, tl):
         return 0.0
     # generic value: cost savings pay back over the remaining game
     b = 1.0 + min(5.0, tl / 40.0)
+    # balanced expertise unlocks more affordable samples and projects
+    if my_exp[gidx] <= min(my_exp) + 1:
+        b += 1.5
     for p in projects:
         if not project_active(p, my_exp, opp_exp):
             continue
@@ -167,7 +170,9 @@ def decide(me, opp, avail, samples, projects, turn, state):
     opp_ids = set(s.id for s in samples if s.carried_by == 1)
     state["opp_mined"] += len(state["cloud_prev"] & opp_ids)
     state["cloud_prev"] = cloud_ids
-    opp_mines = state["opp_mined"] > 0 or turn < 80
+    # withhold gifts only from proven repeat cloud-miners; a default-cautious
+    # window clogged the hand against the majority who never mine
+    opp_mines = state["opp_mined"] >= 2
     # how long each diagnosed sample has been stuck in hand
     ages = state["age"]
     held_ids = set(s.id for s in mine_diag)
@@ -291,6 +296,29 @@ def decide(me, opp, avail, samples, projects, turn, state):
                                 best_c, best_ratio = s, ratio
                     if best_c is not None and best_ratio >= thr:
                         cmd, why = "CONNECT %d" % best_c.id, "cloud pick %d (r=%.2f)" % (best_c.id, best_ratio)
+                if cmd is None and len(mine) == 3 and not mine_undiag and tl > 30:
+                    # hand full but the cloud holds a gem: swap out the worst
+                    # held sample if the upgrade is clearly worth 2 turns
+                    best_c, best_net = None, -999.0
+                    for s in samples:
+                        if s.carried_by == -1 and s.diagnosed and feasible(s, exp) \
+                                and buyable(s, exp, me.storage, avail):
+                            take = sum(max(0, eff_cost(s, exp)[i] - me.storage[i])
+                                       for i in range(5))
+                            if 2 + 3 + take + 3 + 1 + len(mine_diag) > tl:
+                                continue
+                            net = sample_value(s, exp, opp.expertise, projects, tl) - 0.35 * take
+                            if net > best_net:
+                                best_c, best_net = s, net
+                    if best_c is not None and mine_diag:
+                        worst = min(mine_diag, key=lambda s: sample_value(s, exp, opp.expertise, projects, tl)
+                                    - 0.35 * sum(max(0, eff_cost(s, exp)[i] - me.storage[i]) for i in range(5)))
+                        w_net = sample_value(worst, exp, opp.expertise, projects, tl) \
+                            - 0.35 * sum(max(0, eff_cost(worst, exp)[i] - me.storage[i]) for i in range(5))
+                        if best_net >= w_net + 18 and (not opp_mines
+                                                       or gift_risk(worst, opp.expertise, tl) < 25):
+                            cmd, why = "CONNECT %d" % worst.id, "swap out %d for cloud %d (+%.0f)" % (
+                                worst.id, best_c.id, best_net - w_net)
                 if cmd is None:
                     p_direct = best_plan(mine_diag, exp, opp.expertise, me.storage,
                                          [0] * 5, projects, tl=tl, overhead=4)

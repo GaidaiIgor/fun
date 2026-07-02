@@ -65,11 +65,12 @@ def project_active(p, my_exp, opp_exp):
     return True
 
 
-def gain_bonus(gidx, my_exp, opp_exp, projects):
+def gain_bonus(gidx, my_exp, opp_exp, projects, tl):
     # value of gaining one expertise of type gidx
     if gidx < 0:
         return 0.0
-    b = 2.0  # generic value: future cost savings
+    # generic value: cost savings pay back over the remaining game
+    b = 1.0 + min(5.0, tl / 40.0)
     for p in projects:
         if not project_active(p, my_exp, opp_exp):
             continue
@@ -85,8 +86,8 @@ def gain_bonus(gidx, my_exp, opp_exp, projects):
     return b
 
 
-def sample_value(s, my_exp, opp_exp, projects):
-    return s.health + gain_bonus(s.gain_idx, my_exp, opp_exp, projects)
+def sample_value(s, my_exp, opp_exp, projects, tl):
+    return s.health + gain_bonus(s.gain_idx, my_exp, opp_exp, projects, tl)
 
 
 def best_plan(diag, my_exp, opp_exp, storage, available, projects, tl=999, overhead=3):
@@ -106,7 +107,7 @@ def best_plan(diag, my_exp, opp_exp, storage, available, projects, tl=999, overh
             for s in perm:
                 for i in range(5):
                     need_tot[i] += max(0, s.cost[i] - exp_sim[i])
-                val += s.health + gain_bonus(s.gain_idx, exp_sim, opp_exp, projects)
+                val += s.health + gain_bonus(s.gain_idx, exp_sim, opp_exp, projects, tl)
                 if s.gain_idx >= 0:
                     exp_sim[s.gain_idx] += 1
             take = [max(0, need_tot[i] - storage[i]) for i in range(5)]
@@ -126,8 +127,10 @@ def best_plan(diag, my_exp, opp_exp, storage, available, projects, tl=999, overh
 def choose_rank(E, k):
     # E = total expertise, k = samples already in hand
     k = min(k, 2)
-    if E <= 2:
-        return (1, 2, 2)[k]
+    # early expertise rush: rank 1 costs exactly ~3 molecules and buys +1
+    # expertise, which compounds into cheaper medicines and science projects
+    if E <= 4:
+        return (1, 1, 2)[k]
     if E <= 6:
         return 2
     if E <= 9:
@@ -229,7 +232,7 @@ def decide(me, opp, avail, samples, projects, turn, state):
                                        for i in range(5))
                             if 1 + 3 + take + 3 + 1 + len(mine_diag) > tl:
                                 continue
-                            v = sample_value(s, exp, opp.expertise, projects)
+                            v = sample_value(s, exp, opp.expertise, projects, tl)
                             ratio = v / (2.0 + take)
                             if ratio > best_ratio:
                                 best_c, best_ratio = s, ratio
@@ -303,7 +306,7 @@ def decide(me, opp, avail, samples, projects, turn, state):
             if cands_s and sum(me.storage) < CARRY:
                 # pool is blocking a full plan: pre-gather what IS available
                 # for the most valuable such sample
-                tgt = max(cands_s, key=lambda s: sample_value(s, exp, opp.expertise, projects))
+                tgt = max(cands_s, key=lambda s: sample_value(s, exp, opp.expertise, projects, tl))
                 e = eff_cost(tgt, exp)
                 needs = [i for i in range(5) if e[i] - me.storage[i] > 0 and avail[i] > 0]
                 if needs:

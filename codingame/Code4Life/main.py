@@ -213,12 +213,18 @@ def decide(me, opp, avail, samples, projects, turn, state):
                 junk = [s for s in mine_diag
                         if ages.get(s.id, 0) > 40 and not buyable(s, exp, me.storage, avail)]
             if not junk and tl < 25 and tl > 8:
-                # no time left to finish this sample: free the slot
+                # no time left to finish this sample: free the slot - but a
+                # dump costs a turn, so never strand a still-producible sample
+                hopeless, min_slack = [], 999
                 for s in mine_diag:
                     missing = sum(max(0, eff_cost(s, exp)[i] - me.storage[i]) for i in range(5))
                     needed = 5 if missing == 0 else missing + 7
                     if needed > tl:
-                        junk.append(s)
+                        hopeless.append(s)
+                    else:
+                        min_slack = min(min_slack, tl - needed)
+                if hopeless and min_slack >= 2:
+                    junk = hopeless
             if not junk and state["blocked"]:
                 # samples we marked while starved at MOLECULES: dump those that
                 # still cannot be bought (pool starved or storage clogged) and
@@ -289,7 +295,15 @@ def decide(me, opp, avail, samples, projects, turn, state):
                 # way out if it strands them and we have room and time
                 deny = None
                 if sum(me.storage) < CARRY and 3 + len(p["perm"]) + 1 <= tl:
-                    spend = sum(sum(eff_cost(s, exp)) for s in p["perm"])
+                    # true molecule spend: expertise gained mid-sequence
+                    # reduces later samples' needs
+                    exp_sim = list(exp)
+                    spend = 0
+                    for s in p["perm"]:
+                        for i in range(5):
+                            spend += max(0, s.cost[i] - exp_sim[i])
+                        if s.gain_idx >= 0:
+                            exp_sim[s.gain_idx] += 1
                     junk_after = sum(me.storage) - min(spend, sum(me.storage)) + 1
                     if junk_after <= 5:
                         for i in range(5):

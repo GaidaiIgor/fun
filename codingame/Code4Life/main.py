@@ -268,7 +268,7 @@ def blocked_sample(state: State) -> Sample | None:
     for sample in state.mine:
         if not sample.diagnosed:
             continue
-        if sample.health <= 10 and is_sample_blocked(state, sample):
+        if is_sample_blocked(state, sample):
             candidates.append(sample)
     return min(candidates, key=lambda sample: sample_value(state, sample)) if candidates else None
 
@@ -333,8 +333,6 @@ def command_at_molecules(state: State) -> str:
         return f"CONNECT {molecule}"
     if complete_sample(state) is not None:
         return f"GOTO {LABORATORY}"
-    if blocked_sample(state) is None and best_batch(state, ignore_available=True):
-        return "WAIT"
     return f"GOTO {DIAGNOSIS}"
 
 

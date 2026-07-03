@@ -159,9 +159,9 @@ def choose_rank(state: State) -> int:
     :return: Rank number to request."""
     if state.turn > 165:
         return 1 if state.me.expertise_total < 8 else 2
-    if state.me.expertise_total < 7:
+    if state.me.expertise_total < 6:
         return 1
-    if state.me.expertise_total < 13:
+    if state.me.expertise_total < 12:
         return 2
     return 3
 
@@ -231,9 +231,19 @@ def best_cloud_sample(state: State) -> Sample | None:
     room = 3 - len(state.mine)
     if room <= 0:
         return None
-    candidates = [sample for sample in state.cloud if is_sample_possible(state, sample)]
+    candidates = [sample for sample in state.cloud if is_sample_possible(state, sample) and not is_sample_blocked(state, sample)]
     scored = sorted(candidates, key=lambda sample: sample_value(state, sample), reverse=True)
     return scored[0] if scored else None
+
+
+def is_sample_blocked(state: State, sample: Sample) -> bool:
+    """Checks whether all missing molecules for a sample are unavailable.
+    :param state: Current game state.
+    :param sample: Sample to check.
+    :return: True when progress on this sample is currently impossible."""
+    need = sample.need(state.me.expertise)
+    missing = tuple(max(need[index] - state.me.storage[index], 0) for index in range(len(TYPES)))
+    return any(missing) and all(state.available[index] == 0 for index, count in enumerate(missing) if count > 0)
 
 
 def blocked_sample(state: State) -> Sample | None:
@@ -246,9 +256,7 @@ def blocked_sample(state: State) -> Sample | None:
     for sample in state.mine:
         if not sample.diagnosed:
             continue
-        need = sample.need(state.me.expertise)
-        missing = tuple(max(need[index] - state.me.storage[index], 0) for index in range(len(TYPES)))
-        if any(missing) and all(state.available[index] == 0 for index, count in enumerate(missing) if count > 0):
+        if is_sample_blocked(state, sample):
             candidates.append(sample)
     return min(candidates, key=lambda sample: sample_value(state, sample)) if candidates else None
 

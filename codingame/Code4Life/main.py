@@ -176,6 +176,9 @@ def command_at_diagnosis(state: State) -> str:
     impossible = [sample for sample in state.mine if sample.diagnosed and not is_sample_possible(state, sample)]
     if impossible:
         return f"CONNECT {min(impossible, key=lambda sample: sample_value(state, sample)).id}"
+    blocked = blocked_sample(state)
+    if blocked is not None:
+        return f"CONNECT {blocked.id}"
     cloud_sample = best_cloud_sample(state)
     if cloud_sample is not None and \
             (len(state.mine) < 2 or sample_value(state, cloud_sample) > min(sample_value(state, sample) for sample in state.mine if sample.diagnosed)):
@@ -231,6 +234,23 @@ def best_cloud_sample(state: State) -> Sample | None:
     candidates = [sample for sample in state.cloud if is_sample_possible(state, sample)]
     scored = sorted(candidates, key=lambda sample: sample_value(state, sample), reverse=True)
     return scored[0] if scored else None
+
+
+def blocked_sample(state: State) -> Sample | None:
+    """Chooses a carried sample whose missing molecules are all unavailable.
+    :param state: Current game state.
+    :return: Selected sample to store in the cloud, or None."""
+    if best_batch(state):
+        return None
+    candidates = []
+    for sample in state.mine:
+        if not sample.diagnosed:
+            continue
+        need = sample.need(state.me.expertise)
+        missing = tuple(max(need[index] - state.me.storage[index], 0) for index in range(len(TYPES)))
+        if any(missing) and all(state.available[index] == 0 for index, count in enumerate(missing) if count > 0):
+            candidates.append(sample)
+    return min(candidates, key=lambda sample: sample_value(state, sample)) if candidates else None
 
 
 def best_batch(state: State, samples: list[Sample] | None = None, ignore_available: bool = False) -> tuple[Sample, ...]:
@@ -293,8 +313,6 @@ def command_at_molecules(state: State) -> str:
         return f"CONNECT {molecule}"
     if complete_sample(state) is not None:
         return f"GOTO {LABORATORY}"
-    if best_batch(state, ignore_available=True):
-        return "WAIT"
     return f"GOTO {DIAGNOSIS}"
 
 

@@ -12,6 +12,7 @@ SAMPLES = "SAMPLES"
 DIAGNOSIS = "DIAGNOSIS"
 MOLECULES = "MOLECULES"
 LABORATORY = "LABORATORY"
+DROPPED_SAMPLE_TURNS: dict[int, int] = {}
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class Sample:
         :param expertise: Current expertise by molecule type.
         :return: Required molecule counts by type."""
         return tuple(max(cost - expertise[index], 0) for index, cost in enumerate(self.cost))
+
 
 @dataclass(frozen=True)
 class State:
@@ -148,9 +150,20 @@ def command_at_samples(state: State) -> str:
     """Chooses a command while at SAMPLES.
     :param state: Current game state.
     :return: Command to print."""
-    if len(state.mine) < 3:
+    if len(state.mine) < sample_limit(state):
         return f"CONNECT {choose_rank(state)}"
     return f"GOTO {DIAGNOSIS}"
+
+
+def sample_limit(state: State) -> int:
+    """Chooses how many samples to carry in the current time window.
+    :param state: Current game state.
+    :return: Target number of carried samples."""
+    if state.turn > 184:
+        return 1
+    if state.turn > 170:
+        return 2
+    return 3
 
 
 def choose_rank(state: State) -> int:
@@ -175,16 +188,21 @@ def command_at_diagnosis(state: State) -> str:
         return f"CONNECT {undiagnosed[0].id}"
     impossible = [sample for sample in state.mine if sample.diagnosed and not is_sample_possible(state, sample)]
     if impossible:
-        return f"CONNECT {min(impossible, key=lambda sample: sample_value(state, sample)).id}"
+        sample = min(impossible, key=lambda item: sample_value(state, item))
+        DROPPED_SAMPLE_TURNS[sample.id] = state.turn
+        return f"CONNECT {sample.id}"
     blocked = blocked_sample(state)
     if blocked is not None:
+        DROPPED_SAMPLE_TURNS[blocked.id] = state.turn
         return f"CONNECT {blocked.id}"
     cloud_sample = best_cloud_sample(state)
     if cloud_sample is not None and \
             (len(state.mine) < 2 or sample_value(state, cloud_sample) > min(sample_value(state, sample) for sample in state.mine if sample.diagnosed)):
         return f"CONNECT {cloud_sample.id}"
     if not best_batch(state) and not best_batch(state, ignore_available=True) and state.mine:
-        return f"CONNECT {min(state.mine, key=lambda sample: sample_value(state, sample)).id}"
+        sample = min(state.mine, key=lambda item: sample_value(state, item))
+        DROPPED_SAMPLE_TURNS[sample.id] = state.turn
+        return f"CONNECT {sample.id}"
     return route_after_diagnosis(state)
 
 
@@ -213,15 +231,17 @@ def project_gain_value(state: State, sample: Sample) -> int:
     if sample.gain not in TYPES:
         return 0
     gain_index = TYPES.index(sample.gain)
-    if all(state.me.expertise[index] >= project[index] for project in state.projects for index in range(len(TYPES))):
+    projects = [project for project in state.projects if not all(state.me.expertise[index] >= project[index] for index in range(len(TYPES))) and
+        not all(state.opponent.expertise[index] >= project[index] for index in range(len(TYPES)))]
+    if not projects:
         return 0
     expertise = list(state.me.expertise)
     expertise[gain_index] += 1
     completes_project = any(all(expertise[index] >= project[index] for index in range(len(TYPES))) and \
-        any(state.me.expertise[index] < project[index] for index in range(len(TYPES))) for project in state.projects)
+        any(state.me.expertise[index] < project[index] for index in range(len(TYPES))) for project in projects)
     if completes_project:
         return 520
-    return 35 if any(state.me.expertise[gain_index] < project[gain_index] for project in state.projects) else 5
+    return 35 if any(state.me.expertise[gain_index] < project[gain_index] for project in projects) else 5
 
 
 def best_cloud_sample(state: State) -> Sample | None:
@@ -231,7 +251,8 @@ def best_cloud_sample(state: State) -> Sample | None:
     room = 3 - len(state.mine)
     if room <= 0:
         return None
-    candidates = [sample for sample in state.cloud if is_sample_possible(state, sample) and not is_sample_blocked(state, sample)]
+    candidates = [sample for sample in state.cloud if is_sample_possible(state, sample) and not is_sample_blocked(state, sample) and
+        state.turn - DROPPED_SAMPLE_TURNS.get(sample.id, -1000) >= 20]
     scored = sorted(candidates, key=lambda sample: sample_value(state, sample), reverse=True)
     return scored[0] if scored else None
 

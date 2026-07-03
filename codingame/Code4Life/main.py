@@ -159,9 +159,9 @@ def choose_rank(state: State) -> int:
     :return: Rank number to request."""
     if state.turn > 165:
         return 1 if state.me.expertise_total < 8 else 2
-    if state.me.expertise_total < 3:
+    if state.me.expertise_total < 7:
         return 1
-    if state.me.expertise_total < 8:
+    if state.me.expertise_total < 13:
         return 2
     return 3
 
@@ -302,7 +302,7 @@ def molecule_to_collect(state: State) -> str | None:
     """Chooses the next molecule to collect for the current best batch.
     :param state: Current game state.
     :return: Molecule type or None."""
-    batch = best_batch(state)
+    batch = best_batch(state) or best_batch(state, ignore_available=True)
     if not batch:
         return None
     missing = batch_missing(batch_need(batch, state.me.expertise), state.me.storage)

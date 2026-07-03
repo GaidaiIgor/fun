@@ -1,518 +1,338 @@
+"""Plays the Code4Life arena game with a compact heuristic bot."""
+
+from __future__ import annotations
+
 import sys
-import traceback
-from itertools import permutations
+from dataclasses import dataclass
+from itertools import combinations
+
 
 TYPES = "ABCDE"
-TIDX = {c: i for i, c in enumerate(TYPES)}
-CARRY = 10  # molecule carry limit
+SAMPLES = "SAMPLES"
+DIAGNOSIS = "DIAGNOSIS"
+MOLECULES = "MOLECULES"
+LABORATORY = "LABORATORY"
 
 
-def log(*args):
-    print(*args, file=sys.stderr)
+@dataclass(frozen=True)
+class Robot:
+    """Stores one robot turn snapshot.
+    :var target: Module where the robot is located or moving.
+    :var eta: Turns left before arriving.
+    :var score: Current health score.
+    :var storage: Molecules currently carried by type A through E.
+    :var expertise: Expertise currently owned by type A through E."""
+
+    target: str
+    eta: int
+    score: int
+    storage: tuple[int, ...]
+    expertise: tuple[int, ...]
+
+    @property
+    def storage_total(self) -> int:
+        """Returns the total number of carried molecules."""
+        return sum(self.storage)
+
+    @property
+    def expertise_total(self) -> int:
+        """Returns the total molecule expertise."""
+        return sum(self.expertise)
 
 
-class Obj(object):
-    pass
+@dataclass(frozen=True)
+class Sample:
+    """Stores one sample data file visible in the game.
+    :var id: Unique sample identifier.
+    :var carried_by: Owner marker, where 0 is us, 1 is the opponent, and -1 is the cloud.
+    :var rank: Sample rank from 1 through 3.
+    :var gain: Expertise molecule awarded after research.
+    :var health: Health points awarded after research, or -1 while undiagnosed.
+    :var cost: Molecule cost by type A through E, or -1 values while undiagnosed."""
 
+    id: int
+    carried_by: int
+    rank: int
+    gain: str
+    health: int
+    cost: tuple[int, ...]
 
-def parse_player(line):
-    t = line.split()
-    p = Obj()
-    p.target = t[0]
-    p.eta = int(t[1])
-    p.score = int(t[2])
-    p.storage = [int(x) for x in t[3:8]]
-    p.expertise = [int(x) for x in t[8:13]]
-    return p
+    @property
+    def diagnosed(self) -> bool:
+        """Returns whether the sample has known health and molecule costs."""
+        return self.health >= 0
 
+    def need(self, expertise: tuple[int, ...]) -> tuple[int, ...]:
+        """Calculates molecules needed after expertise discounts.
+        :param expertise: Current expertise by molecule type.
+        :return: Required molecule counts by type."""
+        return tuple(max(cost - expertise[index], 0) for index, cost in enumerate(self.cost))
 
-def parse_sample(t):
-    s = Obj()
-    s.id = int(t[0])
-    s.carried_by = int(t[1])
-    s.rank = int(t[2])
-    s.gain = t[3]
-    s.gain_idx = TIDX.get(t[3], -1)
-    s.health = int(t[4])
-    s.cost = [int(x) for x in t[5:10]]
-    s.diagnosed = s.health >= 0
-    return s
+@dataclass(frozen=True)
+class State:
+    """Stores the complete information needed to choose one command.
+    :var projects: Science project expertise requirements.
+    :var turn: Zero-based turn index.
+    :var me: Our robot snapshot.
+    :var opponent: Opponent robot snapshot.
+    :var available: Molecules currently available at the terminal.
+    :var samples: All visible samples."""
 
+    projects: list[tuple[int, ...]]
+    turn: int
+    me: Robot
+    opponent: Robot
+    available: tuple[int, ...]
+    samples: list[Sample]
 
-def eff_cost(s, exp):
-    return [max(0, s.cost[i] - exp[i]) for i in range(5)]
+    @property
+    def mine(self) -> list[Sample]:
+        """Returns samples currently carried by us."""
+        return [sample for sample in self.samples if sample.carried_by == 0]
 
-
-def feasible(s, exp):
-    # can this sample ever be completed in one trip with current expertise?
-    e = eff_cost(s, exp)
-    return max(e) <= 5 and sum(e) <= CARRY
-
-
-def buyable(s, exp, storage, avail):
-    # can this sample be completed right now: missing molecules are in the
-    # pool AND fit under the carry limit (held molecules can never be dropped)
-    e = eff_cost(s, exp)
-    take = [max(0, e[i] - storage[i]) for i in range(5)]
-    return all(take[i] <= avail[i] for i in range(5)) and sum(storage) + sum(take) <= CARRY
-
-
-def gift_risk(s, opp_exp, tl):
-    # points the opponent likely gains if we dump this sample to the cloud
-    if tl < 10:
-        return 0.0
-    e = [max(0, s.cost[i] - opp_exp[i]) for i in range(5)]
-    if max(e) <= 5 and sum(e) <= 9:
-        return float(s.health)
-    return 0.0
-
-
-def project_active(p, my_exp, opp_exp):
-    if all(my_exp[i] >= p[i] for i in range(5)):
-        return False
-    if all(opp_exp[i] >= p[i] for i in range(5)):
-        return False
-    return True
-
-
-def gain_bonus(gidx, my_exp, opp_exp, projects, tl):
-    # value of gaining one expertise of type gidx
-    if gidx < 0:
-        return 0.0
-    # generic value: cost savings pay back over the remaining game
-    b = 1.0 + min(5.0, tl / 40.0)
-    # balanced expertise unlocks more affordable samples and projects
-    if my_exp[gidx] <= min(my_exp) + 1:
-        b += 1.5
-    for p in projects:
-        if not project_active(p, my_exp, opp_exp):
-            continue
-        rem = [max(0, p[i] - my_exp[i]) for i in range(5)]
-        tot = sum(rem)
-        if tot > 0 and rem[gidx] > 0:
-            # discount projects the opponent is closer to winning
-            opp_rem = sum(max(0, p[i] - opp_exp[i]) for i in range(5))
-            # nearly-complete projects stay worth chasing even when behind:
-            # the opponent may never draw the finishing gain
-            floor = 0.4 if tot <= 2 else 0.15
-            w = 1.0 if tot <= opp_rem else max(floor, float(opp_rem) / (tot + opp_rem))
-            b += w * 50.0 / tot
-            if tot == 1 and opp_rem <= 2:
-                b += 15.0  # sprint: land the decisive expertise first
-    return b
-
-
-def sample_value(s, my_exp, opp_exp, projects, tl):
-    return s.health + gain_bonus(s.gain_idx, my_exp, opp_exp, projects, tl)
-
-
-def best_plan(diag, my_exp, opp_exp, storage, available, projects, tl=999, overhead=3):
-    """Pick the best ordered subset of carried diagnosed samples to produce in
-    one molecules->lab trip. Expertise gained from producing earlier samples
-    reduces the molecule needs of later ones, so order matters.
-    A sequence must fit in the remaining turns: molecules to take + overhead
-    (travel to lab) + one production turn per sample.
-    Returns {"perm": tuple, "take": [5], "value": float} or None."""
-    best = None
-    stot = sum(storage)
-    for r in range(1, len(diag) + 1):
-        for perm in permutations(diag, r):
-            exp_sim = list(my_exp)
-            need_tot = [0] * 5
-            val = 0.0
-            for s in perm:
-                for i in range(5):
-                    need_tot[i] += max(0, s.cost[i] - exp_sim[i])
-                val += s.health + gain_bonus(s.gain_idx, exp_sim, opp_exp, projects, tl)
-                if s.gain_idx >= 0:
-                    exp_sim[s.gain_idx] += 1
-            take = [max(0, need_tot[i] - storage[i]) for i in range(5)]
-            if any(take[i] > available[i] for i in range(5)):
-                continue
-            tk = sum(take)
-            if stot + tk > CARRY:
-                continue
-            if tk + overhead + r > tl:
-                continue
-            key = (val - 0.35 * tk, r)
-            if best is None or key > best["key"]:
-                best = {"key": key, "perm": perm, "take": take, "value": val}
-    return best
-
-
-def choose_rank(E, k, tl=200):
-    # E = total expertise, k = samples already in hand
-    k = min(k, 2)
-    # full expertise rush (top-of-league meta): rank-1 medicines cost ~3
-    # molecules and gain +1 expertise each; with balanced expertise ~12+
-    # the rank-2/3 cash-out is nearly free and projects land automatically
-    if E <= 10:
-        return 1
-    if E <= 13:
-        return (3, 2, 2)[k]
-    return 3
-
-
-def decide(me, opp, avail, samples, projects, turn, state):
-    """Returns command. state persists across turns:
-    state["wait"]: consecutive blocked-waits at MOLECULES
-    state["blocked"]: ids of carried samples marked unbuyable (pool starved)
-    state["age"]: turns each diagnosed sample has spent in hand"""
-    wait_count = state["wait"]
-    mine = [s for s in samples if s.carried_by == 0]
-    mine_diag = [s for s in mine if s.diagnosed]
-    mine_undiag = [s for s in mine if not s.diagnosed]
-    # does this opponent mine the cloud? (samples that moved cloud -> their hand)
-    cloud_ids = set(s.id for s in samples if s.carried_by == -1)
-    opp_ids = set(s.id for s in samples if s.carried_by == 1)
-    state["opp_mined"] += len(state["cloud_prev"] & opp_ids)
-    state["cloud_prev"] = cloud_ids
-    # consecutive turns each molecule type has been completely gone
-    for i in range(5):
-        state["starve"][i] = state["starve"][i] + 1 if avail[i] == 0 else 0
-    # withhold gifts only from proven repeat cloud-miners; a default-cautious
-    # window clogged the hand against the majority who never mine
-    opp_mines = state["opp_mined"] >= 2
-    # how long each diagnosed sample has been stuck in hand
-    ages = state["age"]
-    held_ids = set(s.id for s in mine_diag)
-    for i in list(ages.keys()):
-        if i not in held_ids:
-            del ages[i]
-    for i in held_ids:
-        ages[i] = ages.get(i, 0) + 1
-    exp = me.expertise
-    E = sum(exp)
-    tl = 201 - turn  # turns remaining, including this one
-
-    hand = " | ".join(
-        "%d:r%d h%d g%s %s" % (s.id, s.rank, s.health, s.gain,
-                               ("e%s=%d" % (eff_cost(s, exp), sum(eff_cost(s, exp)))) if s.diagnosed else "undiag")
-        for s in mine) or "-"
-    log("T%d tl=%d me@%s eta%d sc%d st%s=%d ex%s E%d" %
-        (turn, tl, me.target, me.eta, me.score, me.storage, sum(me.storage), exp, E))
-    log("  pool%s | opp@%s eta%d sc%d ex%s ost%d ohand%d" %
-        (avail, opp.target, opp.eta, opp.score, opp.expertise, sum(opp.storage),
-         len([s for s in samples if s.carried_by == 1])))
-    log("  hand: %s" % hand)
-    cloud = [s for s in samples if s.carried_by == -1 and s.diagnosed]
-    if cloud:
-        log("  cloud: %s" % " | ".join(
-            "%d:h%d e%d o%d" % (s.id, s.health, sum(eff_cost(s, exp)),
-                                sum(max(0, s.cost[i] - opp.expertise[i]) for i in range(5)))
-            for s in sorted(cloud, key=lambda x: -x.health)[:6]))
-
-    waited = False
-    cmd = None
-    why = ""
-
-    if me.eta > 0:
-        cmd, why = "WAIT", "moving"
-
-    elif me.target not in ("SAMPLES", "DIAGNOSIS", "MOLECULES", "LABORATORY"):
-        cmd, why = "GOTO SAMPLES", "leave start"
-
-    elif me.target == "SAMPLES":
-        if len(mine) < 3:
-            r = choose_rank(E, len(mine), tl)
-            # near the end there is no time for expensive medicines
-            # (a one-sample cycle from here is ~12 + molecule count turns)
-            if tl < 25:
-                r = min(r, 2)
-            if tl < 17:
-                # high expertise makes rank 2 samples often free
-                r = 2 if E >= 12 else 1
-            # storage clogged with mismatched molecules: cheap samples are the
-            # likeliest to be producible from what we already hold
-            if sum(me.storage) >= 9 and E < 6:
-                r = 1
-            cmd, why = "CONNECT %d" % r, "take rank%d" % r
-        else:
-            cmd, why = "GOTO DIAGNOSIS", "hand full"
-
-    elif me.target == "DIAGNOSIS":
-        if mine_undiag:
-            cmd, why = "CONNECT %d" % mine_undiag[0].id, "diagnose"
-        else:
-            # dumping feeds cloud-mining opponents: withhold gifts from them
-            # except in emergencies (weak opponents never touch the cloud)
-            def safe(s):
-                return not opp_mines or gift_risk(s, opp.expertise, tl) < 25
-            junk = [s for s in mine_diag if not feasible(s, exp) and safe(s)]
-            if not junk:
-                # stale: stuck in hand for ages and still not buyable
-                junk = [s for s in mine_diag
-                        if ages.get(s.id, 0) > 40 and safe(s)
-                        and not buyable(s, exp, me.storage, avail)]
-            if not junk and tl > 40:
-                # drought reroll: a CHEAP sample deeply dependent on a type an
-                # opponent has camped to zero is dead weight - recycle it.
-                # Cash-out samples (health > 25) are never touched.
-                junk = [s for s in mine_diag
-                        if s.health <= 25 and safe(s) and any(
-                            eff_cost(s, exp)[i] - me.storage[i] >= 2
-                            and state["starve"][i] >= 10
-                            for i in range(5))]
-            if not junk and tl < 25 and tl > 8:
-                # no time left to finish this sample: free the slot - but a
-                # dump costs a turn, so never strand a still-producible sample
-                hopeless, min_slack = [], 999
-                for s in mine_diag:
-                    missing = sum(max(0, eff_cost(s, exp)[i] - me.storage[i]) for i in range(5))
-                    needed = 5 if missing == 0 else missing + 7
-                    if needed > tl and safe(s):
-                        hopeless.append(s)
-                    elif needed <= tl:
-                        min_slack = min(min_slack, tl - needed)
-                if hopeless and min_slack >= 2:
-                    junk = hopeless
-            if not junk and state["blocked"]:
-                # samples we marked while starved at MOLECULES: dump those that
-                # still cannot be bought (pool starved or storage clogged) and
-                # are not part of a currently workable multi-sample plan.
-                # This is the deadlock escape, so gifts are allowed here -
-                # but dump the cheapest gift first
-                p_now = best_plan(mine_diag, exp, opp.expertise, me.storage, avail,
-                                  projects, tl=tl, overhead=6)
-                keep = set(s.id for s in p_now["perm"]) if p_now else set()
-                for s in mine_diag:
-                    if s.id in state["blocked"] and s.id not in keep \
-                            and not buyable(s, exp, me.storage, avail):
-                        junk.append(s)
-                if not junk:
-                    state["blocked"].clear()
-            if junk:
-                junk.sort(key=lambda s: gift_risk(s, opp.expertise, tl))
-                state["blocked"].discard(junk[0].id)
-                cmd, why = "CONNECT %d" % junk[0].id, "dump %d (gift %d)" % (
-                    junk[0].id, gift_risk(junk[0], opp.expertise, tl))
-            else:
-                if len(mine) < 3:
-                    best_c, best_ratio = None, 0.0
-                    thr = {0: 1.8, 1: 2.2}.get(len(mine), 2.8)
-                    for s in samples:
-                        if s.carried_by == -1 and s.diagnosed and feasible(s, exp):
-                            # only samples we could actually buy right now
-                            if not buyable(s, exp, me.storage, avail):
-                                continue
-                            take = sum(max(0, eff_cost(s, exp)[i] - me.storage[i])
-                                       for i in range(5))
-                            if 1 + 3 + take + 3 + 1 + len(mine_diag) > tl:
-                                continue
-                            v = sample_value(s, exp, opp.expertise, projects, tl)
-                            ratio = v / (2.0 + take)
-                            if ratio > best_ratio:
-                                best_c, best_ratio = s, ratio
-                    if best_c is not None and best_ratio >= thr:
-                        cmd, why = "CONNECT %d" % best_c.id, "cloud pick %d (r=%.2f)" % (best_c.id, best_ratio)
-                if cmd is None and len(mine) == 3 and not mine_undiag and tl > 30:
-                    # hand full but the cloud holds a gem: swap out the worst
-                    # held sample if the upgrade is clearly worth 2 turns
-                    best_c, best_net = None, -999.0
-                    for s in samples:
-                        if s.carried_by == -1 and s.diagnosed and feasible(s, exp) \
-                                and buyable(s, exp, me.storage, avail):
-                            take = sum(max(0, eff_cost(s, exp)[i] - me.storage[i])
-                                       for i in range(5))
-                            if 2 + 3 + take + 3 + 1 + len(mine_diag) > tl:
-                                continue
-                            net = sample_value(s, exp, opp.expertise, projects, tl) - 0.35 * take
-                            if net > best_net:
-                                best_c, best_net = s, net
-                    if best_c is not None and mine_diag:
-                        worst = min(mine_diag, key=lambda s: sample_value(s, exp, opp.expertise, projects, tl)
-                                    - 0.35 * sum(max(0, eff_cost(s, exp)[i] - me.storage[i]) for i in range(5)))
-                        w_net = sample_value(worst, exp, opp.expertise, projects, tl) \
-                            - 0.35 * sum(max(0, eff_cost(worst, exp)[i] - me.storage[i]) for i in range(5))
-                        if best_net >= w_net + 18 and (not opp_mines
-                                                       or gift_risk(worst, opp.expertise, tl) < 25):
-                            cmd, why = "CONNECT %d" % worst.id, "swap out %d for cloud %d (+%.0f)" % (
-                                worst.id, best_c.id, best_net - w_net)
-                if cmd is None:
-                    p_direct = best_plan(mine_diag, exp, opp.expertise, me.storage,
-                                         [0] * 5, projects, tl=tl, overhead=4)
-                    p_mol = best_plan(mine_diag, exp, opp.expertise, me.storage,
-                                      avail, projects, tl=tl, overhead=6)
-                    if len(mine) == 0:
-                        cmd, why = "GOTO SAMPLES", "empty hand"
-                    elif len(mine) <= 1 and tl > 40:
-                        cmd, why = "GOTO SAMPLES", "top up hand"
-                    elif p_direct is not None and (
-                            p_mol is None or sum(p_mol["take"]) == 0
-                            or p_direct["value"] >= p_mol["value"]):
-                        # storage already covers the best plan: skip MOLECULES
-                        cmd, why = "GOTO LABORATORY", "funded, direct %s" % [s.id for s in p_direct["perm"]]
-                    else:
-                        cmd, why = "GOTO MOLECULES", "go collect"
-
-    elif me.target == "MOLECULES":
-        # what the opponent is still missing for their diagnosed samples
-        opp_need = [0] * 5
-        for s in samples:
-            if s.carried_by == 1 and s.diagnosed:
-                for i in range(5):
-                    opp_need[i] += max(0, s.cost[i] - opp.expertise[i])
-        opp_need = [max(0, opp_need[i] - opp.storage[i]) for i in range(5)]
-
-        p = best_plan(mine_diag, exp, opp.expertise, me.storage, avail, projects,
-                      tl=tl, overhead=3)
-        if p is not None:
-            state["blocked"].clear()
-            if sum(p["take"]) == 0:
-                # done gathering: deny the opponent a scarce molecule on the
-                # way out if it strands them and we have room and time
-                deny = None
-                if sum(me.storage) < CARRY and 3 + len(p["perm"]) + 1 <= tl:
-                    # true molecule spend: expertise gained mid-sequence
-                    # reduces later samples' needs
-                    exp_sim = list(exp)
-                    spend = 0
-                    for s in p["perm"]:
-                        for i in range(5):
-                            spend += max(0, s.cost[i] - exp_sim[i])
-                        if s.gain_idx >= 0:
-                            exp_sim[s.gain_idx] += 1
-                    junk_after = sum(me.storage) - min(spend, sum(me.storage)) + 1
-                    if junk_after <= 5:
-                        for i in range(5):
-                            if opp_need[i] > 0 and 1 <= avail[i] <= 3 and avail[i] <= opp_need[i]:
-                                deny = i if deny is None or avail[i] < avail[deny] else deny
-                if deny is not None:
-                    cmd, why = "CONNECT %s" % TYPES[deny], "deny %s (opp needs %d)" % (TYPES[deny], opp_need[deny])
-                else:
-                    cmd, why = "GOTO LABORATORY", "plan ready %s" % [s.id for s in p["perm"]]
-            else:
-                cands = [i for i in range(5) if p["take"][i] > 0]
-                # grab the scarcest contested type first
-                i = min(cands, key=lambda j: (avail[j] - p["take"][j], -p["take"][j]))
-                cmd = "CONNECT %s" % TYPES[i]
-                why = "gather for %s take%s" % ([s.id for s in p["perm"]], p["take"])
-        else:
-            feas = [s for s in mine_diag if feasible(s, exp)]
-            # samples whose remainder fits the carry limit: pool refill can fix
-            # these, waiting cannot fix a capacity clog
-            cands_s = []
-            starved = set()
-            for s in feas:
-                e = eff_cost(s, exp)
-                take = [max(0, e[i] - me.storage[i]) for i in range(5)]
-                if sum(me.storage) + sum(take) <= CARRY:
-                    cands_s.append(s)
-                    for i in range(5):
-                        if take[i] > avail[i]:
-                            starved.add(i)
-            if cands_s and sum(me.storage) < CARRY:
-                # pool is blocking a full plan: pre-gather what IS available
-                # for the most valuable such sample that can still finish
-                # in the remaining turns (missing + travel 3 + produce 1)
-                timely = [s for s in cands_s
-                          if sum(max(0, eff_cost(s, exp)[i] - me.storage[i])
-                                 for i in range(5)) + 4 <= tl]
-                if timely:
-                    tgt = max(timely, key=lambda s: sample_value(s, exp, opp.expertise, projects, tl))
-                    e = eff_cost(tgt, exp)
-                    needs = [i for i in range(5) if e[i] - me.storage[i] > 0 and avail[i] > 0]
-                    if needs:
-                        i = min(needs, key=lambda j: avail[j])
-                        cmd, why = "CONNECT %s" % TYPES[i], "partial gather for %d" % tgt.id
-            if cmd is None:
-                # will the opponent's future lab spend return a starved type?
-                opp_spend = [0] * 5
-                for s in samples:
-                    if s.carried_by == 1 and s.diagnosed:
-                        for i in range(5):
-                            opp_spend[i] += max(0, s.cost[i] - opp.expertise[i])
-                refill_helps = any(min(opp.storage[i], opp_spend[i]) > 0 for i in starved)
-                if opp.target == "LABORATORY" and refill_helps:
-                    cap = 8
-                elif sum(opp.storage) >= 5 and refill_helps:
-                    cap = 5
-                else:
-                    cap = 2
-                if cands_s and wait_count < cap and tl > 8:
-                    cmd, why, waited = "WAIT", "pool blocked (w%d/%d)" % (wait_count, cap), True
-                elif len(mine) < 3 and tl > 25:
-                    cmd, why = "GOTO SAMPLES", "stuck, refill hand"
-                elif mine_diag and tl > 12:
-                    # pool starved or storage clogged and waiting did not help:
-                    # flush the hand
-                    for s in mine_diag:
-                        if not buyable(s, exp, me.storage, avail):
-                            state["blocked"].add(s.id)
-                    cmd, why = "GOTO DIAGNOSIS", "stuck, dump blocked %s" % sorted(state["blocked"])
-                else:
-                    # dead turns anyway: starve the opponent if possible
-                    deny = None
-                    if sum(me.storage) < CARRY - 1:
-                        for i in range(5):
-                            if opp_need[i] > 0 and 1 <= avail[i] <= 3 and avail[i] <= opp_need[i]:
-                                deny = i if deny is None or avail[i] < avail[deny] else deny
-                    if deny is not None:
-                        cmd, why = "CONNECT %s" % TYPES[deny], "idle deny %s" % TYPES[deny]
-                    else:
-                        cmd, why, waited = "WAIT", "stuck, hold position", True
-
-    elif me.target == "LABORATORY":
-        p = best_plan(mine_diag, exp, opp.expertise, me.storage, [0] * 5, projects,
-                      tl=tl, overhead=0)
-        if p is not None:
-            cmd, why = "CONNECT %d" % p["perm"][0].id, "produce, order %s" % [s.id for s in p["perm"]]
-        else:
-            p2 = best_plan(mine_diag, exp, opp.expertise, me.storage, avail, projects,
-                           tl=tl, overhead=6)
-            feas = [s for s in mine_diag if feasible(s, exp)]
-            if p2 is not None and tl > 7:
-                cmd, why = "GOTO MOLECULES", "fetch mols for %s" % [s.id for s in p2["perm"]]
-            elif any(not feasible(s, exp) for s in mine_diag) and tl > 20:
-                cmd, why = "GOTO DIAGNOSIS", "rework hand"
-            elif len(mine) < 3 and (tl > 18 or (tl > 13 and E >= 10)):
-                # with high expertise a free-sample cycle fits in ~13 turns
-                cmd, why = "GOTO SAMPLES", "restock"
-            elif feas and tl > 7:
-                # pool may refill while we travel; partial-gather there
-                cmd, why = "GOTO MOLECULES", "chase pool refill"
-            else:
-                cmd, why = "WAIT", "nothing useful left"
-
-    if cmd is None:
-        cmd, why = "WAIT", "fallthrough"
-
-    state["wait"] = wait_count + 1 if waited else 0
-    log("  -> %s (%s)" % (cmd, why))
-    return cmd
+    @property
+    def cloud(self) -> list[Sample]:
+        """Returns diagnosed samples currently stored in the cloud."""
+        return [sample for sample in self.samples if sample.carried_by == -1 and sample.diagnosed]
 
 
 def main():
-    read = sys.stdin.readline
-    project_count = int(read())
-    projects = []
-    for _ in range(project_count):
-        projects.append([int(x) for x in read().split()])
-    log("projects: %s" % projects)
-
-    state = {"wait": 0, "blocked": set(), "age": {},
-             "cloud_prev": set(), "opp_mined": 0, "starve": [0] * 5}
+    """Runs the arena input loop and prints one command each turn."""
+    first = sys.stdin.readline()
+    if not first:
+        return
+    projects = [tuple(int(value) for value in sys.stdin.readline().split()) for _ in range(int(first))]
     turn = 0
     while True:
-        line = read()
+        line = sys.stdin.readline()
         if not line:
-            break
+            return
+        me = parse_robot(line)
+        opponent = parse_robot(sys.stdin.readline())
+        available = tuple(int(value) for value in sys.stdin.readline().split())
+        samples = []
+        for _ in range(int(sys.stdin.readline())):
+            parts = sys.stdin.readline().split()
+            samples.append(Sample(int(parts[0]), int(parts[1]), int(parts[2]), parts[3], int(parts[4]), tuple(int(value) for value in parts[5:10])))
+        print(choose_command(State(projects, turn, me, opponent, available, samples)), flush=True)
         turn += 1
-        cmd = "WAIT"
-        try:
-            me = parse_player(line)
-            opp = parse_player(read())
-            avail = [int(x) for x in read().split()]
-            n = int(read())
-            samples = []
-            for _ in range(n):
-                samples.append(parse_sample(read().split()))
-            cmd = decide(me, opp, avail, samples, projects, turn, state)
-        except Exception:
-            traceback.print_exc(file=sys.stderr)
-            cmd = "WAIT"
-        print(cmd)
-        sys.stdout.flush()
+
+
+def parse_robot(line: str) -> Robot:
+    """Parses one robot input line.
+    :param line: Raw robot line from stdin.
+    :return: Parsed robot snapshot."""
+    parts = line.split()
+    values = [int(value) for value in parts[1:]]
+    return Robot(parts[0], values[0], values[1], tuple(values[2:7]), tuple(values[7:12]))
+
+
+def choose_command(state: State) -> str:
+    """Chooses one arena command for the current turn.
+    :param state: Current game state.
+    :return: Command to print."""
+    if state.me.eta > 0:
+        return "WAIT"
+    if state.me.target == SAMPLES:
+        return command_at_samples(state)
+    if state.me.target == DIAGNOSIS:
+        return command_at_diagnosis(state)
+    if state.me.target == MOLECULES:
+        return command_at_molecules(state)
+    if state.me.target == LABORATORY:
+        return command_at_laboratory(state)
+    return f"GOTO {SAMPLES}"
+
+
+def command_at_samples(state: State) -> str:
+    """Chooses a command while at SAMPLES.
+    :param state: Current game state.
+    :return: Command to print."""
+    if len(state.mine) < 3:
+        return f"CONNECT {choose_rank(state)}"
+    return f"GOTO {DIAGNOSIS}"
+
+
+def choose_rank(state: State) -> int:
+    """Chooses which rank to request at SAMPLES.
+    :param state: Current game state.
+    :return: Rank number to request."""
+    if state.turn > 165:
+        return 1 if state.me.expertise_total < 8 else 2
+    if state.me.expertise_total < 3:
+        return 1
+    if state.me.expertise_total < 8:
+        return 2
+    return 3
+
+
+def command_at_diagnosis(state: State) -> str:
+    """Chooses a command while at DIAGNOSIS.
+    :param state: Current game state.
+    :return: Command to print."""
+    undiagnosed = [sample for sample in state.mine if not sample.diagnosed]
+    if undiagnosed:
+        return f"CONNECT {undiagnosed[0].id}"
+    impossible = [sample for sample in state.mine if sample.diagnosed and not is_sample_possible(state, sample)]
+    if impossible:
+        return f"CONNECT {min(impossible, key=lambda sample: sample_value(state, sample)).id}"
+    cloud_sample = best_cloud_sample(state)
+    if cloud_sample is not None and \
+            (len(state.mine) < 2 or sample_value(state, cloud_sample) > min(sample_value(state, sample) for sample in state.mine if sample.diagnosed)):
+        return f"CONNECT {cloud_sample.id}"
+    if not best_batch(state) and not best_batch(state, ignore_available=True) and state.mine:
+        return f"CONNECT {min(state.mine, key=lambda sample: sample_value(state, sample)).id}"
+    return route_after_diagnosis(state)
+
+
+def is_sample_possible(state: State, sample: Sample) -> bool:
+    """Checks whether a diagnosed sample can fit in molecule storage.
+    :param state: Current game state.
+    :param sample: Sample to check.
+    :return: True when the sample can be completed with current expertise."""
+    return sample.diagnosed and sum(sample.need(state.me.expertise)) <= 10
+
+
+def sample_value(state: State, sample: Sample) -> int:
+    """Scores one diagnosed sample for planning.
+    :param state: Current game state.
+    :param sample: Sample to evaluate.
+    :return: Larger value for samples worth prioritizing."""
+    need = sample.need(state.me.expertise)
+    return sample.health * 10 + project_gain_value(state, sample) + sample.rank * 2 - sum(need) * 3
+
+
+def project_gain_value(state: State, sample: Sample) -> int:
+    """Scores how useful a sample expertise gain is for science projects.
+    :param state: Current game state.
+    :param sample: Sample whose gain should be scored.
+    :return: Heuristic value of the expertise gain."""
+    if sample.gain not in TYPES:
+        return 0
+    gain_index = TYPES.index(sample.gain)
+    if all(state.me.expertise[index] >= project[index] for project in state.projects for index in range(len(TYPES))):
+        return 0
+    expertise = list(state.me.expertise)
+    expertise[gain_index] += 1
+    completes_project = any(all(expertise[index] >= project[index] for index in range(len(TYPES))) and \
+        any(state.me.expertise[index] < project[index] for index in range(len(TYPES))) for project in state.projects)
+    if completes_project:
+        return 70
+    return 12 if any(state.me.expertise[gain_index] < project[gain_index] for project in state.projects) else 5
+
+
+def best_cloud_sample(state: State) -> Sample | None:
+    """Chooses a useful cloud sample to take at DIAGNOSIS.
+    :param state: Current game state.
+    :return: Selected sample or None."""
+    room = 3 - len(state.mine)
+    if room <= 0:
+        return None
+    candidates = [sample for sample in state.cloud if is_sample_possible(state, sample)]
+    scored = sorted(candidates, key=lambda sample: sample_value(state, sample), reverse=True)
+    return scored[0] if scored else None
+
+
+def best_batch(state: State, samples: list[Sample] | None = None, ignore_available: bool = False) -> tuple[Sample, ...]:
+    """Chooses the best feasible batch from diagnosed samples.
+    :param state: Current game state.
+    :param samples: Optional candidate samples, defaulting to our diagnosed carried samples.
+    :param ignore_available: Whether molecule terminal availability should be ignored.
+    :return: Chosen samples, possibly empty."""
+    candidates = [sample for sample in (state.mine if samples is None else samples) if is_sample_possible(state, sample)]
+    best = ()
+    best_score = -10 ** 9
+    for size in range(1, min(3, len(candidates)) + 1):
+        for batch in combinations(candidates, size):
+            need = batch_need(batch, state.me.expertise)
+            missing = batch_missing(need, state.me.storage)
+            if sum(need) > 10 or state.me.storage_total + sum(missing) > 10:
+                continue
+            if not ignore_available and any(missing[index] > state.available[index] for index in range(len(TYPES))):
+                continue
+            score = sum(sample_value(state, sample) for sample in batch) + sum(sample.health for sample in batch) - sum(missing) * 4 + size * 8
+            if score > best_score:
+                best = batch
+                best_score = score
+    return best
+
+
+def batch_need(samples: tuple[Sample, ...], expertise: tuple[int, ...]) -> tuple[int, ...]:
+    """Calculates total molecules needed for a batch of samples.
+    :param samples: Samples to research before collecting more samples.
+    :param expertise: Current expertise by molecule type.
+    :return: Total molecule requirement by type."""
+    return tuple(sum(sample.need(expertise)[index] for sample in samples) for index in range(len(TYPES)))
+
+
+def batch_missing(need: tuple[int, ...], storage: tuple[int, ...]) -> tuple[int, ...]:
+    """Calculates extra molecules needed for a batch beyond current storage.
+    :param need: Batch molecule requirement by type.
+    :param storage: Molecules already carried by type.
+    :return: Missing molecule counts by type."""
+    return tuple(max(need[index] - storage[index], 0) for index in range(len(TYPES)))
+
+
+def route_after_diagnosis(state: State) -> str:
+    """Chooses the next module after diagnosis work is done.
+    :param state: Current game state.
+    :return: Movement command."""
+    if best_batch(state) or best_batch(state, ignore_available=True):
+        return f"GOTO {MOLECULES}"
+    if len(state.mine) < 3:
+        return f"GOTO {SAMPLES}"
+    return f"GOTO {DIAGNOSIS}"
+
+
+def command_at_molecules(state: State) -> str:
+    """Chooses a command while at MOLECULES.
+    :param state: Current game state.
+    :return: Command to print."""
+    molecule = molecule_to_collect(state)
+    if molecule is not None:
+        return f"CONNECT {molecule}"
+    if complete_sample(state) is not None:
+        return f"GOTO {LABORATORY}"
+    if best_batch(state, ignore_available=True):
+        return "WAIT"
+    return f"GOTO {DIAGNOSIS}"
+
+
+def molecule_to_collect(state: State) -> str | None:
+    """Chooses the next molecule to collect for the current best batch.
+    :param state: Current game state.
+    :return: Molecule type or None."""
+    batch = best_batch(state)
+    if not batch:
+        return None
+    missing = batch_missing(batch_need(batch, state.me.expertise), state.me.storage)
+    choices = [index for index, count in enumerate(missing) if count > 0 and state.available[index] > 0]
+    if not choices:
+        return None
+    index = max(choices, key=lambda item: missing[item] * 10 - state.available[item] + state.opponent.storage[item])
+    return TYPES[index]
+
+
+def complete_sample(state: State) -> Sample | None:
+    """Chooses a carried sample that can be researched immediately.
+    :param state: Current game state.
+    :return: Selected sample or None."""
+    ready = [sample for sample in state.mine if sample.diagnosed and
+        all(sample.need(state.me.expertise)[index] <= state.me.storage[index] for index in range(len(TYPES)))]
+    scored = sorted(ready, key=lambda sample: sample_value(state, sample), reverse=True)
+    return scored[0] if scored else None
+
+
+def command_at_laboratory(state: State) -> str:
+    """Chooses a command while at LABORATORY.
+    :param state: Current game state.
+    :return: Command to print."""
+    sample = complete_sample(state)
+    if sample is not None:
+        return f"CONNECT {sample.id}"
+    if any(sample.diagnosed for sample in state.mine):
+        return f"GOTO {MOLECULES}"
+    return f"GOTO {SAMPLES}"
 
 
 if __name__ == "__main__":

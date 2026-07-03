@@ -214,15 +214,17 @@ def project_gain_value(state: State, sample: Sample) -> int:
     if sample.gain not in TYPES:
         return 0
     gain_index = TYPES.index(sample.gain)
-    if all(state.me.expertise[index] >= project[index] for project in state.projects for index in range(len(TYPES))):
+    projects = [project for project in state.projects if not all(state.me.expertise[index] >= project[index] for index in range(len(TYPES))) and
+        not all(state.opponent.expertise[index] >= project[index] for index in range(len(TYPES)))]
+    if not projects:
         return 0
     expertise = list(state.me.expertise)
     expertise[gain_index] += 1
     completes_project = any(all(expertise[index] >= project[index] for index in range(len(TYPES))) and \
-        any(state.me.expertise[index] < project[index] for index in range(len(TYPES))) for project in state.projects)
+        any(state.me.expertise[index] < project[index] for index in range(len(TYPES))) for project in projects)
     if completes_project:
         return 520
-    return 35 if any(state.me.expertise[gain_index] < project[gain_index] for project in state.projects) else 5
+    return 35 if any(state.me.expertise[gain_index] < project[gain_index] for project in projects) else 5
 
 
 def best_cloud_sample(state: State) -> Sample | None:

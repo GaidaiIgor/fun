@@ -159,9 +159,9 @@ def choose_rank(state: State) -> int:
     :return: Rank number to request."""
     if state.turn > 165:
         return 1 if state.me.expertise_total < 8 else 2
-    if state.me.expertise_total < 6:
+    if state.me.expertise_total < 3:
         return 1
-    if state.me.expertise_total < 12:
+    if state.me.expertise_total < 10:
         return 2
     return 3
 
@@ -220,8 +220,8 @@ def project_gain_value(state: State, sample: Sample) -> int:
     completes_project = any(all(expertise[index] >= project[index] for index in range(len(TYPES))) and \
         any(state.me.expertise[index] < project[index] for index in range(len(TYPES))) for project in state.projects)
     if completes_project:
-        return 70
-    return 12 if any(state.me.expertise[gain_index] < project[gain_index] for project in state.projects) else 5
+        return 520
+    return 35 if any(state.me.expertise[gain_index] < project[gain_index] for project in state.projects) else 5
 
 
 def best_cloud_sample(state: State) -> Sample | None:

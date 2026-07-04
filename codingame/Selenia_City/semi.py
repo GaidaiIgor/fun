@@ -548,9 +548,9 @@ class Planner:
             self.teleport_phase(queues, distances, state.teleports)
             self.settle(day, queues, module_arrivals, result)
             demand = self.directed_demand(queues, distances, state.tubes)
-            requests, month_over = self.pod_requests(state, pod_positions, dynamic_current, demand)
-            if month_over:
+            if not demand:
                 break
+            requests = self.pod_requests(state, pod_positions, dynamic_current, demand)
             moves = self.allocate_tube_capacity(requests, state, demand, result)
             self.board_and_launch(queues, distances, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
             self.settle(day + 1, queues, module_arrivals, result)
@@ -649,7 +649,7 @@ class Planner:
         return demand
 
     def pod_requests(self, state: PlanState, pod_positions: dict[int, int], dynamic_current: dict[int, int],
-            demand: Counter[DirectedPair]) -> tuple[dict[int, DirectedPair], bool]:
+            demand: Counter[DirectedPair]) -> dict[int, DirectedPair]:
         """Returns daily pod move requests, with dynamic pods choosing requests after fixed pods."""
         requests = {}
         for pod_id, pod in sorted(state.pods.items()):
@@ -660,8 +660,6 @@ class Planner:
             if next_index == index:
                 continue
             requests[pod_id] = (pod.path[index], pod.path[next_index])
-        if state.pods and any(pod.dynamic for pod in state.pods.values()) and not demand:
-            return requests, True
         service_counts = self.service_counts(state)
         full_graph = tube_graph(state.tubes)
         for pod_id, pod in sorted(state.pods.items()):
@@ -670,7 +668,7 @@ class Planner:
             move = self.dynamic_move(pod, dynamic_current[pod_id], demand, service_counts, full_graph)
             if move != (-1, -1):
                 requests[pod_id] = move
-        return requests, False
+        return requests
 
     def dynamic_move(self, pod: PodPlan, current_id: int, demand: Counter[DirectedPair], service_counts: Counter[Pair],
             full_graph: dict[int, list[int]]) -> DirectedPair:

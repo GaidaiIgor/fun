@@ -19,6 +19,7 @@ DRAG = 0.85
 CHECKPOINT_RADIUS = 600
 COLLISION_RADIUS = 800
 BOOST_THRUST = 650
+MAX_THRUST = 200
 MAX_TURN_DEG = 18
 
 # Common behavior constants
@@ -92,7 +93,7 @@ class RacerPod(BasePod):
         """
         checkpoint_direction = self.get_next_checkpoint_direction(game_state.checkpoints)
         if game_state.turn_ind == 0:
-            return checkpoint_direction, "BOOST" if self.should_boost(game_state, checkpoint_direction) else 100, [FutureState([], self)]
+            return checkpoint_direction, "BOOST" if self.should_boost(game_state, checkpoint_direction) else MAX_THRUST, [FutureState([], self)]
         if self.should_boost(game_state, checkpoint_direction):
             next_state = predict_next(self, game_state.checkpoints, normalize_angle(checkpoint_direction - self.direction), "BOOST")
             return checkpoint_direction, "BOOST", [FutureState([], self), next_state]
@@ -123,7 +124,7 @@ class RacerPod(BasePod):
         :return: Scipy optimization result with result.x constrained to legal model coordinates.
         """
         move_bounds = optimize.Bounds(np.tile(np.array((-MAX_TURN_DEG, 0), dtype=float), RACER_PREDICT_TURNS),
-                                      np.tile(np.array((MAX_TURN_DEG, 100), dtype=float), RACER_PREDICT_TURNS))
+                                      np.tile(np.array((MAX_TURN_DEG, MAX_THRUST), dtype=float), RACER_PREDICT_TURNS))
         result = optimize.minimize(lambda moves: get_optimizer_score(self, checkpoints, moves), self.get_optimizer_guess_moves(),
                                    method="L-BFGS-B", bounds=move_bounds, options={"maxiter": np.iinfo(np.int32).max})
         result.x = constrain_moves(result.x)
@@ -132,7 +133,7 @@ class RacerPod(BasePod):
     @staticmethod
     def get_optimizer_guess_moves() -> NDArray[float]:
         """Returns the neutral optimizer seed: zero direction change and full base thrust for each predicted turn."""
-        return np.tile(np.array((0, 100), dtype=float), RACER_PREDICT_TURNS)
+        return np.tile(np.array((0, MAX_THRUST), dtype=float), RACER_PREDICT_TURNS)
 
 
 @dataclass(slots=True)
@@ -143,7 +144,7 @@ class BrutePod(BasePod):
         """Chooses the brute command from game_state, using racer_trajectory for avoidance when provided. Returns command direction and thrust."""
         enemy = self.get_lead_enemy(game_state)
         if game_state.turn_ind == 0:
-            return self.get_target_direction(game_state.checkpoints[(enemy.next_checkpoint_ind + 1) % len(game_state.checkpoints)]), 100
+            return self.get_target_direction(game_state.checkpoints[(enemy.next_checkpoint_ind + 1) % len(game_state.checkpoints)]), MAX_THRUST
         brute_trajectory, enemy_trajectory = self.choose_base_command(game_state, enemy)
         if racer_trajectory is not None:
             brute_trajectory = self.avoid_racer(game_state, brute_trajectory, enemy_trajectory, racer_trajectory)
@@ -175,7 +176,7 @@ class BrutePod(BasePod):
         for turn_ind in range(BRUTE_PREDICT_TURNS):
             pod = trajectory[-1].pod
             direction = pod.get_target_direction(pod.get_attack_target(enemy_trajectory[turn_ind].pod))
-            next_state = predict_next(pod, None, normalize_angle(direction - pod.direction), 100)
+            next_state = predict_next(pod, None, normalize_angle(direction - pod.direction), MAX_THRUST)
             next_state.moves = trajectory[-1].moves + next_state.moves
             trajectory.append(next_state)
         return trajectory
@@ -212,7 +213,7 @@ class BrutePod(BasePod):
                 next_thrust = 0
             else:
                 next_direction = pod.get_target_direction(segment_end)
-                next_thrust = 100
+                next_thrust = MAX_THRUST
             next_state = predict_next(pod, None, normalize_angle(next_direction - pod.direction), next_thrust)
             next_state.moves = trajectory[-1].moves + next_state.moves
             trajectory.append(next_state)
@@ -412,7 +413,7 @@ def get_optimizer_score(current: BasePod, checkpoints: list[NDArray[int]], moves
     checkpoint_radius_sq = OPTIMIZER_CHECKPOINT_RADIUS ** 2
     for move_ind in range(0, len(moves), 2):
         direction_delta = np.clip(moves[move_ind], -MAX_TURN_DEG, MAX_TURN_DEG)
-        thrust = np.clip(moves[move_ind + 1], 0, 100)
+        thrust = np.clip(moves[move_ind + 1], 0, MAX_THRUST)
         direction = normalize_angle(direction + direction_delta)
         direction_rad = math.radians(direction)
         vx += math.cos(direction_rad) * thrust
@@ -441,7 +442,7 @@ def extend_checkpoint_trajectory(trajectory: list[FutureState], checkpoints: lis
     while len(trajectory) <= turn_count:
         pod = trajectory[-1].pod
         direction = pod.get_next_checkpoint_direction(checkpoints)
-        next_state = predict_next(pod, checkpoints, normalize_angle(direction - pod.direction), 100)
+        next_state = predict_next(pod, checkpoints, normalize_angle(direction - pod.direction), MAX_THRUST)
         next_state.moves = trajectory[-1].moves + next_state.moves
         trajectory.append(next_state)
     return trajectory
@@ -476,12 +477,12 @@ def predict_next(current: BasePod, checkpoints: list[NDArray[int]] | None, direc
 
 def constrain_moves(moves: list[float | str] | NDArray[float]) -> list[float | str] | NDArray[float]:
     """Clips a move vector to model limits.
-    moves has direction deltas clipped to +/-18 degrees and numeric thrust clipped to 0..100. Returns moves after in-place clipping.
+    moves has direction deltas clipped to +/-18 degrees and numeric thrust clipped to 0..MAX_THRUST. Returns moves after in-place clipping.
     """
     moves[0] = np.clip(moves[0], -MAX_TURN_DEG, MAX_TURN_DEG)
     for move_ind in range(1, len(moves), 2):
         if not isinstance(moves[move_ind], str):
-            moves[move_ind] = np.clip(moves[move_ind], 0, 100)
+            moves[move_ind] = np.clip(moves[move_ind], 0, MAX_THRUST)
     for move_ind in range(2, len(moves), 2):
         moves[move_ind] = np.clip(moves[move_ind], -MAX_TURN_DEG, MAX_TURN_DEG)
     return moves

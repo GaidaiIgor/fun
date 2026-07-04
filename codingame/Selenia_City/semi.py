@@ -108,6 +108,8 @@ class SimulationResult:
     speed: int = 0
     diversity: int = 0
     delivered: int = 0
+    delivered_by_pool: Counter[Pool] = field(default_factory=Counter)
+    delivery_times: dict[Pool, int] = field(default_factory=dict)
     wait_by_edge: Counter[Pair] = field(default_factory=Counter)
     congestion_by_edge: Counter[Pair] = field(default_factory=Counter)
     dynamic_paths: dict[int, list[int]] = field(default_factory=dict)
@@ -408,6 +410,8 @@ class Planner:
             except ValueError:
                 break
             result = self.simulate(projected)
+            if result.delivery_times.get(base_bundle.pool, INF) == len(path_edges):
+                break
             edge = self.best_counter_edge(path_edges, result.wait_by_edge)
             if edge == (-1, -1):
                 break
@@ -629,6 +633,10 @@ class Planner:
                 result.speed += speed
                 result.diversity += diversity
                 result.delivered += 1
+                pool = passenger.pad_id, passenger.kind
+                result.delivered_by_pool[pool] += 1
+                if result.delivered_by_pool[pool] == self.buildings[passenger.pad_id].demand[passenger.kind]:
+                    result.delivery_times[pool] = day
                 module_arrivals[building_id] += 1
             if remaining:
                 queues[building_id] = remaining

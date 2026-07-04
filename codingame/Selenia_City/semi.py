@@ -713,34 +713,24 @@ class Planner:
         used = Counter(route_key(*move) for move in moves.values())
         service_counts = self.service_counts(state)
         for pod_id in sorted(set(requests) - set(moves)):
-            pod = state.pods[pod_id]
-            if not pod.dynamic:
+            if not state.pods[pod_id].dynamic:
                 continue
-            move = self.capacity_fallback_move(pod, requests[pod_id], demand, state, used, service_counts)
+            move = self.capacity_fallback_move(requests[pod_id], demand, state, used, service_counts)
             if move != (-1, -1):
                 moves[pod_id] = move
                 used[route_key(*move)] += 1
         return moves
 
-    def capacity_fallback_move(self, pod: PodPlan, blocked_move: DirectedPair, demand: Counter[DirectedPair], state: PlanState,
+    def capacity_fallback_move(self, blocked_move: DirectedPair, demand: Counter[DirectedPair], state: PlanState,
             used: Counter[Pair], service_counts: Counter[Pair]) -> DirectedPair:
         """Chooses an available demanded outgoing edge from the blocked move source."""
         source_id = blocked_move[0]
-        allowed_edges = self.dynamic_allowed_edges(pod, source_id, demand, state.tubes)
         candidates = []
         for move, count in demand.items():
             edge = route_key(*move)
-            if move[0] == source_id and move != blocked_move and edge in allowed_edges and used[edge] < state.tubes[edge]:
+            if move[0] == source_id and move != blocked_move and edge in state.tubes and used[edge] < state.tubes[edge]:
                 candidates.append((-min(count, POD_CAPACITY), service_counts[edge], move))
         return min(candidates)[2] if candidates else (-1, -1)
-
-    def dynamic_allowed_edges(self, pod: PodPlan, current_id: int, demand: Counter[DirectedPair], tubes: dict[Pair, int]) -> set[Pair]:
-        """Returns edges the pod may use for same-day capacity fallback."""
-        graph = tube_graph({edge: 1 for edge in pod.service_area})
-        service_loads = any(route_key(*edge) in pod.service_area for edge in demand)
-        if service_loads and current_id in graph:
-            return pod.service_area
-        return set(tubes)
 
     def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], state: PlanState,
             moves: dict[int, DirectedPair], pod_positions: dict[int, int], dynamic_current: dict[int, int],

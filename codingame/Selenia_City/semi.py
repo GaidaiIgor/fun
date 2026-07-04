@@ -118,17 +118,15 @@ class Candidate:
     """Stores a possible greedy replacement for one pool."""
     pool: Pool
     bundle: Bundle
-    score_gain: int
-    cost_gain: int
+    total_score_gain: int
+    total_cost: int
     new_score: int
     new_cost: int
 
     @property
     def efficiency(self) -> float:
-        """Returns score_gain per added resource."""
-        if self.cost_gain <= 0:
-            return float("inf")
-        return self.score_gain / self.cost_gain
+        """Returns total_score_gain per total_cost."""
+        return self.total_score_gain / max(1, self.total_cost)
 
 
 class Planner:
@@ -198,9 +196,10 @@ class Planner:
         selected = {}
         current_state = self.replay_bundles(selected)
         current_result = self.simulate(current_state)
+        before_score = current_result.score
         print(self.score_debug("before", current_result, current_state.cost), file=stderr)
         while True:
-            best = self.best_candidate(selected, current_result.score, current_state.cost)
+            best = self.best_candidate(selected, current_result.score, before_score)
             if best is None or best.new_cost > self.resources:
                 break
             selected[best.pool] = best.bundle
@@ -215,7 +214,7 @@ class Planner:
         action_order = {"TUBE": 0, "TELEPORT": 0, "UPGRADE": 1, "DESTROY": 2, "POD": 3}
         return sorted((action for action in final_state.actions if action), key=lambda action: action_order[action.split()[0]])
 
-    def best_candidate(self, selected: dict[Pool, Bundle], current_score: int, current_cost: int) -> Candidate:
+    def best_candidate(self, selected: dict[Pool, Bundle], current_score: int, before_score: int) -> Candidate:
         """Finds the most efficient affordable current-generation candidate for selected."""
         best = None
         for pool in self.speed_pools():
@@ -231,12 +230,13 @@ class Planner:
             if candidate_state.cost > self.resources:
                 continue
             candidate_result = self.simulate(candidate_state)
-            score_gain = candidate_result.score - current_score
-            cost_gain = candidate_state.cost - current_cost
-            if score_gain <= 0:
+            replacement_gain = candidate_result.score - current_score
+            if replacement_gain <= 0:
                 continue
-            candidate = Candidate(pool, bundle, score_gain, cost_gain, candidate_result.score, candidate_state.cost)
-            if best is None or (candidate.efficiency, candidate.score_gain, -candidate.new_cost) > (best.efficiency, best.score_gain, -best.new_cost):
+            candidate = Candidate(pool, bundle, candidate_result.score - before_score, candidate_state.cost, candidate_result.score, candidate_state.cost)
+            if best is None:
+                best = candidate
+            elif (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > (best.efficiency, best.total_score_gain, -best.new_cost):
                 best = candidate
         return best
 

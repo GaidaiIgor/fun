@@ -253,7 +253,7 @@ class Planner:
         try:
             baseline_state = self.replay_bundles(baseline_selected)
             baseline_score = self.simulate(baseline_state).score
-            baseline_cost = baseline_state.cost
+            empty_score = self.simulate(self.replay_bundles({})).score
         except ValueError:
             return None
         for bundle in sorted(self.generate_bundles(pool, other_state), key=lambda item: (item.rank_cost, item.fingerprint)):
@@ -265,11 +265,12 @@ class Planner:
                 state = self.replay_bundles(candidate_selected)
             except ValueError:
                 continue
-            score_gain = self.simulate(state).score - baseline_score
-            cost_gain = state.cost - baseline_cost
-            efficiency = float("inf") if cost_gain <= 0 and score_gain > 0 else score_gain / max(1, cost_gain)
-            action_text = self.bundle_action_text(candidate_selected, pool, bundle)
-            print(f"bundle: {pool}, {action_text}, {score_gain}, {cost_gain}, {efficiency:.3f}", file=stderr)
+            result = self.simulate(state)
+            score_gain = result.score - baseline_score
+            total_score_gain = result.score - empty_score
+            total_efficiency = total_score_gain / max(1, state.cost)
+            action_text = self.selected_action_text(candidate_selected)
+            print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=stderr)
             if score_gain > 0:
                 return bundle
         return None
@@ -299,10 +300,16 @@ class Planner:
             seen.add(bundle.fingerprint)
         return unique
 
-    def bundle_action_text(self, selected: dict[Pool, Bundle], pool: Pool, bundle: Bundle) -> str:
-        """Formats bundle actions for debug output with concrete pod ids."""
-        prefix = {other_pool: other_bundle for other_pool, other_bundle in selected.items() if other_pool < pool}
-        return self.bundle_action_text_for_state(bundle, self.replay_bundles(prefix))
+    def selected_action_text(self, selected: dict[Pool, Bundle]) -> str:
+        """Formats selected bundles for debug output with concrete pod ids."""
+        actions = []
+        prefix = {}
+        for pool in sorted(selected):
+            text = self.bundle_action_text_for_state(selected[pool], self.replay_bundles(prefix))
+            if text != "WAIT":
+                actions.append(text)
+            prefix[pool] = selected[pool]
+        return ";".join(actions) if actions else "WAIT"
 
     def bundle_action_text_for_state(self, bundle: Bundle, state: PlanState) -> str:
         """Formats bundle actions as they would resolve when applied to state."""

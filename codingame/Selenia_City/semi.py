@@ -533,8 +533,7 @@ class Planner:
         for index, pod_id in state.placeholders:
             path = dynamic_paths[pod_id]
             assert len(path) >= 2, f"dynamic pod {pod_id} produced an empty route"
-            path = normalize_month_path(path, state.pods[pod_id].service_area, state.tubes)
-            state.actions[index] = "POD {} {}".format(pod_id, " ".join(map(str, path)))
+            state.actions[index] = "POD {} {}".format(pod_id, " ".join(map(str, normalize_month_path(path))))
 
     def simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         """Simulates one month of astronaut movement through state."""
@@ -556,7 +555,7 @@ class Planner:
             self.board_and_launch(queues, distances, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
             self.settle(day + 1, queues, module_arrivals, result)
         if keep_dynamic_paths:
-            result.dynamic_paths = {pod_id: path[:] for pod_id, path in dynamic_paths.items()}
+            result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
         return result
 
     def distances_to_types(self, state: PlanState) -> dict[int, dict[int, int]]:
@@ -1093,32 +1092,19 @@ def service_area_connected(area: set[Pair]) -> bool:
     return True
 
 
-def normalize_month_path(path: list[int], service_area: set[Pair], tubes: dict[Pair, int]) -> list[int]:
-    """Extends or trims path to exactly one month, padding on the last service_area edge."""
+def normalize_month_path(path: list[int]) -> list[int]:
+    """Extends or trims path to the game month path length."""
     if len(path) >= MONTH_DAYS + 1:
         return path[:MONTH_DAYS + 1]
     if len(path) < 2:
         return path[:]
-    edge = last_service_edge(path, service_area)
-    graph = tube_graph(tubes)
-    result = path[:]
-    while len(result) < MONTH_DAYS + 1:
-        current = result[-1]
-        if current in edge:
-            result.append(edge[1] if current == edge[0] else edge[0])
-        else:
-            target = min(edge, key=lambda item: graph_distance(graph, current, item))
-            result.append(next_step(graph, current, target))
+    edges = list(zip(path, path[1:]))
+    if path[0] != path[-1]:
+        edges.extend(zip(path[-1:0:-1], path[-2::-1]))
+    result = [path[0]]
+    for day in range(MONTH_DAYS):
+        result.append(edges[day % len(edges)][1])
     return result
-
-
-def last_service_edge(path: list[int], service_area: set[Pair]) -> Pair:
-    """Returns the last path edge that belongs to service_area."""
-    for a, b in reversed(list(zip(path, path[1:]))):
-        edge = route_key(a, b)
-        if edge in service_area:
-            return edge
-    return sorted(service_area)[-1]
 
 
 def fixed_next_index(path: list[int], index: int) -> int:

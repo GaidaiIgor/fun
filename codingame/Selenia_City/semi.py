@@ -108,6 +108,7 @@ class SimulationResult:
     speed: int = 0
     diversity: int = 0
     delivered: int = 0
+    score_by_pool: Counter[Pool] = field(default_factory=Counter)
     delivered_by_pool: Counter[Pool] = field(default_factory=Counter)
     delivery_times: dict[Pool, int] = field(default_factory=dict)
     wait_by_edge: Counter[Pair] = field(default_factory=Counter)
@@ -629,11 +630,13 @@ class Planner:
                     continue
                 speed = max(0, 50 - day)
                 diversity = max(0, 50 - module_arrivals[building_id])
-                result.score += speed + diversity
+                score = speed + diversity
+                result.score += score
                 result.speed += speed
                 result.diversity += diversity
                 result.delivered += 1
                 pool = passenger.pad_id, passenger.kind
+                result.score_by_pool[pool] += score
                 result.delivered_by_pool[pool] += 1
                 if result.delivered_by_pool[pool] == self.buildings[passenger.pad_id].demand[passenger.kind]:
                     result.delivery_times[pool] = day
@@ -975,10 +978,21 @@ class Planner:
     def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
         """Formats score diagnostics for label, result, and cost."""
         demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
+        pool_stats = self.pool_debug(result)
         if label == "before":
-            return f"Before: speed {result.speed}, diversity {result.diversity}"
+            return f"Before: speed {result.speed}, diversity {result.diversity}\n{pool_stats}"
         return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
-            f"score: {result.score}, resources: {self.resources - cost}"
+            f"score: {result.score}, resources: {self.resources - cost}\n{pool_stats}"
+
+    def pool_debug(self, result: SimulationResult) -> str:
+        """Formats score and delivery diagnostics for each speed pool."""
+        lines = []
+        for pool in self.speed_pools():
+            pad_id, kind = pool
+            max_score = self.buildings[pad_id].demand[kind] * 100
+            delivery_time = result.delivery_times[pool] if pool in result.delivery_times else "-"
+            lines.append(f"pool {pool}: {result.score_by_pool[pool]}/{max_score}, delivery {delivery_time}")
+        return "\n".join(lines)
 
 
 def route_key(a: int, b: int) -> Pair:

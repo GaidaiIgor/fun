@@ -1100,7 +1100,12 @@ def normalize_month_path(path: list[int]) -> list[int]:
         return path[:]
     edges = list(zip(path, path[1:]))
     if path[0] != path[-1]:
-        edges.extend(zip(path[-1:0:-1], path[-2::-1]))
+        graph = tube_graph({route_key(a, b): 1 for a, b in edges})
+        current = path[-1]
+        while current != path[0]:
+            next_id = next_step(graph, current, path[0])
+            edges.append((current, next_id))
+            current = next_id
     result = [path[0]]
     for day in range(MONTH_DAYS):
         result.append(edges[day % len(edges)][1])

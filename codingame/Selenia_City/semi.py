@@ -109,6 +109,8 @@ class SimulationResult:
     diversity: int = 0
     delivered: int = 0
     score_by_pool: Counter[Pool] = field(default_factory=Counter)
+    speed_by_pool: Counter[Pool] = field(default_factory=Counter)
+    diversity_by_pool: Counter[Pool] = field(default_factory=Counter)
     delivered_by_pool: Counter[Pool] = field(default_factory=Counter)
     delivery_times: dict[Pool, int] = field(default_factory=dict)
     wait_by_edge: Counter[Pair] = field(default_factory=Counter)
@@ -637,6 +639,8 @@ class Planner:
                 result.delivered += 1
                 pool = passenger.pad_id, passenger.kind
                 result.score_by_pool[pool] += score
+                result.speed_by_pool[pool] += speed
+                result.diversity_by_pool[pool] += diversity
                 result.delivered_by_pool[pool] += 1
                 if result.delivered_by_pool[pool] == self.buildings[passenger.pad_id].demand[passenger.kind]:
                     result.delivery_times[pool] = day
@@ -989,9 +993,10 @@ class Planner:
         lines = []
         for pool in self.speed_pools():
             pad_id, kind = pool
-            max_score = self.buildings[pad_id].demand[kind] * 100
+            max_component = self.buildings[pad_id].demand[kind] * 50
             delivery_time = result.delivery_times[pool] if pool in result.delivery_times else "-"
-            lines.append(f"pool {pool}: {result.score_by_pool[pool]}/{max_score}, delivery {delivery_time}")
+            line = f"pool {pool}: speed {result.speed_by_pool[pool]}/{max_component}, diversity {result.diversity_by_pool[pool]}/{max_component}, "
+            lines.append(f"{line}total {result.score_by_pool[pool]}/{max_component * 2}, delivery {delivery_time}")
         return "\n".join(lines)
 
 

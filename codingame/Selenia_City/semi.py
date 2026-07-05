@@ -252,8 +252,10 @@ class Planner:
         other_selected = {other_pool: bundle for other_pool, bundle in selected.items() if other_pool != pool}
         try:
             other_state = self.replay_bundles(other_selected)
+            keep_current = False
         except ValueError:
-            return None
+            other_state = self.replay_bundles(selected)
+            keep_current = True
         baseline_selected = dict(other_selected)
         baseline_selected[pool] = current
         try:
@@ -264,7 +266,8 @@ class Planner:
         except ValueError:
             return None
         current_path_optimal = current.path_edges and baseline_result.delivery_times.get(pool, INF) == len(current.path_edges)
-        for bundle in sorted(self.generate_bundles(pool, other_state), key=lambda item: (item.rank_cost, item.fingerprint)):
+        for generated in sorted(self.generate_bundles(pool, other_state), key=lambda item: (item.rank_cost, item.fingerprint)):
+            bundle = self.extend_bundle(current, generated) if keep_current else generated
             if bundle.rank_cost <= current.rank_cost or bundle.fingerprint == current.fingerprint:
                 continue
             if current_path_optimal and bundle.path_edges == current.path_edges:
@@ -288,6 +291,16 @@ class Planner:
             if score_gain > 0:
                 return bundle
         return None
+
+    def extend_bundle(self, current: Bundle, addition: Bundle) -> Bundle:
+        """Combines current and addition when other bundles depend on current."""
+        tubes = tuple(dict.fromkeys((*current.tubes, *addition.tubes)))
+        teleport = addition.teleport if addition.teleport != (-1, -1) else current.teleport
+        pod_specs = current.pod_specs + addition.pod_specs
+        upgrades = current.upgrades + addition.upgrades
+        label = f"{current.label}+{addition.label}"
+        path_edges = addition.path_edges or current.path_edges
+        return Bundle(current.pool, current.rank_cost + addition.rank_cost, tubes, teleport, pod_specs, upgrades, label, path_edges)
 
     def generate_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:
         """Builds representative path, pod, and upgrade bundles for pool."""

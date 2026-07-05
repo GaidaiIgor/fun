@@ -211,7 +211,8 @@ class Planner:
             selected.append(best.bundle)
             current_state = self.replay_bundle_sequence(selected)
             current_result = self.simulate(current_state)
-            print(f"selected {best.pool}; resources left: {self.resources - current_state.cost}", file=stderr)
+            total_text = self.state_action_text(current_state)
+            print(f"selected {best.pool}; resources left: {self.resources - current_state.cost}; total bundle: {total_text}", file=stderr)
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.simulate(final_state, keep_dynamic_paths=True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
@@ -246,14 +247,14 @@ class Planner:
             except ValueError:
                 continue
             if state.cost > self.resources:
-                action_text = self.sequence_action_text([*selected, bundle])
+                action_text = self.state_action_text(state)
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=stderr)
                 break
             result = self.simulate(state)
             score_gain = result.score - current_result.score
             total_score_gain = result.score - before_score
             total_efficiency = total_score_gain / max(1, state.cost)
-            action_text = self.sequence_action_text([*selected, bundle])
+            action_text = self.state_action_text(state)
             print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=stderr)
             if score_gain > 0:
                 return Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)
@@ -285,33 +286,14 @@ class Planner:
             seen.add(bundle.fingerprint)
         return unique
 
-    def sequence_action_text(self, selected: list[Bundle]) -> str:
-        """Formats selected bundle sequence for debug output with concrete pod ids."""
+    def state_action_text(self, state: PlanState) -> str:
+        """Formats final projected debug actions from state."""
         actions = []
-        state = self.replay_bundle_sequence([])
-        for bundle in selected:
-            text = self.bundle_action_text_for_state(bundle, state)
-            if text != "WAIT":
-                actions.append(text)
-            self.apply_bundle(state, bundle)
-        return ";".join(actions) if actions else "WAIT"
-
-    def bundle_action_text_for_state(self, bundle: Bundle, state: PlanState) -> str:
-        """Formats bundle actions as they would resolve when applied to state."""
-        actions = []
-        actions.extend(f"TUBE {a} {b}" for a, b in bundle.tubes)
-        if bundle.teleport != (-1, -1):
-            actions.append(f"TELEPORT {bundle.teleport[0]} {bundle.teleport[1]}")
-        actions.extend(f"UPGRADE {a} {b}" for a, b in bundle.upgrades)
-        pods = dict(state.pods)
-        for spec in bundle.pod_specs:
-            if spec.pod_id:
-                pod_id = spec.pod_id
-                del pods[pod_id]
-            else:
-                pod_id = self.next_pod_id(pods)
-            pods[pod_id] = PodPlan(pod_id, [], set(spec.service_area), True)
-            area_text = " ".join(f"{a}-{b}" for a, b in sorted(spec.service_area))
+        for action in state.actions:
+            if action and action.split()[0] in ("TUBE", "TELEPORT", "UPGRADE"):
+                actions.append(action)
+        for pod_id in sorted(state.planned_pods):
+            area_text = ", ".join(f"{a}-{b}" for a, b in sorted(state.service_areas[pod_id]))
             actions.append(f"POD {pod_id} AUTO({area_text})")
         return ";".join(actions) if actions else "WAIT"
 

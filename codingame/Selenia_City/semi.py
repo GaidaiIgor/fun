@@ -276,6 +276,8 @@ class Planner:
             except ValueError:
                 continue
             if state.cost > self.resources:
+                action_text = self.selected_action_text(candidate_selected)
+                print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=stderr)
                 break
             result = self.simulate(state)
             score_gain = result.score - baseline_score

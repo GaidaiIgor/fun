@@ -984,7 +984,7 @@ class Planner:
         demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
         pool_stats = self.pool_debug(result)
         if label == "before":
-            return f"Before: speed {result.speed}, diversity {result.diversity}\n{pool_stats}"
+            return pool_stats
         return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
             f"score: {result.score}, resources: {self.resources - cost}\n{pool_stats}"
 
@@ -993,10 +993,12 @@ class Planner:
         lines = []
         for pool in self.speed_pools():
             pad_id, kind = pool
-            max_component = self.buildings[pad_id].demand[kind] * 50
+            module_count = sum(1 for building in self.buildings.values() if building.kind == kind)
+            max_speed = self.buildings[pad_id].demand[kind] * 50
+            max_diversity = sum(max(0, 50 - index // module_count) for index in range(self.buildings[pad_id].demand[kind]))
             delivery_time = result.delivery_times[pool] if pool in result.delivery_times else "-"
-            line = f"pool {pool}: speed {result.speed_by_pool[pool]}/{max_component}, diversity {result.diversity_by_pool[pool]}/{max_component}, "
-            lines.append(f"{line}total {result.score_by_pool[pool]}/{max_component * 2}, delivery {delivery_time}")
+            line = f"pool {pool}: speed {result.speed_by_pool[pool]}/{max_speed}, diversity {result.diversity_by_pool[pool]}/{max_diversity}, "
+            lines.append(f"{line}total {result.score_by_pool[pool]}/{max_speed + max_diversity}, delivery {delivery_time}")
         return "\n".join(lines)
 
 

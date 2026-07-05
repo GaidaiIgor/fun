@@ -108,11 +108,11 @@ class SimulationResult:
     speed: int = 0
     diversity: int = 0
     delivered: int = 0
-    score_by_pool: Counter[Pool] = field(default_factory=Counter)
     speed_by_pool: Counter[Pool] = field(default_factory=Counter)
-    diversity_by_pool: Counter[Pool] = field(default_factory=Counter)
     delivered_by_pool: Counter[Pool] = field(default_factory=Counter)
     delivery_times: dict[Pool, int] = field(default_factory=dict)
+    diversity_by_module: Counter[int] = field(default_factory=Counter)
+    delivered_by_module: Counter[int] = field(default_factory=Counter)
     wait_by_edge: Counter[Pair] = field(default_factory=Counter)
     congestion_by_edge: Counter[Pair] = field(default_factory=Counter)
     dynamic_paths: dict[int, list[int]] = field(default_factory=dict)
@@ -638,10 +638,10 @@ class Planner:
                 result.diversity += diversity
                 result.delivered += 1
                 pool = passenger.pad_id, passenger.kind
-                result.score_by_pool[pool] += score
                 result.speed_by_pool[pool] += speed
-                result.diversity_by_pool[pool] += diversity
                 result.delivered_by_pool[pool] += 1
+                result.diversity_by_module[building_id] += diversity
+                result.delivered_by_module[building_id] += 1
                 if result.delivered_by_pool[pool] == self.buildings[passenger.pad_id].demand[passenger.kind]:
                     result.delivery_times[pool] = day
                 module_arrivals[building_id] += 1
@@ -982,23 +982,34 @@ class Planner:
     def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
         """Formats score diagnostics for label, result, and cost."""
         demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
-        pool_stats = self.pool_debug(result)
+        stats = f"{self.pool_debug(result)}\n{self.diversity_debug(result)}"
         if label == "before":
-            return pool_stats
+            return stats
         return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
-            f"score: {result.score}, resources: {self.resources - cost}\n{pool_stats}"
+            f"score: {result.score}, resources: {self.resources - cost}\n{stats}"
 
     def pool_debug(self, result: SimulationResult) -> str:
-        """Formats score and delivery diagnostics for each speed pool."""
+        """Formats speed and delivery diagnostics for each astronaut pool."""
         lines = []
         for pool in self.speed_pools():
             pad_id, kind = pool
-            module_count = sum(1 for building in self.buildings.values() if building.kind == kind)
             max_speed = self.buildings[pad_id].demand[kind] * 50
-            max_diversity = sum(max(0, 50 - index // module_count) for index in range(self.buildings[pad_id].demand[kind]))
             delivery_time = result.delivery_times[pool] if pool in result.delivery_times else "-"
-            line = f"pool {pool}: speed {result.speed_by_pool[pool]}/{max_speed}, diversity {result.diversity_by_pool[pool]}/{max_diversity}, "
-            lines.append(f"{line}total {result.score_by_pool[pool]}/{max_speed + max_diversity}, delivery {delivery_time}")
+            lines.append(f"pool {pool}: speed {result.speed_by_pool[pool]}/{max_speed}, delivery {delivery_time}")
+        return "\n".join(lines)
+
+    def diversity_debug(self, result: SimulationResult) -> str:
+        """Formats diversity diagnostics for each demanded module."""
+        lines = []
+        demand_by_kind = Counter()
+        for pad in self.landing_pads():
+            demand_by_kind.update(pad.demand)
+        for building in sorted(self.buildings.values(), key=lambda item: item.id):
+            if building.kind <= 0 or not demand_by_kind[building.kind]:
+                continue
+            max_diversity = sum(max(0, 50 - index) for index in range(demand_by_kind[building.kind]))
+            line = f"module {building.id}: diversity {result.diversity_by_module[building.id]}/{max_diversity}, "
+            lines.append(f"{line}delivered {result.delivered_by_module[building.id]}")
         return "\n".join(lines)
 
 

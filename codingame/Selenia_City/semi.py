@@ -198,21 +198,21 @@ class Planner:
         self.print_debug_input()
 
     def choose_actions(self) -> list[str]:
-        """Chooses greedy bundle replacements and returns concrete game actions."""
-        selected = {}
-        current_state = self.replay_bundles(selected)
+        """Chooses greedy bundle additions and returns concrete game actions."""
+        selected = []
+        current_state = self.replay_bundle_sequence(selected)
         current_result = self.simulate(current_state)
         before_score = current_result.score
         print(self.score_debug("before", current_result, current_state.cost), file=stderr)
         while True:
-            best = self.best_candidate(selected, current_result.score, before_score)
+            best = self.best_candidate(selected, current_state, current_result, before_score)
             if best is None or best.new_cost > self.resources:
                 break
-            selected[best.pool] = best.bundle
-            current_state = self.replay_bundles(selected)
+            selected.append(best.bundle)
+            current_state = self.replay_bundle_sequence(selected)
             current_result = self.simulate(current_state)
             print(f"selected {best.pool}; resources left: {self.resources - current_state.cost}", file=stderr)
-        final_state = self.replay_bundles(selected)
+        final_state = self.replay_bundle_sequence(selected)
         final_result = self.simulate(final_state, keep_dynamic_paths=True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
         self.service_areas = {pod_id: set(pod.service_area) for pod_id, pod in final_state.pods.items() if pod.service_area}
@@ -220,87 +220,44 @@ class Planner:
         action_order = {"TUBE": 0, "TELEPORT": 0, "UPGRADE": 1, "DESTROY": 2, "POD": 3}
         return sorted((action for action in final_state.actions if action), key=lambda action: action_order[action.split()[0]])
 
-    def best_candidate(self, selected: dict[Pool, Bundle], current_score: int, before_score: int) -> Candidate:
+    def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult, before_score: int) -> Candidate:
         """Finds the most efficient affordable current-generation candidate for selected."""
         best = None
         for pool in self.speed_pools():
-            bundle = self.next_bundle(pool, selected)
-            if bundle is None:
+            candidate = self.next_candidate(pool, selected, current_state, current_result, before_score)
+            if candidate is None:
                 continue
-            candidate_selected = dict(selected)
-            candidate_selected[pool] = bundle
-            try:
-                candidate_state = self.replay_bundles(candidate_selected)
-            except ValueError:
-                continue
-            if candidate_state.cost > self.resources:
-                continue
-            candidate_result = self.simulate(candidate_state)
-            replacement_gain = candidate_result.score - current_score
-            if replacement_gain <= 0:
-                continue
-            candidate = Candidate(pool, bundle, candidate_result.score - before_score, candidate_state.cost, candidate_result.score, candidate_state.cost)
             if best is None:
                 best = candidate
             elif (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > (best.efficiency, best.total_score_gain, -best.new_cost):
                 best = candidate
         return best
 
-    def next_bundle(self, pool: Pool, selected: dict[Pool, Bundle]) -> Bundle:
-        """Returns the next improving bundle for pool after the currently selected rank_cost."""
-        current = selected.get(pool, Bundle(pool))
-        other_selected = {other_pool: bundle for other_pool, bundle in selected.items() if other_pool != pool}
-        try:
-            other_state = self.replay_bundles(other_selected)
-            keep_current = False
-        except ValueError:
-            other_state = self.replay_bundles(selected)
-            keep_current = True
-        baseline_selected = dict(other_selected)
-        baseline_selected[pool] = current
-        try:
-            baseline_state = self.replay_bundles(baseline_selected)
-            baseline_result = self.simulate(baseline_state)
-            baseline_score = baseline_result.score
-            empty_score = self.simulate(self.replay_bundles({})).score
-        except ValueError:
-            return None
-        current_path_optimal = current.path_edges and baseline_result.delivery_times.get(pool, INF) == len(current.path_edges)
-        for generated in sorted(self.generate_bundles(pool, other_state), key=lambda item: (item.rank_cost, item.fingerprint)):
-            bundle = self.extend_bundle(current, generated) if keep_current else generated
-            if bundle.rank_cost <= current.rank_cost or bundle.fingerprint == current.fingerprint:
+    def next_candidate(self, pool: Pool, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
+            before_score: int) -> Candidate:
+        """Returns the next improving candidate for pool on top of selected."""
+        for bundle in sorted(self.generate_bundles(pool, current_state), key=lambda item: (item.rank_cost, item.fingerprint)):
+            if bundle.fingerprint == Bundle(pool).fingerprint:
                 continue
-            if current_path_optimal and bundle.path_edges == current.path_edges:
+            if bundle.path_edges and current_result.delivery_times.get(pool, INF) == len(bundle.path_edges):
                 continue
-            candidate_selected = dict(other_selected)
-            candidate_selected[pool] = bundle
             try:
-                state = self.replay_bundles(candidate_selected)
+                state = self.replay_bundle_sequence([*selected, bundle])
             except ValueError:
                 continue
             if state.cost > self.resources:
-                action_text = self.selected_action_text(candidate_selected)
+                action_text = self.sequence_action_text([*selected, bundle])
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=stderr)
                 break
             result = self.simulate(state)
-            score_gain = result.score - baseline_score
-            total_score_gain = result.score - empty_score
+            score_gain = result.score - current_result.score
+            total_score_gain = result.score - before_score
             total_efficiency = total_score_gain / max(1, state.cost)
-            action_text = self.selected_action_text(candidate_selected)
+            action_text = self.sequence_action_text([*selected, bundle])
             print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=stderr)
             if score_gain > 0:
-                return bundle
+                return Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)
         return None
-
-    def extend_bundle(self, current: Bundle, addition: Bundle) -> Bundle:
-        """Combines current and addition when other bundles depend on current."""
-        tubes = tuple(dict.fromkeys((*current.tubes, *addition.tubes)))
-        teleport = addition.teleport if addition.teleport != (-1, -1) else current.teleport
-        pod_specs = current.pod_specs + addition.pod_specs
-        upgrades = current.upgrades + addition.upgrades
-        label = f"{current.label}+{addition.label}"
-        path_edges = addition.path_edges or current.path_edges
-        return Bundle(current.pool, current.rank_cost + addition.rank_cost, tubes, teleport, pod_specs, upgrades, label, path_edges)
 
     def generate_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:
         """Builds representative path, pod, and upgrade bundles for pool."""
@@ -328,15 +285,15 @@ class Planner:
             seen.add(bundle.fingerprint)
         return unique
 
-    def selected_action_text(self, selected: dict[Pool, Bundle]) -> str:
-        """Formats selected bundles for debug output with concrete pod ids."""
+    def sequence_action_text(self, selected: list[Bundle]) -> str:
+        """Formats selected bundle sequence for debug output with concrete pod ids."""
         actions = []
-        prefix = {}
-        for pool in sorted(selected):
-            text = self.bundle_action_text_for_state(selected[pool], self.replay_bundles(prefix))
+        state = self.replay_bundle_sequence([])
+        for bundle in selected:
+            text = self.bundle_action_text_for_state(bundle, state)
             if text != "WAIT":
                 actions.append(text)
-            prefix[pool] = selected[pool]
+            self.apply_bundle(state, bundle)
         return ";".join(actions) if actions else "WAIT"
 
     def bundle_action_text_for_state(self, bundle: Bundle, state: PlanState) -> str:
@@ -419,7 +376,7 @@ class Planner:
             nodes = {node for area_edge in area for node in area_edge}
             if edge[0] in nodes or edge[1] in nodes:
                 candidates.append((pod_id not in state.planned_pods, len(area), pod_id))
-        return min(candidates)[1] if candidates else 0
+        return min(candidates)[2] if candidates else 0
 
     def expand_pod_upgrade_bundles(self, base_bundle: Bundle, path_edges: tuple[Pair, ...], state: PlanState) -> list[Bundle]:
         """Adds lazy wait-pod and congestion-upgrade variants for base_bundle."""
@@ -493,13 +450,13 @@ class Planner:
         self.apply_bundle(copied, bundle)
         return copied
 
-    def replay_bundles(self, selected: dict[Pool, Bundle]) -> PlanState:
+    def replay_bundle_sequence(self, selected: list[Bundle]) -> PlanState:
         """Replays selected bundles from the real month-start state."""
         pods = {pod_id: PodPlan(pod_id, pod.path[:], set(self.service_areas[pod_id]), False) for pod_id, pod in self.pods.items()}
         service_areas = {pod_id: set(area) for pod_id, area in self.service_areas.items()}
         state = PlanState(dict(self.tubes), dict(self.teleports), pods, service_areas)
-        for pool in sorted(selected):
-            self.apply_bundle(state, selected[pool])
+        for bundle in selected:
+            self.apply_bundle(state, bundle)
         return state
 
     def apply_bundle(self, state: PlanState, bundle: Bundle):

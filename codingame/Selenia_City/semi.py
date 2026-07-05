@@ -99,6 +99,7 @@ class PlanState:
     actions: list[str] = field(default_factory=list)
     placeholders: list[tuple[int, int]] = field(default_factory=list)
     planned_pods: set[int] = field(default_factory=set)
+    planned_tubes: set[Pair] = field(default_factory=set)
     cost: int = 0
 
 
@@ -237,6 +238,7 @@ class Planner:
     def next_candidate(self, pool: Pool, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
             before_score: int) -> Candidate:
         """Returns the next improving candidate for pool on top of selected."""
+        candidates = []
         for bundle in sorted(self.generate_bundles(pool, current_state), key=lambda item: (item.rank_cost, item.fingerprint)):
             if bundle.fingerprint == Bundle(pool).fingerprint:
                 continue
@@ -246,6 +248,8 @@ class Planner:
                 state = self.replay_bundle_sequence([*selected, bundle])
             except ValueError:
                 continue
+            candidates.append((state.cost, bundle.rank_cost, bundle.fingerprint, bundle, state))
+        for _, _, _, bundle, state in sorted(candidates):
             if state.cost > self.resources:
                 action_text = self.state_action_text(state)
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
@@ -428,7 +432,7 @@ class Planner:
         pods = {pod_id: PodPlan(pod.id, pod.path[:], set(pod.service_area), pod.dynamic) for pod_id, pod in state.pods.items()}
         service_areas = {pod_id: set(area) for pod_id, area in state.service_areas.items()}
         copied = PlanState(dict(state.tubes), dict(state.teleports), pods, service_areas, list(state.actions), list(state.placeholders),
-            set(state.planned_pods), state.cost)
+            set(state.planned_pods), set(state.planned_tubes), state.cost)
         self.apply_bundle(copied, bundle)
         return copied
 
@@ -439,7 +443,54 @@ class Planner:
         state = PlanState(dict(self.tubes), dict(self.teleports), pods, service_areas)
         for bundle in selected:
             self.apply_bundle(state, bundle)
+        self.prune_uncommitted_infrastructure(state, selected)
         return state
+
+    def prune_uncommitted_infrastructure(self, state: PlanState, selected: list[Bundle]):
+        """Removes planned pods and tubes unused by the latest path for each selected pool."""
+        active_edges = set()
+        active_by_pool = {}
+        for bundle in selected:
+            if bundle.path_edges or bundle.teleport != (-1, -1):
+                active_by_pool[bundle.pool] = set(bundle.path_edges)
+        for edges in active_by_pool.values():
+            active_edges.update(edges)
+        for pod_id in list(state.planned_pods):
+            state.service_areas[pod_id] &= active_edges
+            if state.service_areas[pod_id]:
+                state.pods[pod_id].service_area = state.service_areas[pod_id]
+            else:
+                self.remove_planned_pod(state, pod_id)
+        for edge in sorted(state.planned_tubes - active_edges):
+            self.remove_planned_tube(state, edge)
+
+    def remove_planned_pod(self, state: PlanState, pod_id: int):
+        """Removes planned pod pod_id or restores its month-start version."""
+        if pod_id in self.pods:
+            state.cost -= REROUTE_COST
+            state.pods[pod_id] = PodPlan(pod_id, self.pods[pod_id].path[:], set(self.service_areas[pod_id]), False)
+            state.service_areas[pod_id] = set(self.service_areas[pod_id])
+        else:
+            state.cost -= POD_COST
+            del state.pods[pod_id]
+            del state.service_areas[pod_id]
+        state.planned_pods.remove(pod_id)
+        state.placeholders = [(index, placeholder_id) for index, placeholder_id in state.placeholders if placeholder_id != pod_id]
+        for index, action in enumerate(state.actions):
+            parts = action.split()
+            if parts and parts[0] == "DESTROY" and int(parts[1]) == pod_id:
+                state.actions[index] = ""
+
+    def remove_planned_tube(self, state: PlanState, edge: Pair):
+        """Removes planned tube edge and its planned upgrade costs from state."""
+        capacity = state.tubes[edge]
+        state.cost -= tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * capacity * (capacity + 1) // 2
+        del state.tubes[edge]
+        state.planned_tubes.remove(edge)
+        for index, action in enumerate(state.actions):
+            parts = action.split()
+            if parts and parts[0] in ("TUBE", "UPGRADE") and route_key(int(parts[1]), int(parts[2])) == edge:
+                state.actions[index] = ""
 
     def apply_bundle(self, state: PlanState, bundle: Bundle):
         """Applies bundle to state, recording cost and action placeholders."""
@@ -456,6 +507,7 @@ class Planner:
             degrees[a] += 1
             degrees[b] += 1
             state.cost += tube_cost(self.buildings[a], self.buildings[b])
+            state.planned_tubes.add(key)
             state.actions.append(f"TUBE {a} {b}")
         if bundle.teleport != (-1, -1):
             a, b = bundle.teleport

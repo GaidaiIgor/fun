@@ -81,6 +81,7 @@ class Bundle:
     pod_specs: tuple[PodSpec, ...] = ()
     upgrades: tuple[Pair, ...] = ()
     label: str = "empty"
+    path_edges: tuple[Pair, ...] = ()
 
     @property
     def fingerprint(self) -> tuple:
@@ -257,12 +258,16 @@ class Planner:
         baseline_selected[pool] = current
         try:
             baseline_state = self.replay_bundles(baseline_selected)
-            baseline_score = self.simulate(baseline_state).score
+            baseline_result = self.simulate(baseline_state)
+            baseline_score = baseline_result.score
             empty_score = self.simulate(self.replay_bundles({})).score
         except ValueError:
             return None
+        current_path_optimal = current.path_edges and baseline_result.delivery_times.get(pool, INF) == len(current.path_edges)
         for bundle in sorted(self.generate_bundles(pool, other_state), key=lambda item: (item.rank_cost, item.fingerprint)):
             if bundle.rank_cost <= current.rank_cost or bundle.fingerprint == current.fingerprint:
+                continue
+            if current_path_optimal and bundle.path_edges == current.path_edges:
                 continue
             candidate_selected = dict(other_selected)
             candidate_selected[pool] = bundle
@@ -293,8 +298,9 @@ class Planner:
             base_specs = self.coverage_specs(path, state)
             if base_specs is None:
                 continue
-            base_bundle = Bundle(pool, self.nominal_cost(tubes, base_specs, (), state), tuple(tubes), pod_specs=tuple(base_specs), label=label)
             path_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
+            rank_cost = self.nominal_cost(tubes, base_specs, (), state)
+            base_bundle = Bundle(pool, rank_cost, tuple(tubes), pod_specs=tuple(base_specs), label=label, path_edges=path_edges)
             bundles.extend(self.expand_pod_upgrade_bundles(base_bundle, path_edges, state))
         unique = []
         seen = set()
@@ -404,7 +410,7 @@ class Planner:
         pod_specs = list(base_bundle.pod_specs)
         for pod_level in range(MAX_POD_ADDITIONS + 1):
             pod_bundle = Bundle(base_bundle.pool, self.nominal_cost(base_bundle.tubes, pod_specs, (), state), base_bundle.tubes,
-                pod_specs=tuple(pod_specs), label=f"{base_bundle.label}-pods-{pod_level}")
+                pod_specs=tuple(pod_specs), label=f"{base_bundle.label}-pods-{pod_level}", path_edges=base_bundle.path_edges)
             bundles.extend(self.expand_upgrade_bundles(pod_bundle, path_edges, state))
             if pod_level == MAX_POD_ADDITIONS:
                 break
@@ -427,7 +433,8 @@ class Planner:
         upgrades = []
         for level in range(MAX_UPGRADES + 1):
             rank_cost = self.nominal_cost(bundle.tubes, bundle.pod_specs, upgrades, state)
-            bundles.append(Bundle(bundle.pool, rank_cost, bundle.tubes, bundle.teleport, bundle.pod_specs, tuple(upgrades), f"{bundle.label}-up-{level}"))
+            label = f"{bundle.label}-up-{level}"
+            bundles.append(Bundle(bundle.pool, rank_cost, bundle.tubes, bundle.teleport, bundle.pod_specs, tuple(upgrades), label, bundle.path_edges))
             if level == MAX_UPGRADES:
                 break
             try:

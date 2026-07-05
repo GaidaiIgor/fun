@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from math import isqrt
-from sys import stderr
+import sys
 
 MONTH_DAYS = 20
 MAX_TUBES_PER_BUILDING = 5
@@ -203,7 +203,7 @@ class Planner:
         current_state = self.replay_bundle_sequence(selected)
         current_result = self.simulate(current_state)
         before_score = current_result.score
-        print(self.score_debug("before", current_result, current_state.cost), file=stderr)
+        print(self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
         while True:
             best = self.best_candidate(selected, current_state, current_result, before_score)
             if best is None or best.new_cost > self.resources:
@@ -212,12 +212,12 @@ class Planner:
             current_state = self.replay_bundle_sequence(selected)
             current_result = self.simulate(current_state)
             total_text = self.state_action_text(current_state)
-            print(f"selected {best.pool}; resources left: {self.resources - current_state.cost}; total bundle: {total_text}", file=stderr)
+            print(f"selected {best.pool}; resources left: {self.resources - current_state.cost}; total bundle: {total_text}", file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.simulate(final_state, keep_dynamic_paths=True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
         self.service_areas = {pod_id: set(pod.service_area) for pod_id, pod in final_state.pods.items() if pod.service_area}
-        print(self.score_debug("after", final_result, final_state.cost), file=stderr)
+        print(self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
         action_order = {"TUBE": 0, "TELEPORT": 0, "UPGRADE": 1, "DESTROY": 2, "POD": 3}
         return sorted((action for action in final_state.actions if action), key=lambda action: action_order[action.split()[0]])
 
@@ -248,14 +248,14 @@ class Planner:
                 continue
             if state.cost > self.resources:
                 action_text = self.state_action_text(state)
-                print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=stderr)
+                print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
                 break
             result = self.simulate(state)
             score_gain = result.score - current_result.score
             total_score_gain = result.score - before_score
             total_efficiency = total_score_gain / max(1, state.cost)
             action_text = self.state_action_text(state)
-            print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=stderr)
+            print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
             if score_gain > 0:
                 return Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)
         return None
@@ -925,22 +925,22 @@ class Planner:
 
     def print_debug_input(self):
         """Prints a compact month snapshot for debugging."""
-        print(f"month {self.month + 1}", file=stderr)
-        print(f"resources {self.resources}", file=stderr)
+        print(f"month {self.month + 1}", file=sys.stderr)
+        print(f"resources {self.resources}", file=sys.stderr)
         for building in sorted(self.buildings.values(), key=lambda item: item.id):
             if building.kind == 0:
                 demand = ",".join(map(str, building.order)) if building.order else "none"
-                print(f"landing {building.id} {building.x} {building.y} {demand}", file=stderr)
+                print(f"landing {building.id} {building.x} {building.y} {demand}", file=sys.stderr)
             else:
-                print(f"module {building.id} {building.kind} {building.x} {building.y}", file=stderr)
+                print(f"module {building.id} {building.kind} {building.x} {building.y}", file=sys.stderr)
         for a, b in sorted(self.tubes):
-            print(f"tube {a} {b} {self.tubes[a, b]}", file=stderr)
+            print(f"tube {a} {b} {self.tubes[a, b]}", file=sys.stderr)
         for a, b in sorted(self.teleports.items()):
-            print(f"teleport {a} {b}", file=stderr)
+            print(f"teleport {a} {b}", file=sys.stderr)
         for pod_id in sorted(self.pods):
             path_text = ", ".join(map(str, self.pods[pod_id].path))
             area_text = ", ".join(f"{a}-{b}" for a, b in sorted(self.service_areas[pod_id]))
-            print(f"pod id={pod_id}, service={{{area_text}}}, path=[{path_text}]", file=stderr)
+            print(f"pod id={pod_id}, service={{{area_text}}}, path=[{path_text}]", file=sys.stderr)
 
     def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
         """Formats score diagnostics for label, result, and cost."""

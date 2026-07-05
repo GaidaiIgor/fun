@@ -275,6 +275,8 @@ class Planner:
                 state = self.replay_bundles(candidate_selected)
             except ValueError:
                 continue
+            if state.cost > self.resources:
+                break
             result = self.simulate(state)
             score_gain = result.score - baseline_score
             total_score_gain = result.score - empty_score

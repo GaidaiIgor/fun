@@ -239,16 +239,29 @@ class Planner:
             before_score: int) -> Candidate:
         """Returns the next improving candidate for pool on top of selected."""
         candidates = []
+        blocked_pod_counts = {}
+        blocked_upgrade_counts = {}
         for bundle in sorted(self.generate_bundles(pool, current_state), key=lambda item: (item.rank_cost, item.fingerprint)):
             if bundle.fingerprint == Bundle(pool).fingerprint:
                 continue
             if bundle.path_edges and current_result.delivery_times.get(pool, INF) == len(bundle.path_edges):
+                continue
+            pod_count = len(bundle.pod_specs)
+            upgrade_count = len(bundle.upgrades)
+            pod_block = blocked_pod_counts.get(bundle.path_edges, INF)
+            upgrade_block = blocked_upgrade_counts.get((bundle.path_edges, pod_count), INF)
+            if pod_count > pod_block or pod_count == pod_block and upgrade_count or upgrade_count > upgrade_block:
                 continue
             try:
                 state = self.replay_bundle_sequence([*selected, bundle])
             except ValueError:
                 continue
             candidates.append((state.cost, bundle.rank_cost, bundle.fingerprint, bundle, state))
+            if state.cost > self.resources:
+                if bundle.path_edges and not bundle.upgrades:
+                    blocked_pod_counts[bundle.path_edges] = min(pod_block, pod_count)
+                if bundle.upgrades:
+                    blocked_upgrade_counts[bundle.path_edges, pod_count] = min(upgrade_block, upgrade_count)
         for _, _, _, bundle, state in sorted(candidates):
             if state.cost > self.resources:
                 action_text = self.state_action_text(state)

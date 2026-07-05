@@ -253,7 +253,7 @@ class Planner:
             if state.cost > self.resources:
                 action_text = self.state_action_text(state)
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
-                break
+                continue
             result = self.simulate(state)
             score_gain = result.score - current_result.score
             total_score_gain = result.score - before_score

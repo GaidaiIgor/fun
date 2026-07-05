@@ -262,7 +262,12 @@ class Planner:
                     blocked_pod_counts[bundle.path_edges] = min(pod_block, pod_count)
                 if bundle.upgrades:
                     blocked_upgrade_counts[bundle.path_edges, pod_count] = min(upgrade_block, upgrade_count)
+        no_gain_pod_counts = {}
         for _, _, _, bundle, state in sorted(candidates):
+            pod_count = len(bundle.pod_specs)
+            no_gain_block = no_gain_pod_counts.get(bundle.path_edges, INF)
+            if bundle.path_edges and not bundle.upgrades and pod_count > no_gain_block:
+                continue
             if state.cost > self.resources:
                 action_text = self.state_action_text(state)
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
@@ -275,6 +280,8 @@ class Planner:
             print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
             if score_gain > 0:
                 return Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)
+            if bundle.path_edges and not bundle.upgrades:
+                no_gain_pod_counts[bundle.path_edges] = min(no_gain_block, pod_count)
         return None
 
     def generate_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:

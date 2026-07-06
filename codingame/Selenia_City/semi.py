@@ -245,7 +245,7 @@ class Planner:
         blocked_pod_counts = {}
         blocked_upgrade_counts = {}
         for bundle in sorted(self.generate_bundles(pool, current_state), key=lambda item: (item.rank_cost, item.fingerprint)):
-            if bundle.fingerprint == Bundle(pool).fingerprint:
+            if bundle.fingerprint == Bundle(pool).fingerprint and not bundle.path_edges:
                 continue
             if bundle.path_edges and current_result.delivery_times.get(pool, INF) == len(bundle.path_edges):
                 continue
@@ -259,27 +259,28 @@ class Planner:
                 state = self.replay_bundle_sequence([*selected, bundle])
             except ValueError:
                 continue
-            candidates.append((state.cost, bundle.rank_cost, bundle.fingerprint, bundle, state))
+            action_text = self.state_delta_text(current_state, state)
+            if action_text == "WAIT":
+                continue
+            candidates.append((state.cost, bundle.rank_cost, bundle.fingerprint, bundle, state, action_text))
             if state.cost > self.resources:
                 if bundle.path_edges and not bundle.upgrades:
                     blocked_pod_counts[bundle.path_edges] = min(pod_block, pod_count)
                 if bundle.upgrades:
                     blocked_upgrade_counts[bundle.path_edges, pod_count] = min(upgrade_block, upgrade_count)
         no_gain_pod_counts = {}
-        for _, _, _, bundle, state in sorted(candidates):
+        for _, _, _, bundle, state, action_text in sorted(candidates):
             pod_count = len(bundle.pod_specs)
             no_gain_block = no_gain_pod_counts.get(bundle.path_edges, INF)
             if bundle.path_edges and not bundle.upgrades and pod_count > no_gain_block:
                 continue
             if state.cost > self.resources:
-                action_text = self.state_delta_text(current_state, state)
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
                 continue
             result = self.simulate(state)
             score_gain = result.score - current_result.score
             total_score_gain = result.score - before_score
             total_efficiency = total_score_gain / max(1, state.cost)
-            action_text = self.state_delta_text(current_state, state)
             print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
             if score_gain > 0:
                 return Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)

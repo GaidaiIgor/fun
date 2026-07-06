@@ -210,10 +210,13 @@ class Planner:
             if best is None or best.new_cost > self.resources:
                 break
             selected.append(best.bundle)
+            previous_state = current_state
             current_state = self.replay_bundle_sequence(selected)
             current_result = self.simulate(current_state)
+            selected_text = self.state_delta_text(previous_state, current_state)
             total_text = self.state_action_text(current_state)
-            print(f"selected {best.pool}; resources left: {self.resources - current_state.cost}; total bundle: {total_text}", file=sys.stderr)
+            text = f"selected {best.pool}; resources left: {self.resources - current_state.cost}; action: {selected_text}; "
+            print(f"{text}total bundle: {total_text}", file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.simulate(final_state, keep_dynamic_paths=True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
@@ -269,14 +272,14 @@ class Planner:
             if bundle.path_edges and not bundle.upgrades and pod_count > no_gain_block:
                 continue
             if state.cost > self.resources:
-                action_text = self.state_action_text(state)
+                action_text = self.state_delta_text(current_state, state)
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
                 continue
             result = self.simulate(state)
             score_gain = result.score - current_result.score
             total_score_gain = result.score - before_score
             total_efficiency = total_score_gain / max(1, state.cost)
-            action_text = self.state_action_text(state)
+            action_text = self.state_delta_text(current_state, state)
             print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
             if score_gain > 0:
                 return Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)
@@ -317,9 +320,36 @@ class Planner:
             if action and action.split()[0] in ("TUBE", "TELEPORT", "UPGRADE"):
                 actions.append(action)
         for pod_id in sorted(state.planned_pods):
-            area_text = ", ".join(f"{a}-{b}" for a, b in sorted(state.service_areas[pod_id]))
-            actions.append(f"POD {pod_id} AUTO({area_text})")
+            actions.append(self.pod_debug_text(pod_id, state.service_areas[pod_id]))
         return ";".join(actions) if actions else "WAIT"
+
+    def state_delta_text(self, before: PlanState, after: PlanState) -> str:
+        """Formats debug actions that turn before into after."""
+        actions = []
+        for edge in sorted(before.planned_tubes - after.planned_tubes):
+            actions.append(f"DROP TUBE {edge[0]} {edge[1]}")
+        for edge in sorted(after.planned_tubes - before.planned_tubes):
+            actions.append(f"TUBE {edge[0]} {edge[1]}")
+        for edge in sorted(set(before.tubes) & set(after.tubes)):
+            for _ in range(after.tubes[edge] - before.tubes[edge]):
+                actions.append(f"UPGRADE {edge[0]} {edge[1]}")
+            for _ in range(before.tubes[edge] - after.tubes[edge]):
+                actions.append(f"DROP UPGRADE {edge[0]} {edge[1]}")
+        for entrance_id in sorted(set(before.teleports) - set(after.teleports)):
+            actions.append(f"DROP TELEPORT {entrance_id} {before.teleports[entrance_id]}")
+        for entrance_id in sorted(set(after.teleports) - set(before.teleports)):
+            actions.append(f"TELEPORT {entrance_id} {after.teleports[entrance_id]}")
+        for pod_id in sorted(before.planned_pods - after.planned_pods):
+            actions.append(f"DROP POD {pod_id}")
+        for pod_id in sorted(after.planned_pods):
+            if pod_id not in before.planned_pods or before.service_areas[pod_id] != after.service_areas[pod_id]:
+                actions.append(self.pod_debug_text(pod_id, after.service_areas[pod_id]))
+        return ";".join(actions) if actions else "WAIT"
+
+    def pod_debug_text(self, pod_id: int, service_area: set[Pair]) -> str:
+        """Formats pod_id and service_area as a debug POD action."""
+        area_text = ", ".join(f"{a}-{b}" for a, b in sorted(service_area))
+        return f"POD {pod_id} AUTO({area_text})"
 
     def path_options(self, pad_id: int, astronaut_type: int, state: PlanState) -> list[tuple[str, list[int], list[Pair], Pair]]:
         """Returns candidate infrastructure paths for pad_id and astronaut_type."""

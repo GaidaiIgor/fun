@@ -522,7 +522,7 @@ class Planner:
             result = self.simulate(projected)
             if result.delivery_times.get(base_bundle.pool, INF) == len(path_edges):
                 break
-            edge = self.best_counter_edge(path_edges, result.preventable_wait_by_edge)
+            edge = self.best_counter_edge(path_edges, result.preventable_wait_by_edge, True)
             if edge == (-1, -1):
                 break
             pod_specs.append(PodSpec(0, frozenset({edge})))
@@ -562,9 +562,9 @@ class Planner:
             upgrades.append(edge)
         return bundles
 
-    def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair]) -> Pair:
+    def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair], include_zero: bool = False) -> Pair:
         """Returns the highest-count edge among path_edges."""
-        candidates = [(counts[edge], edge) for edge in path_edges if counts[edge]]
+        candidates = [(counts[edge], edge) for edge in path_edges if include_zero or counts[edge]]
         return max(candidates, key=lambda item: (item[0], -item[1][0], -item[1][1]))[1] if candidates else (-1, -1)
 
     def nominal_cost(self, tubes: tuple[Pair, ...] | list[Pair], specs: tuple[PodSpec, ...] | list[PodSpec],

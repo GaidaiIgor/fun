@@ -821,24 +821,44 @@ class Planner:
         """Applies tube capacities, rerouting blocked dynamic pods to available demanded outgoing edges."""
         moves = {}
         by_tube = {}
+        remaining_demand = Counter(demand)
         for pod_id, move in requests.items():
             by_tube.setdefault(route_key(*move), []).append((pod_id, move))
         for edge, pods in by_tube.items():
             capacity = state.tubes[edge]
             if len(pods) > capacity:
                 result.congestion_by_edge[edge] += 1
-            for pod_id, move in sorted(pods)[:capacity]:
+            for pod_id, move in self.prioritized_capacity_moves(pods, capacity, state, remaining_demand):
                 moves[pod_id] = move
+                remaining_demand[move] = max(0, remaining_demand[move] - POD_CAPACITY)
         used = Counter(route_key(*move) for move in moves.values())
         service_counts = self.service_counts(state)
         for pod_id in sorted(set(requests) - set(moves)):
             if not state.pods[pod_id].dynamic:
                 continue
-            move = self.capacity_fallback_move(requests[pod_id], demand, state, used, service_counts)
+            move = self.capacity_fallback_move(requests[pod_id], remaining_demand, state, used, service_counts)
             if move != (-1, -1):
                 moves[pod_id] = move
                 used[route_key(*move)] += 1
+                remaining_demand[move] = max(0, remaining_demand[move] - POD_CAPACITY)
         return moves
+
+    def prioritized_capacity_moves(self, pods: list[tuple[int, DirectedPair]], capacity: int, state: PlanState,
+            remaining_demand: Counter[DirectedPair]) -> list[tuple[int, DirectedPair]]:
+        """Chooses capacity winners, giving dynamic pods with deliverable passengers priority."""
+        selected = []
+        test_demand = Counter(remaining_demand)
+        fixed = sorted((pod_id, move) for pod_id, move in pods if not state.pods[pod_id].dynamic)
+        for pod_id, move in fixed[:capacity]:
+            selected.append((pod_id, move))
+            test_demand[move] = max(0, test_demand[move] - POD_CAPACITY)
+        waiting = [(pod_id, move) for pod_id, move in pods if state.pods[pod_id].dynamic]
+        while len(selected) < capacity and waiting:
+            best = max(waiting, key=lambda item: (min(POD_CAPACITY, test_demand[item[1]]), -item[0]))
+            selected.append(best)
+            test_demand[best[1]] = max(0, test_demand[best[1]] - POD_CAPACITY)
+            waiting.remove(best)
+        return selected
 
     def capacity_fallback_move(self, blocked_move: DirectedPair, demand: Counter[DirectedPair], state: PlanState,
             used: Counter[Pair], service_counts: Counter[Pair]) -> DirectedPair:
@@ -847,7 +867,7 @@ class Planner:
         candidates = []
         for move, count in demand.items():
             edge = route_key(*move)
-            if move[0] == source_id and move != blocked_move and edge in state.tubes and used[edge] < state.tubes[edge]:
+            if count and move[0] == source_id and move != blocked_move and edge in state.tubes and used[edge] < state.tubes[edge]:
                 candidates.append((-min(count, POD_CAPACITY), service_counts[edge], move))
         return min(candidates)[2] if candidates else (-1, -1)
 

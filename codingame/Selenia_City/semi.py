@@ -836,7 +836,7 @@ class Planner:
         for pod_id in sorted(set(requests) - set(moves)):
             if not state.pods[pod_id].dynamic:
                 continue
-            move = self.capacity_fallback_move(requests[pod_id], remaining_demand, state, used, service_counts)
+            move = self.capacity_fallback_move(pod_id, requests[pod_id], remaining_demand, state, used, service_counts)
             if move != (-1, -1):
                 moves[pod_id] = move
                 used[route_key(*move)] += 1
@@ -860,16 +860,28 @@ class Planner:
             waiting.remove(best)
         return selected
 
-    def capacity_fallback_move(self, blocked_move: DirectedPair, demand: Counter[DirectedPair], state: PlanState,
+    def capacity_fallback_move(self, pod_id: int, blocked_move: DirectedPair, demand: Counter[DirectedPair], state: PlanState,
             used: Counter[Pair], service_counts: Counter[Pair]) -> DirectedPair:
-        """Chooses an available demanded outgoing edge from the blocked move source."""
+        """Chooses an available demanded or arbitrary outgoing edge from the blocked move source."""
         source_id = blocked_move[0]
         candidates = []
         for move, count in demand.items():
             edge = route_key(*move)
             if count and move[0] == source_id and move != blocked_move and edge in state.tubes and used[edge] < state.tubes[edge]:
                 candidates.append((-min(count, POD_CAPACITY), service_counts[edge], move))
-        return min(candidates)[2] if candidates else (-1, -1)
+        return min(candidates)[2] if candidates else self.arbitrary_capacity_move(pod_id, source_id, state, used)
+
+    def arbitrary_capacity_move(self, pod_id: int, source_id: int, state: PlanState, used: Counter[Pair]) -> DirectedPair:
+        """Chooses the smallest available outgoing edge from pod_id service area, then the full map."""
+        for target_id in sorted({node for edge in state.pods[pod_id].service_area if source_id in edge for node in edge if node != source_id}):
+            edge = route_key(source_id, target_id)
+            if used[edge] < state.tubes[edge]:
+                return source_id, target_id
+        for target_id in sorted({node for edge in state.tubes if source_id in edge for node in edge if node != source_id}):
+            edge = route_key(source_id, target_id)
+            if used[edge] < state.tubes[edge]:
+                return source_id, target_id
+        return -1, -1
 
     def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], state: PlanState,
             requests: dict[int, DirectedPair], moves: dict[int, DirectedPair], pod_positions: dict[int, int], dynamic_current: dict[int, int],
@@ -920,13 +932,10 @@ class Planner:
             if onboard.get(pod_id):
                 queues.setdefault(target_id, []).extend(onboard[pod_id])
         for pod_id in sorted(set(requests) - set(moves)):
-            if not state.pods[pod_id].dynamic:
-                continue
-            current_id = requests[pod_id][0]
-            if not dynamic_paths[pod_id]:
-                dynamic_paths[pod_id].append(current_id)
-            dynamic_paths[pod_id].append(current_id)
-            dynamic_current[pod_id] = current_id
+            if state.pods[pod_id].dynamic:
+                if not dynamic_paths[pod_id]:
+                    dynamic_paths[pod_id].append(requests[pod_id][0])
+                dynamic_current[pod_id] = requests[pod_id][0]
 
     def best_wanted_edge(self, building_id: int, kind: int, distances: dict[int, dict[int, int]], tubes: dict[Pair, int]) -> DirectedPair:
         """Returns the best directed edge wanted from building_id for kind."""

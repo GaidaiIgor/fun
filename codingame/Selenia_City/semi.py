@@ -432,6 +432,11 @@ class Planner:
                 projected = self.replay_bundle_on_state(state, pod_bundle)
             except ValueError:
                 break
+            for spec in self.focus_specs(path_edges, projected):
+                focus_specs = [*pod_specs, spec]
+                focus_bundle = Bundle(base_bundle.pool, self.nominal_cost(base_bundle.tubes, focus_specs, (), state), base_bundle.tubes,
+                    pod_specs=tuple(focus_specs), label=f"{base_bundle.label}-focus-{spec.pod_id}", path_edges=base_bundle.path_edges)
+                bundles.extend(self.expand_upgrade_bundles(focus_bundle, path_edges, state))
             result = self.simulate(projected)
             if result.delivery_times.get(base_bundle.pool, INF) == len(path_edges):
                 break
@@ -440,6 +445,19 @@ class Planner:
                 break
             pod_specs.append(PodSpec(0, frozenset({edge})))
         return bundles
+
+    def focus_specs(self, path_edges: tuple[Pair, ...], state: PlanState) -> list[PodSpec]:
+        """Returns pod specs that remove overlapping service edges from pods serving path_edges."""
+        specs = []
+        path_edge_set = set(path_edges)
+        service_counts = self.service_counts(state)
+        for pod_id, area in sorted(state.service_areas.items()):
+            if len(area) <= 1 or not area & path_edge_set:
+                continue
+            focused = area - {edge for edge in area if service_counts[edge] > 1}
+            if focused and focused & path_edge_set and focused != area and service_area_connected(focused):
+                specs.append(PodSpec(pod_id, frozenset(focused)))
+        return specs
 
     def expand_upgrade_bundles(self, bundle: Bundle, path_edges: tuple[Pair, ...], state: PlanState) -> list[Bundle]:
         """Adds congestion-upgrade variants for bundle."""
@@ -471,7 +489,13 @@ class Planner:
             upgrades: tuple[Pair, ...] | list[Pair], state: PlanState) -> int:
         """Estimates bundle cost from tubes, specs, upgrades, and state."""
         cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes if route_key(a, b) not in state.tubes)
-        cost += sum(0 if spec.pod_id in state.planned_pods else REROUTE_COST if spec.pod_id else POD_COST for spec in specs)
+        planned_pods = set(state.planned_pods)
+        for spec in specs:
+            if not spec.pod_id:
+                cost += POD_COST
+            elif spec.pod_id not in planned_pods:
+                cost += REROUTE_COST
+                planned_pods.add(spec.pod_id)
         capacities = dict(state.tubes)
         for a, b in tubes:
             capacities.setdefault(route_key(a, b), 1)

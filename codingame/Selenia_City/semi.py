@@ -354,7 +354,11 @@ class Planner:
                 if bundle.upgrades:
                     blocked_upgrade_counts[bundle.path_edges, pod_count] = min(upgrade_block, upgrade_count)
         no_gain_pod_counts = {}
+        best = None
+        positive_cost = INF
         for _, _, _, bundle, state, action_text in sorted(candidates):
+            if state.cost > positive_cost:
+                break
             pod_count = len(bundle.pod_specs)
             no_gain_block = no_gain_pod_counts.get(bundle.path_edges, INF)
             if bundle.path_edges and not bundle.upgrades and pod_count > no_gain_block:
@@ -368,10 +372,14 @@ class Planner:
             total_efficiency = total_score_gain / max(1, state.cost)
             print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
             if score_gain > 0:
-                return Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)
+                candidate = Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)
+                if best is None or (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > \
+                        (best.efficiency, best.total_score_gain, -best.new_cost):
+                    best = candidate
+                    positive_cost = state.cost
             if bundle.path_edges and not bundle.upgrades:
                 no_gain_pod_counts[bundle.path_edges] = min(no_gain_block, pod_count)
-        return None
+        return best
 
     def generate_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:
         """Builds representative path, pod, and upgrade bundles for pool."""
@@ -522,7 +530,7 @@ class Planner:
             result = self.simulate(projected)
             if result.delivery_times.get(base_bundle.pool, INF) == len(path_edges):
                 break
-            edge = self.best_counter_edge(path_edges, result.preventable_wait_by_edge, True)
+            edge = self.best_pod_edge(path_edges, result)
             if edge == (-1, -1):
                 break
             pod_specs.append(PodSpec(0, frozenset({edge})))
@@ -562,9 +570,14 @@ class Planner:
             upgrades.append(edge)
         return bundles
 
-    def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair], include_zero: bool = False) -> Pair:
+    def best_pod_edge(self, path_edges: tuple[Pair, ...], result: SimulationResult) -> Pair:
+        """Returns the path edge where the next dynamic pod should focus."""
+        candidates = [(result.preventable_wait_by_edge[edge], result.congestion_by_edge[edge], result.wait_by_edge[edge], edge) for edge in path_edges]
+        return max(candidates, key=lambda item: (item[0], item[1], item[2], -item[3][0], -item[3][1]))[3] if candidates else (-1, -1)
+
+    def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair]) -> Pair:
         """Returns the highest-count edge among path_edges."""
-        candidates = [(counts[edge], edge) for edge in path_edges if include_zero or counts[edge]]
+        candidates = [(counts[edge], edge) for edge in path_edges if counts[edge]]
         return max(candidates, key=lambda item: (item[0], -item[1][0], -item[1][1]))[1] if candidates else (-1, -1)
 
     def nominal_cost(self, tubes: tuple[Pair, ...] | list[Pair], specs: tuple[PodSpec, ...] | list[PodSpec],

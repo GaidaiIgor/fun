@@ -358,6 +358,9 @@ class Planner:
         positive_cost = INF
         for _, _, _, bundle, state, action_text in sorted(candidates):
             if state.cost > positive_cost:
+                if state.cost > self.resources:
+                    print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
+                    continue
                 break
             pod_count = len(bundle.pod_specs)
             no_gain_block = no_gain_pod_counts.get(bundle.path_edges, INF)

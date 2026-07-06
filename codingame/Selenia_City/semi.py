@@ -99,6 +99,8 @@ class PlanState:
     actions: list[str] = field(default_factory=list)
     placeholders: list[tuple[int, int]] = field(default_factory=list)
     planned_pods: set[int] = field(default_factory=set)
+    planned_pod_edges: dict[int, set[Pair]] = field(default_factory=dict)
+    planned_pod_pools: dict[int, Pool] = field(default_factory=dict)
     planned_tubes: set[Pair] = field(default_factory=set)
     cost: int = 0
 
@@ -483,7 +485,8 @@ class Planner:
         pods = {pod_id: PodPlan(pod.id, pod.path[:], set(pod.service_area), pod.dynamic) for pod_id, pod in state.pods.items()}
         service_areas = {pod_id: set(area) for pod_id, area in state.service_areas.items()}
         copied = PlanState(dict(state.tubes), dict(state.teleports), pods, service_areas, list(state.actions), list(state.placeholders),
-            set(state.planned_pods), set(state.planned_tubes), state.cost)
+            set(state.planned_pods), {pod_id: set(edges) for pod_id, edges in state.planned_pod_edges.items()},
+            dict(state.planned_pod_pools), set(state.planned_tubes), state.cost)
         self.apply_bundle(copied, bundle)
         return copied
 
@@ -507,7 +510,7 @@ class Planner:
         for edges in active_by_pool.values():
             active_edges.update(edges)
         for pod_id in list(state.planned_pods):
-            state.service_areas[pod_id] &= active_edges
+            state.service_areas[pod_id] &= state.planned_pod_edges[pod_id] & active_by_pool.get(state.planned_pod_pools[pod_id], set())
             if state.service_areas[pod_id]:
                 state.pods[pod_id].service_area = state.service_areas[pod_id]
             else:
@@ -526,6 +529,8 @@ class Planner:
             del state.pods[pod_id]
             del state.service_areas[pod_id]
         state.planned_pods.remove(pod_id)
+        del state.planned_pod_edges[pod_id]
+        del state.planned_pod_pools[pod_id]
         state.placeholders = [(index, placeholder_id) for index, placeholder_id in state.placeholders if placeholder_id != pod_id]
         for index, action in enumerate(state.actions):
             parts = action.split()
@@ -598,6 +603,9 @@ class Planner:
             for edge in area:
                 if edge not in state.tubes:
                     raise ValueError("service area missing tube")
+            path_edges = set(bundle.path_edges)
+            state.planned_pod_edges[pod_id] = area & path_edges if path_edges else set(area)
+            state.planned_pod_pools[pod_id] = bundle.pool
             state.service_areas[pod_id] = area
             state.pods[pod_id] = PodPlan(pod_id, [], area, True)
 

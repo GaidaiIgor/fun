@@ -118,6 +118,7 @@ class SimulationResult:
     diversity_by_module: Counter[int] = field(default_factory=Counter)
     delivered_by_module: Counter[int] = field(default_factory=Counter)
     wait_by_edge: Counter[Pair] = field(default_factory=Counter)
+    preventable_wait_by_edge: Counter[Pair] = field(default_factory=Counter)
     congestion_by_edge: Counter[Pair] = field(default_factory=Counter)
     dynamic_paths: dict[int, list[int]] = field(default_factory=dict)
 
@@ -434,7 +435,7 @@ class Planner:
             result = self.simulate(projected)
             if result.delivery_times.get(base_bundle.pool, INF) == len(path_edges):
                 break
-            edge = self.best_counter_edge(path_edges, result.wait_by_edge)
+            edge = self.best_counter_edge(path_edges, result.preventable_wait_by_edge)
             if edge == (-1, -1):
                 break
             pod_specs.append(PodSpec(0, frozenset({edge})))
@@ -837,6 +838,7 @@ class Planner:
             candidates.sort()
         seats = Counter({pod_id: POD_CAPACITY for pod_id in moves})
         onboard = {}
+        wait_today = Counter()
         for building_id in sorted(list(queues)):
             candidates = by_start.get(building_id, [])
             remaining = []
@@ -853,11 +855,15 @@ class Planner:
                 else:
                     remaining.append(passenger)
                     if wanted != (-1, -1):
-                        result.wait_by_edge[route_key(*wanted)] += 1
+                        wait_today[route_key(*wanted)] += 1
             if remaining:
                 queues[building_id] = remaining
             else:
                 del queues[building_id]
+        used_capacity = Counter(route_key(*move) for move in moves.values())
+        for edge, count in wait_today.items():
+            result.wait_by_edge[edge] += count
+            result.preventable_wait_by_edge[edge] += min(count, (state.tubes[edge] - used_capacity[edge]) * POD_CAPACITY)
         for pod_id, (_, target_id) in moves.items():
             if pod_id in pod_positions:
                 pod_positions[pod_id] = fixed_next_index(state.pods[pod_id].path, pod_positions[pod_id])

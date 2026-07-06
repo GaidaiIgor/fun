@@ -18,6 +18,8 @@ MAX_POD_ADDITIONS = 3
 MAX_UPGRADES = 3
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
+OVERRIDE_MONTH = 2
+OVERRIDE_COMMAND = "POD 2 AUTO(0-1)"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -203,6 +205,8 @@ class Planner:
 
     def choose_actions(self) -> list[str]:
         """Chooses greedy bundle additions and returns concrete game actions."""
+        if self.month + 1 == OVERRIDE_MONTH:
+            return self.override_actions()
         selected = []
         current_state = self.replay_bundle_sequence(selected)
         current_result = self.simulate(current_state)
@@ -227,6 +231,84 @@ class Planner:
         print(self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
         action_order = {"TUBE": 0, "TELEPORT": 0, "UPGRADE": 1, "DESTROY": 2, "POD": 3}
         return sorted((action for action in final_state.actions if action), key=lambda action: action_order[action.split()[0]])
+
+    def override_actions(self) -> list[str]:
+        """Applies OVERRIDE_COMMAND for the current month and resolves AUTO pod routes."""
+        current_state = self.replay_bundle_sequence([])
+        current_result = self.simulate(current_state)
+        print(self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
+        final_state = self.override_state(OVERRIDE_COMMAND)
+        final_result = self.simulate(final_state, keep_dynamic_paths=True)
+        self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
+        self.service_areas = {pod_id: set(pod.service_area) for pod_id, pod in final_state.pods.items() if pod.service_area}
+        print(f"override month {self.month + 1}: {OVERRIDE_COMMAND}", file=sys.stderr)
+        print(self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
+        return [action for action in final_state.actions if action]
+
+    def override_state(self, command: str) -> PlanState:
+        """Builds a projected state from semicolon-separated override command actions."""
+        state = self.replay_bundle_sequence([])
+        if command.strip() == "WAIT":
+            return state
+        for action in (item.strip() for item in command.split(";")):
+            if action:
+                self.apply_override_action(state, action)
+        return state
+
+    def apply_override_action(self, state: PlanState, action: str):
+        """Applies one override action to state, leaving AUTO pods as dynamic placeholders."""
+        parts = action.split()
+        command = parts[0]
+        if command == "TUBE":
+            a, b = int(parts[1]), int(parts[2])
+            edge = route_key(a, b)
+            if edge not in state.tubes:
+                state.tubes[edge] = 1
+                state.cost += tube_cost(self.buildings[a], self.buildings[b])
+            state.actions.append(action)
+        elif command == "UPGRADE":
+            edge = route_key(int(parts[1]), int(parts[2]))
+            state.tubes[edge] += 1
+            state.cost += tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * state.tubes[edge]
+            state.actions.append(action)
+        elif command == "TELEPORT":
+            a, b = int(parts[1]), int(parts[2])
+            state.teleports[a] = b
+            state.cost += TELEPORT_COST
+            state.actions.append(action)
+        elif command == "DESTROY":
+            pod_id = int(parts[1])
+            del state.pods[pod_id]
+            del state.service_areas[pod_id]
+            state.cost -= POD_REFUND
+            state.actions.append(action)
+        elif command == "POD":
+            self.apply_override_pod(state, action)
+        elif command != "WAIT":
+            raise ValueError(f"unknown override action {command}")
+
+    def apply_override_pod(self, state: PlanState, action: str):
+        """Applies one override POD action, resolving AUTO service areas through simulation later."""
+        _, pod_text, route_text = action.split(maxsplit=2)
+        pod_id = int(pod_text)
+        assert pod_id not in state.pods, f"override POD {pod_id} already exists"
+        if route_text.startswith("AUTO("):
+            area = parse_auto_area(route_text)
+            for edge in area:
+                if edge not in state.tubes:
+                    raise ValueError("override AUTO edge missing tube")
+            state.cost += POD_COST
+            state.service_areas[pod_id] = area
+            state.pods[pod_id] = PodPlan(pod_id, [], area, True)
+            state.placeholders.append((len(state.actions), pod_id))
+            state.actions.append("")
+            return
+        path = [int(item) for item in route_text.split()]
+        area = {route_key(a, b) for a, b in zip(path, path[1:])}
+        state.cost += POD_COST
+        state.service_areas[pod_id] = area
+        state.pods[pod_id] = PodPlan(pod_id, path, area, False)
+        state.actions.append(action)
 
     def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult, before_score: int) -> Candidate:
         """Finds the most efficient affordable current-generation candidate for selected."""
@@ -1192,6 +1274,15 @@ def unique_new_tubes(path: list[int], tubes: dict[Pair, int]) -> list[Pair]:
             result.append(edge)
             seen.add(edge)
     return result
+
+
+def parse_auto_area(text: str) -> set[Pair]:
+    """Parses AUTO service area text into route keys."""
+    area = set()
+    for edge_text in text.removeprefix("AUTO(").removesuffix(")").replace(",", " ").split():
+        a, b = map(int, edge_text.split("-"))
+        area.add(route_key(a, b))
+    return area
 
 
 def tube_graph(tubes: dict[Pair, int]) -> dict[int, list[int]]:

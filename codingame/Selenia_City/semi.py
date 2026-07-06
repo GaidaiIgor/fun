@@ -209,7 +209,7 @@ class Planner:
             return self.override_actions()
         selected = []
         current_state = self.replay_bundle_sequence(selected)
-        current_result = self.simulate(current_state)
+        current_result = self.score_state(current_state)
         before_score = current_result.score
         print(self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
         while True:
@@ -219,13 +219,13 @@ class Planner:
             selected.append(best.bundle)
             previous_state = current_state
             current_state = self.replay_bundle_sequence(selected)
-            current_result = self.simulate(current_state)
+            current_result = self.score_state(current_state)
             selected_text = self.state_delta_text(previous_state, current_state)
             total_text = self.state_action_text(current_state)
             text = f"selected {best.pool}; resources left: {self.resources - current_state.cost}; action: {selected_text}; "
             print(f"{text}total bundle: {total_text}", file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
-        final_result = self.simulate(final_state, keep_dynamic_paths=True)
+        final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
         self.service_areas = {pod_id: set(pod.service_area) for pod_id, pod in final_state.pods.items() if pod.service_area}
         print(self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
@@ -235,10 +235,10 @@ class Planner:
     def override_actions(self) -> list[str]:
         """Applies OVERRIDE_COMMAND for the current month and resolves AUTO pod routes."""
         current_state = self.replay_bundle_sequence([])
-        current_result = self.simulate(current_state)
+        current_result = self.score_state(current_state)
         print(self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
         final_state = self.override_state(OVERRIDE_COMMAND)
-        final_result = self.simulate(final_state, keep_dynamic_paths=True)
+        final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
         self.service_areas = {pod_id: set(pod.service_area) for pod_id, pod in final_state.pods.items() if pod.service_area}
         print(f"override month {self.month + 1}: {OVERRIDE_COMMAND}", file=sys.stderr)
@@ -369,7 +369,7 @@ class Planner:
             if state.cost > self.resources:
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
                 continue
-            result = self.simulate(state)
+            result = self.score_state(state)
             score_gain = result.score - current_result.score
             total_score_gain = result.score - before_score
             total_efficiency = total_score_gain / max(1, state.cost)
@@ -738,6 +738,26 @@ class Planner:
             path = dynamic_paths[pod_id]
             assert len(path) >= 2, f"dynamic pod {pod_id} produced an empty route"
             state.actions[index] = "POD {} {}".format(pod_id, " ".join(map(str, normalize_month_path(path))))
+
+    def score_state(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
+        """Scores state after replacing dynamic pods with the concrete paths they would print."""
+        if not any(pod.dynamic for pod in state.pods.values()):
+            return self.simulate(state, keep_dynamic_paths)
+        dynamic_result = self.simulate(state, True)
+        fixed_result = self.simulate(self.fixed_dynamic_state(state, dynamic_result.dynamic_paths))
+        if keep_dynamic_paths:
+            fixed_result.dynamic_paths = dynamic_result.dynamic_paths
+        return fixed_result
+
+    def fixed_dynamic_state(self, state: PlanState, dynamic_paths: dict[int, list[int]]) -> PlanState:
+        """Returns a copy of state with dynamic pod paths fixed to dynamic_paths."""
+        pods = {}
+        for pod_id, pod in state.pods.items():
+            path = normalize_month_path(dynamic_paths[pod_id]) if pod.dynamic else pod.path[:]
+            pods[pod_id] = PodPlan(pod.id, path, set(pod.service_area), False)
+        return PlanState(dict(state.tubes), dict(state.teleports), pods, {pod_id: set(area) for pod_id, area in state.service_areas.items()},
+            list(state.actions), list(state.placeholders), set(state.planned_pods),
+            {pod_id: set(edges) for pod_id, edges in state.planned_pod_edges.items()}, dict(state.planned_pod_pools), set(state.planned_tubes), state.cost)
 
     def simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         """Simulates one month of astronaut movement through state."""

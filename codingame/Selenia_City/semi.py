@@ -657,8 +657,8 @@ class Planner:
             if not demand:
                 break
             requests = self.pod_requests(state, pod_positions, dynamic_current, demand)
-            moves, explicit_parks = self.allocate_tube_capacity(requests, state, demand, result)
-            self.board_and_launch(queues, distances, state, requests, moves, explicit_parks, pod_positions, dynamic_current, dynamic_paths, result)
+            moves = self.allocate_tube_capacity(requests, state, demand, result)
+            self.board_and_launch(queues, distances, state, requests, moves, pod_positions, dynamic_current, dynamic_paths, result)
             self.settle(day + 1, queues, module_arrivals, result)
         if keep_dynamic_paths:
             result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
@@ -820,23 +820,18 @@ class Planner:
         return current, next_id
 
     def allocate_tube_capacity(self, requests: dict[int, DirectedPair], state: PlanState, demand: Counter[DirectedPair],
-            result: SimulationResult) -> tuple[dict[int, DirectedPair], set[int]]:
+            result: SimulationResult) -> dict[int, DirectedPair]:
         """Applies tube capacities, rerouting blocked dynamic pods to available demanded outgoing edges."""
         moves = {}
         by_tube = {}
         remaining_demand = Counter(demand)
-        explicit_parks = set()
         for pod_id, move in requests.items():
             by_tube.setdefault(route_key(*move), []).append((pod_id, move))
         for edge, pods in by_tube.items():
             capacity = state.tubes[edge]
             if len(pods) > capacity:
                 result.congestion_by_edge[edge] += 1
-            selected = self.prioritized_capacity_moves(pods, capacity, state, remaining_demand)
-            selected_ids = {pod_id for pod_id, _ in selected}
-            id_winners = {pod_id for pod_id, _ in sorted(pods)[:capacity]}
-            explicit_parks.update(pod_id for pod_id, _ in pods if pod_id in id_winners - selected_ids and state.pods[pod_id].dynamic)
-            for pod_id, move in selected:
+            for pod_id, move in self.prioritized_capacity_moves(pods, capacity, state, remaining_demand):
                 moves[pod_id] = move
                 remaining_demand[move] = max(0, remaining_demand[move] - POD_CAPACITY)
         used = Counter(route_key(*move) for move in moves.values())
@@ -847,10 +842,9 @@ class Planner:
             move = self.capacity_fallback_move(requests[pod_id], remaining_demand, state, used, service_counts)
             if move != (-1, -1):
                 moves[pod_id] = move
-                explicit_parks.discard(pod_id)
                 used[route_key(*move)] += 1
                 remaining_demand[move] = max(0, remaining_demand[move] - POD_CAPACITY)
-        return moves, explicit_parks
+        return moves
 
     def prioritized_capacity_moves(self, pods: list[tuple[int, DirectedPair]], capacity: int, state: PlanState,
             remaining_demand: Counter[DirectedPair]) -> list[tuple[int, DirectedPair]]:
@@ -881,8 +875,7 @@ class Planner:
         return min(candidates)[2] if candidates else (-1, -1)
 
     def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], state: PlanState,
-            requests: dict[int, DirectedPair], moves: dict[int, DirectedPair], explicit_parks: set[int], pod_positions: dict[int, int],
-            dynamic_current: dict[int, int],
+            requests: dict[int, DirectedPair], moves: dict[int, DirectedPair], pod_positions: dict[int, int], dynamic_current: dict[int, int],
             dynamic_paths: dict[int, list[int]], result: SimulationResult):
         """Boards passengers into moves, launches pods, and updates wait counters."""
         by_start = {}
@@ -935,8 +928,7 @@ class Planner:
             source_id = requests[pod_id][0]
             if not dynamic_paths[pod_id]:
                 dynamic_paths[pod_id].append(source_id)
-            if pod_id in explicit_parks:
-                dynamic_paths[pod_id].append(source_id)
+            dynamic_paths[pod_id].append(source_id)
             dynamic_current[pod_id] = source_id
 
     def best_wanted_edge(self, building_id: int, kind: int, distances: dict[int, dict[int, int]], tubes: dict[Pair, int]) -> DirectedPair:

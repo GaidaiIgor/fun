@@ -904,13 +904,18 @@ class Planner:
         moves = {}
         by_tube = {}
         remaining_demand = Counter(demand)
+        arbitrary_fallback_pods = set()
         for pod_id, move in requests.items():
             by_tube.setdefault(route_key(*move), []).append((pod_id, move))
         for edge, pods in by_tube.items():
             capacity = state.tubes[edge]
             if len(pods) > capacity:
                 result.congestion_by_edge[edge] += 1
-            for pod_id, move in self.prioritized_capacity_moves(pods, capacity, state, remaining_demand):
+            selected = self.prioritized_capacity_moves(pods, capacity, state, remaining_demand)
+            selected_ids = {pod_id for pod_id, _ in selected}
+            id_winners = {pod_id for pod_id, _ in sorted(pods)[:capacity]}
+            arbitrary_fallback_pods.update(pod_id for pod_id, _ in pods if pod_id in id_winners - selected_ids and state.pods[pod_id].dynamic)
+            for pod_id, move in selected:
                 moves[pod_id] = move
                 remaining_demand[move] = max(0, remaining_demand[move] - POD_CAPACITY)
         used = Counter(route_key(*move) for move in moves.values())
@@ -918,7 +923,7 @@ class Planner:
         for pod_id in sorted(set(requests) - set(moves)):
             if not state.pods[pod_id].dynamic:
                 continue
-            move = self.capacity_fallback_move(pod_id, requests[pod_id], remaining_demand, state, used, service_counts)
+            move = self.capacity_fallback_move(pod_id, requests[pod_id], remaining_demand, state, used, service_counts, pod_id in arbitrary_fallback_pods)
             if move != (-1, -1):
                 moves[pod_id] = move
                 used[route_key(*move)] += 1
@@ -943,7 +948,7 @@ class Planner:
         return selected
 
     def capacity_fallback_move(self, pod_id: int, blocked_move: DirectedPair, demand: Counter[DirectedPair], state: PlanState,
-            used: Counter[Pair], service_counts: Counter[Pair]) -> DirectedPair:
+            used: Counter[Pair], service_counts: Counter[Pair], allow_arbitrary: bool) -> DirectedPair:
         """Chooses an available demanded or arbitrary outgoing edge from the blocked move source."""
         source_id = blocked_move[0]
         candidates = []
@@ -951,7 +956,9 @@ class Planner:
             edge = route_key(*move)
             if count and move[0] == source_id and move != blocked_move and edge in state.tubes and used[edge] < state.tubes[edge]:
                 candidates.append((-min(count, POD_CAPACITY), service_counts[edge], move))
-        return min(candidates)[2] if candidates else self.arbitrary_capacity_move(pod_id, source_id, state, used)
+        if candidates:
+            return min(candidates)[2]
+        return self.arbitrary_capacity_move(pod_id, source_id, state, used) if allow_arbitrary else (-1, -1)
 
     def arbitrary_capacity_move(self, pod_id: int, source_id: int, state: PlanState, used: Counter[Pair]) -> DirectedPair:
         """Chooses the smallest available outgoing edge from pod_id service area, then the full map."""

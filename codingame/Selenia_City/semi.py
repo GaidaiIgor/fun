@@ -762,6 +762,8 @@ class Planner:
     def simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         """Simulates one month of astronaut movement through state."""
         distances = self.distances_to_types(state)
+        graph = tube_graph(state.tubes)
+        wanted_edges = self.wanted_edges(distances, graph)
         queues = self.initial_queues(distances)
         result = SimulationResult()
         pod_positions = {pod_id: 0 for pod_id, pod in state.pods.items() if not pod.dynamic}
@@ -771,12 +773,12 @@ class Planner:
         for day in range(MONTH_DAYS):
             self.teleport_phase(queues, distances, state.teleports)
             self.settle(day, queues, module_arrivals, result)
-            demand = self.directed_demand(queues, distances, state.tubes)
+            demand = self.directed_demand(queues, wanted_edges)
             if not demand:
                 break
-            requests = self.pod_requests(state, pod_positions, dynamic_current, demand)
+            requests = self.pod_requests(state, pod_positions, dynamic_current, demand, graph)
             moves = self.allocate_tube_capacity(requests, state, demand, result)
-            self.board_and_launch(queues, distances, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
+            self.board_and_launch(queues, distances, wanted_edges, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
             self.settle(day + 1, queues, module_arrivals, result)
         if keep_dynamic_paths:
             result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
@@ -819,6 +821,15 @@ class Planner:
             if passengers:
                 queues[pad.id] = passengers
         return queues
+
+    def wanted_edges(self, distances: dict[int, dict[int, int]], graph: dict[int, list[int]]) -> dict[tuple[int, int], DirectedPair]:
+        """Returns the best directed tube edge for each building and astronaut type."""
+        wanted = {}
+        for kind, kind_distances in distances.items():
+            for building_id, distance in kind_distances.items():
+                options = [neighbor_id for neighbor_id in graph.get(building_id, []) if kind_distances[neighbor_id] < distance]
+                wanted[building_id, kind] = (building_id, min(options, key=lambda item: (kind_distances[item], item))) if options else (-1, -1)
+        return wanted
 
     def teleport_phase(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], teleports: dict[int, int]):
         """Moves passengers through teleports when teleports reduce or preserve target distance."""
@@ -867,21 +878,18 @@ class Planner:
             else:
                 del queues[building_id]
 
-    def directed_demand(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], tubes: dict[Pair, int]) -> Counter[DirectedPair]:
-        """Counts best directed tube demand from queues under distances."""
-        graph = tube_graph(tubes)
+    def directed_demand(self, queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], DirectedPair]) -> Counter[DirectedPair]:
+        """Counts best directed tube demand from queues under wanted_edges."""
         demand = Counter()
         for building_id, passengers in queues.items():
             for passenger in passengers:
-                options = [neighbor_id for neighbor_id in graph.get(building_id, []) if
-                    distances[passenger.kind][neighbor_id] < distances[passenger.kind][building_id]]
-                if options:
-                    target_id = min(options, key=lambda item: (distances[passenger.kind][item], item))
-                    demand[building_id, target_id] += 1
+                move = wanted_edges[building_id, passenger.kind]
+                if move != (-1, -1):
+                    demand[move] += 1
         return demand
 
     def pod_requests(self, state: PlanState, pod_positions: dict[int, int], dynamic_current: dict[int, int],
-            demand: Counter[DirectedPair]) -> dict[int, DirectedPair]:
+            demand: Counter[DirectedPair], graph: dict[int, list[int]]) -> dict[int, DirectedPair]:
         """Returns daily pod move requests, with dynamic pods choosing requests after fixed pods."""
         requests = {}
         for pod_id, pod in sorted(state.pods.items()):
@@ -893,11 +901,10 @@ class Planner:
                 continue
             requests[pod_id] = (pod.path[index], pod.path[next_index])
         service_counts = self.service_counts(state)
-        full_graph = tube_graph(state.tubes)
         for pod_id, pod in sorted(state.pods.items()):
             if not pod.dynamic:
                 continue
-            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, service_counts, full_graph)
+            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, service_counts, graph)
             if move != (-1, -1):
                 requests[pod_id] = move
         return requests
@@ -1008,9 +1015,9 @@ class Planner:
                 return source_id, target_id
         return -1, -1
 
-    def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], state: PlanState,
-            moves: dict[int, DirectedPair], pod_positions: dict[int, int], dynamic_current: dict[int, int],
-            dynamic_paths: dict[int, list[int]], result: SimulationResult):
+    def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]],
+            wanted_edges: dict[tuple[int, int], DirectedPair], state: PlanState, moves: dict[int, DirectedPair],
+            pod_positions: dict[int, int], dynamic_current: dict[int, int], dynamic_paths: dict[int, list[int]], result: SimulationResult):
         """Boards passengers into moves, launches pods, and updates wait counters."""
         by_start = {}
         for pod_id, (source_id, target_id) in moves.items():
@@ -1024,7 +1031,7 @@ class Planner:
             candidates = by_start.get(building_id, [])
             remaining = []
             for passenger in sorted(queues[building_id], key=lambda item: item.id):
-                wanted = self.best_wanted_edge(building_id, passenger.kind, distances, state.tubes)
+                wanted = wanted_edges[building_id, passenger.kind]
                 chosen_pod = 0
                 for pod_id, target_id in candidates:
                     if seats[pod_id] and distances[passenger.kind][target_id] < distances[passenger.kind][building_id]:
@@ -1056,13 +1063,6 @@ class Planner:
                 dynamic_current[pod_id] = target_id
             if onboard.get(pod_id):
                 queues.setdefault(target_id, []).extend(onboard[pod_id])
-
-    def best_wanted_edge(self, building_id: int, kind: int, distances: dict[int, dict[int, int]], tubes: dict[Pair, int]) -> DirectedPair:
-        """Returns the best directed edge wanted from building_id for kind."""
-        options = [neighbor_id for neighbor_id in tube_graph(tubes).get(building_id, []) if distances[kind][neighbor_id] < distances[kind][building_id]]
-        if not options:
-            return -1, -1
-        return building_id, min(options, key=lambda item: (distances[kind][item], item))
 
     def shortest_existing_tube_path(self, start_id: int, targets: list[int], tubes: dict[Pair, int]) -> list[int]:
         """Finds the shortest existing tube path from start_id to targets."""

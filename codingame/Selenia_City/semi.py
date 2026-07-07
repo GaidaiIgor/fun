@@ -364,6 +364,7 @@ class Planner:
             if state.cost <= self.resources and pod_step != upgrade_step:
                 (affordable_pod_paths if pod_step else affordable_upgrade_paths).add(bundle.path_edges)
         best = None
+        positive_cost = INF
         for _, _, _, bundle, state, action_text in sorted(candidates):
             pod_count = len(bundle.pod_specs)
             pod_step = pod_count > base_pod_counts[bundle.path_edges]
@@ -372,6 +373,9 @@ class Planner:
                 continue
             no_gain_block = no_gain_pod_counts.get(bundle.path_edges, INF)
             if bundle.path_edges and not bundle.upgrades and pod_count > no_gain_block:
+                continue
+            if state.cost > positive_cost:
+                print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
                 continue
             if state.cost > self.resources:
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
@@ -386,6 +390,7 @@ class Planner:
                 if best is None or (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > \
                         (best.efficiency, best.total_score_gain, -best.new_cost):
                     best = candidate
+                    positive_cost = state.cost
             if bundle.path_edges and not bundle.upgrades and score_gain <= 0:
                 no_gain_pod_counts[bundle.path_edges] = min(no_gain_block, pod_count)
         return best

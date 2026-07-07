@@ -484,21 +484,19 @@ while True:
             continue
         rel, rvx, rvy, ej = hit
         if role == 'B':
-            # shield only for hard hits on the pod we are actually hunting;
-            # reload turns are too expensive to spend on the enemy blocker
-            if rel > 300.0 and ej == e_leader:
+            # v1 policy (best arena score): shield any solid enemy contact -
+            # a mass-10 wall holds its post and its momentum
+            if rel > 220.0:
                 cmds[idx] = (tx, ty, 'SHIELD', tag)
         else:
-            # racer: shields cost 4 acceleration turns - only for truly hard,
-            # adverse hits, and never right at my checkpoint (momentum through
-            # the crossing is worth more than the bounce)
+            # v1 policy: shield hard adverse hits anywhere, including at the
+            # checkpoint - mass 10 plows through blocker contact on course
             nc = pods[idx][5]
             dx = cps[nc][0] - pods[idx][0]
             dy = cps[nc][1] - pods[idx][1]
-            dcp_ = math.hypot(dx, dy)
-            L = dcp_ or 1.0
+            L = math.hypot(dx, dy) or 1.0
             along = (rvx * dx + rvy * dy) / L
-            if rel > 520.0 and along < 0.25 * rel and dcp_ > 1000.0:
+            if rel > 420.0 and along < 0.25 * rel:
                 cmds[idx] = (tx, ty, 'SHIELD', tag)
 
     # avoid ramming my own racer
@@ -525,6 +523,10 @@ while True:
     sys.stdout.flush()
 
     ms = (time.perf_counter() - t0) * 1000.0
-    sys.stderr.write("T%d r%d %s|%s %.1fms\n"
-                     % (turn, racer, cmds[0][3], cmds[1][3], ms))
+    sys.stderr.write("T%d r%d %s|%s %.1fms S%s\n"
+                     % (turn, racer, cmds[0][3], cmds[1][3], ms,
+                        ";".join(",".join(map(str, p)) for p in pods)))
+    if turn == 1:
+        sys.stderr.write("MAP L%d %s\n"
+                         % (laps, ";".join("%d,%d" % c for c in cps)))
     sys.stderr.flush()

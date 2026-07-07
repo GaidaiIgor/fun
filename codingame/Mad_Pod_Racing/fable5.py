@@ -119,22 +119,35 @@ SIN = math.sin
 
 
 def other_tracks(i):
-    # predicted positions of the other three pods for H turns: enemies are
-    # assumed to keep racing toward their checkpoint (rotate + thrust 200),
-    # the teammate merely coasts
+    # predicted positions of the other three pods for H turns: racing enemies
+    # rotate + thrust 200 toward their checkpoint, the teammate coasts.
+    # Enemies charging AT me are returned separately as pursuers and get
+    # re-simulated inside each rollout (they react to my candidate path).
+    x, y = float(pods[i][0]), float(pods[i][1])
     tracks = []
+    pursuers = []
     for j in range(4):
         if j == i:
             continue
         px_, py_ = float(pods[j][0]), float(pods[j][1])
         tvx, tvy = float(pods[j][2]), float(pods[j][3])
         is_enemy = j >= 2
-        tr = []
-        if is_enemy and tvx * tvx + tvy * tvy >= 22500.0:  # moving: racing
+        spd2 = tvx * tvx + tvy * tvy
+        if is_enemy and spd2 >= 22500.0:
+            dx, dy = x - px_, y - py_
+            dist = math.hypot(dx, dy)
+            spd = math.sqrt(spd2)
+            closing = (tvx * dx + tvy * dy) / (dist * spd) if dist > 1.0 else 0.0
             ea = float(pods[j][4])
-            enc = pods[j][5]
             if ea < 0:
-                ea = ang_of(cps[enc][0] - px_, cps[enc][1] - py_)
+                ea = ang_of(cps[pods[j][5]][0] - px_,
+                            cps[pods[j][5]][1] - py_)
+            if dist < 4500.0 and closing > 0.6:
+                # heading at me: treat as a pursuer
+                pursuers.append((px_, py_, tvx, tvy, ea))
+                continue
+            enc = pods[j][5]
+            tr = []
             for _ in range(H):
                 ccx, ccy = cps[enc]
                 ea = (ea + clamp(sdiff(ang_of(ccx - px_, ccy - py_), ea),
@@ -149,25 +162,29 @@ def other_tracks(i):
                 tvx *= 0.85
                 tvy *= 0.85
                 tr.append((px_, py_))
+            tracks.append((tr, True))
         else:
+            tr = []
             for _ in range(H):
                 px_ += tvx
                 py_ += tvy
                 tvx *= 0.85
                 tvy *= 0.85
                 tr.append((px_, py_))
-        tracks.append((tr, is_enemy))
-    return tracks
+            tracks.append((tr, is_enemy))
+    return tracks, pursuers
 
 
-def rollout(x, y, vx, vy, ang, nc, acts, tracks, s0):
+def rollout(x, y, vx, vy, ang, nc, acts, tracks, pursuers, s0):
     # continue from step s0 applying acts, then the chase policy; also
-    # returns the state right after the first applied action
+    # returns the state right after the first applied action. Pursuers are
+    # simulated reactively: they rotate + thrust 200 toward my position.
     score = 0.0
     cur = nc
     cx, cy = cps[cur]
     after_first = None
     na = 0.0
+    ps = list(pursuers)
     for s in range(s0, H):
         k = s - s0
         if k < len(acts):
@@ -196,12 +213,28 @@ def rollout(x, y, vx, vy, ang, nc, acts, tracks, s0):
                     score -= 12000.0 if s <= 1 else 6000.0
                 else:
                     score -= 2500.0 if s <= 1 else 1200.0
+        for pi in range(len(ps)):
+            px_, py_, pvx, pvy, pa = ps[pi]
+            pa = (pa + clamp(sdiff(ang_of(nx - px_, ny - py_), pa),
+                             -18.0, 18.0)) % 360.0
+            par = RAD(pa)
+            pvx += 200.0 * COS(par)
+            pvy += 200.0 * SIN(par)
+            px_ += pvx
+            py_ += pvy
+            pvx *= 0.85
+            pvy *= 0.85
+            ps[pi] = (px_, py_, pvx, pvy, pa)
+            ddx = nx - px_
+            ddy = ny - py_
+            if ddx * ddx + ddy * ddy < 640000.0:
+                score -= 12000.0 if s <= 1 else 6000.0
         x, y = nx, ny
         ang = na
         vx *= 0.85
         vy *= 0.85
         if k == 0:
-            after_first = (x, y, vx, vy, ang, cur, score)
+            after_first = (x, y, vx, vy, ang, cur, score, tuple(ps))
     # final heading term keeps a useful gradient when the crossing lies
     # beyond the horizon (e.g. after being spun around in a melee)
     score -= abs(sdiff(ang_of(cx - x, cy - y), ang)) * 12.0
@@ -215,28 +248,30 @@ def racer_cmd(i):
     if turn == 1 or ang < 0:
         return (cx, cy, 200, 'RUN')
 
-    tracks = other_tracks(i)
+    tracks, pursuers = other_tracks(i)
     fx, fy = float(x), float(y)
     fvx, fvy = float(vx), float(vy)
     fang = float(ang)
-    deadline = t0 + 0.030
+    deadline = t0 + 0.025
     best = None
     for off in OFFS:
         na0 = (fang + off) % 360.0
         for th0 in THS:
             sc1, mid = rollout(fx, fy, fvx, fvy, fang, nc,
-                               ((na0, th0),), tracks, 0)
+                               ((na0, th0),), tracks, pursuers, 0)
             if best is None or sc1 > best[0]:
                 best = (sc1, na0, th0, off)
             # second ply from the post-action state
-            mx, my, mvx2, mvy2, mang, mnc, base = mid
+            mx, my, mvx2, mvy2, mang, mnc, base, mps = mid
             if not TWO_PLY or time.perf_counter() > deadline:
                 continue
             for off2 in OFFS:
                 na1 = (mang + off2) % 360.0
+                if time.perf_counter() > deadline:
+                    break
                 for th1 in THS:
                     sc2, _ = rollout(mx, my, mvx2, mvy2, mang, mnc,
-                                     ((na1, th1),), tracks, 1)
+                                     ((na1, th1),), tracks, mps, 1)
                     sc2 += base
                     if sc2 > best[0]:
                         best = (sc2, na0, th0, off)
@@ -245,9 +280,11 @@ def racer_cmd(i):
     ty = int(y + 8000.0 * SIN(RAD(na0)))
     act = int(th0)
     ad = abs(sdiff(ang_of(cx - x, cy - y), fang))
-    if (not boost_used and shield_cd[i] == 0 and nc == longest_to
-            and dcp > 4200.0 and off == 0.0 and th0 == 200.0 and ad < 6.0
-            and nearest_enemy_dist(i) > 1800.0):
+    if (not boost_used and shield_cd[i] == 0 and turn > 2
+            and off == 0.0 and th0 == 200.0 and ad < 5.0
+            and nearest_enemy_dist(i) > 1200.0
+            and ((nc == longest_to and dcp > 3000.0) or dcp > 4200.0
+                 or (passed[i] >= N and dcp > 3000.0))):
         act = 'BOOST'
     return (tx, ty, act, 'SRC')
 
@@ -274,7 +311,7 @@ def blocker_cmd(i, j):
     rcx, rcy = cps[rnc]
     d_cp = math.hypot(rcx - x, rcy - y)
     racer_d = math.hypot(rcx - pods[ri][0], rcy - pods[ri][1])
-    if d_cp < 1700.0 and racer_d < 4500.0:
+    if d_cp < 1400.0 and racer_d < 3500.0:
         ux, uy = x - rcx, y - rcy
         L = math.hypot(ux, uy) or 1.0
         txp = rcx + ux / L * 2400.0
@@ -317,7 +354,7 @@ def blocker_cmd(i, j):
         if dc >= math.hypot(pxk - x, pyk - y) - 650.0:
             inter = (k, pxk, pyk)
             break
-    if inter is not None and inter[0] <= 13:
+    if inter is not None and inter[0] <= 10:
         _, tx, ty = inter
         axp = tx - 2.0 * vx
         ayp = ty - 2.0 * vy
@@ -357,8 +394,8 @@ def blocker_cmd(i, j):
 
 
 def enemy_contact(i, mvx, mvy):
-    # (best_rel_speed, rel_vx, rel_vy) for any enemy contacting me this turn,
-    # using the enemy's ACTUAL velocity (no speculative acceleration)
+    # (best_rel_speed, rel_vx, rel_vy, enemy_idx) for any enemy contacting me
+    # this turn, using the enemy's ACTUAL velocity (no speculative accel)
     x, y = pods[i][0], pods[i][1]
     best = None
     for j in (2, 3):
@@ -367,7 +404,7 @@ def enemy_contact(i, mvx, mvy):
         if min_approach(ex - x, ey - y, rvx, rvy) < CONTACT2:
             rel = math.hypot(rvx, rvy)
             if best is None or rel > best[0]:
-                best = (rel, rvx, rvy)
+                best = (rel, rvx, rvy, j)
     return best
 
 
@@ -419,18 +456,23 @@ while True:
         hit = enemy_contact(idx, mvx, mvy)
         if hit is None:
             continue
-        rel, rvx, rvy = hit
+        rel, rvx, rvy, ej = hit
         if role == 'B':
-            if rel > 220.0:
+            # shield only for hard hits on the pod we are actually hunting;
+            # reload turns are too expensive to spend on the enemy blocker
+            if rel > 300.0 and ej == e_leader:
                 cmds[idx] = (tx, ty, 'SHIELD', tag)
         else:
-            # racer: only shield on hard, adverse hits
+            # racer: shields cost 4 acceleration turns - only for truly hard,
+            # adverse hits, and never right at my checkpoint (momentum through
+            # the crossing is worth more than the bounce)
             nc = pods[idx][5]
             dx = cps[nc][0] - pods[idx][0]
             dy = cps[nc][1] - pods[idx][1]
-            L = math.hypot(dx, dy) or 1.0
+            dcp_ = math.hypot(dx, dy)
+            L = dcp_ or 1.0
             along = (rvx * dx + rvy * dy) / L
-            if rel > 420.0 and along < 0.25 * rel:
+            if rel > 520.0 and along < 0.25 * rel and dcp_ > 1000.0:
                 cmds[idx] = (tx, ty, 'SHIELD', tag)
 
     # avoid ramming my own racer

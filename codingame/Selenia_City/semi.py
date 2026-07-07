@@ -14,8 +14,8 @@ POD_COST = 1000
 POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
-MAX_POD_ADDITIONS = 3
-MAX_UPGRADES = 3
+MAX_POD_ADDITIONS = 1
+MAX_UPGRADES = 1
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 2
@@ -353,10 +353,24 @@ class Planner:
                 if bundle.upgrades:
                     blocked_upgrade_counts[bundle.path_edges, pod_count] = min(upgrade_block, upgrade_count)
         no_gain_pod_counts = {}
+        base_pod_counts = {}
+        for _, _, _, bundle, _, _ in candidates:
+            base_pod_counts[bundle.path_edges] = min(base_pod_counts.get(bundle.path_edges, INF), len(bundle.pod_specs))
+        affordable_pod_paths = set()
+        affordable_upgrade_paths = set()
+        for _, _, _, bundle, state, _ in candidates:
+            pod_step = len(bundle.pod_specs) > base_pod_counts[bundle.path_edges]
+            upgrade_step = bool(bundle.upgrades)
+            if state.cost <= self.resources and pod_step != upgrade_step:
+                (affordable_pod_paths if pod_step else affordable_upgrade_paths).add(bundle.path_edges)
         best = None
         positive_cost = INF
         for _, _, _, bundle, state, action_text in sorted(candidates):
             pod_count = len(bundle.pod_specs)
+            pod_step = pod_count > base_pod_counts[bundle.path_edges]
+            upgrade_step = bool(bundle.upgrades)
+            if pod_step and upgrade_step and (bundle.path_edges not in affordable_pod_paths or bundle.path_edges not in affordable_upgrade_paths):
+                continue
             no_gain_block = no_gain_pod_counts.get(bundle.path_edges, INF)
             if bundle.path_edges and not bundle.upgrades and pod_count > no_gain_block:
                 continue

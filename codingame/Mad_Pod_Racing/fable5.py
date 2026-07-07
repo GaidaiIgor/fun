@@ -63,6 +63,8 @@ prev_target = -1
 turn = 0
 pods = []
 my_timeout = 100
+prog_hist = []               # (turn, racer prog) for pin detection
+pinner = -1                  # enemy pod currently pinning my racer, if any
 
 
 def min_approach(px, py, rvx, rvy):
@@ -90,7 +92,7 @@ def planned_vel(i, tx, ty, act):
     th = 0.0
     if shield_cd[i] == 0 and act != 'SHIELD':
         if act == 'BOOST':
-            th = 650.0
+            th = 200.0 if boost_used else 650.0
         else:
             th = float(act)
     ar = math.radians(facing_after(i, tx, ty))
@@ -175,7 +177,7 @@ def other_tracks(i):
     return tracks, pursuers
 
 
-def rollout(x, y, vx, vy, ang, nc, acts, tracks, pursuers, s0):
+def rollout(x, y, vx, vy, ang, nc, acts, tracks, pursuers, s0, pmul=1.0):
     # continue from step s0 applying acts, then the chase policy; also
     # returns the state right after the first applied action. Pursuers are
     # simulated reactively: they rotate + thrust 200 toward my position.
@@ -201,7 +203,7 @@ def rollout(x, y, vx, vy, ang, nc, acts, tracks, pursuers, s0):
         nx = x + vx
         ny = y + vy
         if seg_pt_d2(x, y, nx, ny, cx, cy) < CP_HIT2:
-            score += 50000.0 + (H - s) * 3000.0
+            score += 50000.0 + (H - s) * 4500.0
             cur = (cur + 1) % N
             cx, cy = cps[cur]
         for tr, is_enemy in tracks:
@@ -210,7 +212,7 @@ def rollout(x, y, vx, vy, ang, nc, acts, tracks, pursuers, s0):
             ddy = ny - ey
             if ddx * ddx + ddy * ddy < 640000.0:  # 800^2
                 if is_enemy:
-                    score -= 12000.0 if s <= 1 else 6000.0
+                    score -= (12000.0 if s <= 1 else 6000.0) * pmul
                 else:
                     score -= 2500.0 if s <= 1 else 1200.0
         for pi in range(len(ps)):
@@ -228,7 +230,7 @@ def rollout(x, y, vx, vy, ang, nc, acts, tracks, pursuers, s0):
             ddx = nx - px_
             ddy = ny - py_
             if ddx * ddx + ddy * ddy < 640000.0:
-                score -= 12000.0 if s <= 1 else 6000.0
+                score -= (12000.0 if s <= 1 else 6000.0) * pmul
         x, y = nx, ny
         ang = na
         vx *= 0.85
@@ -246,19 +248,24 @@ def racer_cmd(i):
     cx, cy = cps[nc]
     dcp = math.hypot(cx - x, cy - y)
     if turn == 1 or ang < 0:
-        return (cx, cy, 200, 'RUN')
+        # opening: free rotation, perfect alignment - boost for the early
+        # lead (the first melee decides who blocks whom all game)
+        return (cx, cy, 'BOOST' if dcp > 3000.0 else 200, 'RUN')
 
     tracks, pursuers = other_tracks(i)
     fx, fy = float(x), float(y)
     fvx, fvy = float(vx), float(vy)
     fang = float(ang)
+    # breakout: when pinned, value clearance over grinding into the wall -
+    # back off, build speed, re-attack the checkpoint rim from a new angle
+    pmul = 2.5 if pinner >= 0 else 1.0
     deadline = t0 + 0.025
     best = None
     for off in OFFS:
         na0 = (fang + off) % 360.0
         for th0 in THS:
             sc1, mid = rollout(fx, fy, fvx, fvy, fang, nc,
-                               ((na0, th0),), tracks, pursuers, 0)
+                               ((na0, th0),), tracks, pursuers, 0, pmul)
             if best is None or sc1 > best[0]:
                 best = (sc1, na0, th0, off)
             # second ply from the post-action state
@@ -271,7 +278,7 @@ def racer_cmd(i):
                     break
                 for th1 in THS:
                     sc2, _ = rollout(mx, my, mvx2, mvy2, mang, mnc,
-                                     ((na1, th1),), tracks, mps, 1)
+                                     ((na1, th1),), tracks, mps, 1, pmul)
                     sc2 += base
                     if sc2 > best[0]:
                         best = (sc2, na0, th0, off)
@@ -280,7 +287,9 @@ def racer_cmd(i):
     ty = int(y + 8000.0 * SIN(RAD(na0)))
     act = int(th0)
     ad = abs(sdiff(ang_of(cx - x, cy - y), fang))
-    if (not boost_used and shield_cd[i] == 0 and turn > 2
+    # after the real boost is spent, BOOST legally falls back to max thrust,
+    # so keep asking on good straights in case the arena grants more boosts
+    if (shield_cd[i] == 0 and turn > 2
             and off == 0.0 and th0 == 200.0 and ad < 5.0
             and nearest_enemy_dist(i) > 1200.0
             and ((nc == longest_to and dcp > 3000.0) or dcp > 4200.0
@@ -434,6 +443,23 @@ while True:
         s1 += 3000.0
     racer = 0 if s0 >= s1 else 1
     blocker = 1 - racer
+
+    # pin detection: a racer that stops gaining progress while an enemy sits
+    # on it needs its blocker to come knock the pinner away (PROTECT mode)
+    if racer != prev_racer:
+        prog_hist = []
+    prog_hist.append((turn, prog(racer)))
+    while prog_hist and prog_hist[0][0] < turn - 20:
+        prog_hist.pop(0)
+    pinner = -1
+    if (turn > 25 and len(prog_hist) > 15
+            and prog_hist[-1][1] - prog_hist[0][1] < 600.0):
+        rx, ry = pods[racer][0], pods[racer][1]
+        dists = [(math.hypot(pods[j][0] - rx, pods[j][1] - ry), j)
+                 for j in (2, 3)]
+        dmin, jmin = min(dists)
+        if dmin < 1600.0:
+            pinner = jmin
     prev_racer = racer
     p2, p3 = prog(2), prog(3)
     if prev_target == 2:

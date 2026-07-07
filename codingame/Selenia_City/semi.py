@@ -50,11 +50,7 @@ class Passenger:
     pad_id: int
     index: int
     kind: int
-
-    @property
-    def id(self) -> int:
-        """Returns the passenger priority id derived from pad_id and index."""
-        return self.pad_id * 1000 + self.index
+    id: int
 
 
 @dataclass(slots=True)
@@ -150,6 +146,7 @@ class Planner:
     teleports: dict[int, int]
     pods: dict[int, Pod]
     service_areas: dict[int, set[Pair]]
+    simulation_cache: dict[tuple, SimulationResult]
 
     def __init__(self):
         """Initializes empty game state before the first input month."""
@@ -160,6 +157,7 @@ class Planner:
         self.teleports = {}
         self.pods = {}
         self.service_areas = {}
+        self.simulation_cache = {}
 
     def play(self):
         """Reads months until EOF and prints one action command per month."""
@@ -205,6 +203,7 @@ class Planner:
 
     def choose_actions(self) -> list[str]:
         """Chooses greedy bundle additions and returns concrete game actions."""
+        self.simulation_cache = {}
         if self.month + 1 == OVERRIDE_MONTH:
             return self.override_actions()
         selected = []
@@ -530,7 +529,7 @@ class Planner:
                 focus_bundle = Bundle(base_bundle.pool, self.nominal_cost(base_bundle.tubes, focus_specs, (), state), base_bundle.tubes,
                     pod_specs=tuple(focus_specs), label=f"{base_bundle.label}-focus-{spec.pod_id}", path_edges=base_bundle.path_edges)
                 bundles.extend(self.expand_upgrade_bundles(focus_bundle, path_edges, state))
-            result = self.simulate(projected)
+            result = self.cached_simulate(projected)
             if result.delivery_times.get(base_bundle.pool, INF) == len(path_edges):
                 break
             edge = self.best_pod_edge(path_edges, result)
@@ -566,7 +565,7 @@ class Planner:
                 projected = self.replay_bundle_on_state(state, bundles[-1])
             except ValueError:
                 break
-            result = self.simulate(projected)
+            result = self.cached_simulate(projected)
             edge = self.best_counter_edge(path_edges, result.congestion_by_edge)
             if edge == (-1, -1):
                 break
@@ -742,12 +741,38 @@ class Planner:
     def score_state(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         """Scores state after replacing dynamic pods with the concrete paths they would print."""
         if not any(pod.dynamic for pod in state.pods.values()):
-            return self.simulate(state, keep_dynamic_paths)
-        dynamic_result = self.simulate(state, True)
-        fixed_result = self.simulate(self.fixed_dynamic_state(state, dynamic_result.dynamic_paths))
+            return self.cached_simulate(state, keep_dynamic_paths)
+        dynamic_result = self.cached_simulate(state, True)
+        fixed_result = self.cached_simulate(self.fixed_dynamic_state(state, dynamic_result.dynamic_paths))
         if keep_dynamic_paths:
             fixed_result.dynamic_paths = dynamic_result.dynamic_paths
         return fixed_result
+
+    def cached_simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
+        """Returns a cached simulation result for state and keep_dynamic_paths."""
+        key = self.simulation_cache_key(state, keep_dynamic_paths)
+        if key not in self.simulation_cache:
+            self.simulation_cache[key] = self.simulate(state, keep_dynamic_paths)
+        return self.copy_simulation_result(self.simulation_cache[key])
+
+    def simulation_cache_key(self, state: PlanState, keep_dynamic_paths: bool) -> tuple:
+        """Builds a hashable simulation key from state and keep_dynamic_paths."""
+        pods = tuple(sorted((pod_id, tuple(pod.path), pod.dynamic, tuple(sorted(pod.service_area))) for pod_id, pod in state.pods.items()))
+        return tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), pods, keep_dynamic_paths
+
+    def copy_simulation_result(self, result: SimulationResult) -> SimulationResult:
+        """Copies result so cached objects are not mutated by callers."""
+        copy = SimulationResult(result.score, result.speed, result.diversity, result.delivered)
+        copy.speed_by_pool = Counter(result.speed_by_pool)
+        copy.delivered_by_pool = Counter(result.delivered_by_pool)
+        copy.delivery_times = dict(result.delivery_times)
+        copy.diversity_by_module = Counter(result.diversity_by_module)
+        copy.delivered_by_module = Counter(result.delivered_by_module)
+        copy.wait_by_edge = Counter(result.wait_by_edge)
+        copy.preventable_wait_by_edge = Counter(result.preventable_wait_by_edge)
+        copy.congestion_by_edge = Counter(result.congestion_by_edge)
+        copy.dynamic_paths = {pod_id: path[:] for pod_id, path in result.dynamic_paths.items()}
+        return copy
 
     def fixed_dynamic_state(self, state: PlanState, dynamic_paths: dict[int, list[int]]) -> PlanState:
         """Returns a copy of state with dynamic pod paths fixed to dynamic_paths."""
@@ -766,9 +791,13 @@ class Planner:
         wanted_edges = self.wanted_edges(distances, graph)
         queues = self.initial_queues(distances)
         result = SimulationResult()
-        pod_positions = {pod_id: 0 for pod_id, pod in state.pods.items() if not pod.dynamic}
-        dynamic_current = {pod_id: -1 for pod_id, pod in state.pods.items() if pod.dynamic}
-        dynamic_paths = {pod_id: [] for pod_id, pod in state.pods.items() if pod.dynamic}
+        fixed_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if not pod.dynamic]
+        dynamic_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if pod.dynamic]
+        service_counts = self.service_counts(state)
+        service_graphs = {pod_id: tube_graph({edge: 1 for edge in pod.service_area}) for pod_id, pod in dynamic_pods}
+        pod_positions = {pod_id: 0 for pod_id, _ in fixed_pods}
+        dynamic_current = {pod_id: -1 for pod_id, _ in dynamic_pods}
+        dynamic_paths = {pod_id: [] for pod_id, _ in dynamic_pods}
         module_arrivals = Counter()
         for day in range(MONTH_DAYS):
             self.teleport_phase(queues, distances, state.teleports)
@@ -776,8 +805,8 @@ class Planner:
             demand = self.directed_demand(queues, wanted_edges)
             if not demand:
                 break
-            requests = self.pod_requests(state, pod_positions, dynamic_current, demand, graph)
-            moves = self.allocate_tube_capacity(requests, state, demand, result)
+            requests = self.pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, demand, graph, service_counts, service_graphs)
+            moves = self.allocate_tube_capacity(requests, state, demand, result, service_counts)
             self.board_and_launch(queues, distances, wanted_edges, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
             self.settle(day + 1, queues, module_arrivals, result)
         if keep_dynamic_paths:
@@ -817,7 +846,7 @@ class Planner:
         """Creates starting passenger queues using distances to drop impossible groups."""
         queues = {}
         for pad in self.landing_pads():
-            passengers = [Passenger(pad.id, index, kind) for index, kind in enumerate(pad.order) if distances[kind][pad.id] < INF]
+            passengers = [Passenger(pad.id, index, kind, pad.id * 1000 + index) for index, kind in enumerate(pad.order) if distances[kind][pad.id] < INF]
             if passengers:
                 queues[pad.id] = passengers
         return queues
@@ -888,31 +917,26 @@ class Planner:
                     demand[move] += 1
         return demand
 
-    def pod_requests(self, state: PlanState, pod_positions: dict[int, int], dynamic_current: dict[int, int],
-            demand: Counter[DirectedPair], graph: dict[int, list[int]]) -> dict[int, DirectedPair]:
+    def pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
+            dynamic_current: dict[int, int], demand: Counter[DirectedPair], graph: dict[int, list[int]], service_counts: Counter[Pair],
+            service_graphs: dict[int, dict[int, list[int]]]) -> dict[int, DirectedPair]:
         """Returns daily pod move requests, with dynamic pods choosing requests after fixed pods."""
         requests = {}
-        for pod_id, pod in sorted(state.pods.items()):
-            if pod.dynamic:
-                continue
+        for pod_id, pod in fixed_pods:
             index = pod_positions[pod_id]
             next_index = fixed_next_index(pod.path, index)
             if next_index == index:
                 continue
             requests[pod_id] = (pod.path[index], pod.path[next_index])
-        service_counts = self.service_counts(state)
-        for pod_id, pod in sorted(state.pods.items()):
-            if not pod.dynamic:
-                continue
-            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, service_counts, graph)
+        for pod_id, pod in dynamic_pods:
+            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, service_counts, graph, service_graphs[pod_id])
             if move != (-1, -1):
                 requests[pod_id] = move
         return requests
 
     def dynamic_move(self, pod: PodPlan, current_id: int, demand: Counter[DirectedPair], service_counts: Counter[Pair],
-            full_graph: dict[int, list[int]]) -> DirectedPair:
+            full_graph: dict[int, list[int]], graph: dict[int, list[int]]) -> DirectedPair:
         """Chooses one dynamic pod move according to service_area and demand."""
-        graph = tube_graph({edge: 1 for edge in pod.service_area})
         area_nodes = set(graph)
         loads = {edge: count for edge, count in demand.items() if route_key(*edge) in pod.service_area}
         active_graph = graph
@@ -942,7 +966,7 @@ class Planner:
         return current, next_id
 
     def allocate_tube_capacity(self, requests: dict[int, DirectedPair], state: PlanState, demand: Counter[DirectedPair],
-            result: SimulationResult) -> dict[int, DirectedPair]:
+            result: SimulationResult, service_counts: Counter[Pair]) -> dict[int, DirectedPair]:
         """Applies tube capacities, rerouting blocked dynamic pods to available demanded outgoing edges."""
         moves = {}
         by_tube = {}
@@ -952,8 +976,12 @@ class Planner:
             by_tube.setdefault(route_key(*move), []).append((pod_id, move))
         for edge, pods in by_tube.items():
             capacity = state.tubes[edge]
-            if len(pods) > capacity:
-                result.congestion_by_edge[edge] += 1
+            if len(pods) <= capacity:
+                for pod_id, move in sorted(pods):
+                    moves[pod_id] = move
+                    remaining_demand[move] = max(0, remaining_demand[move] - POD_CAPACITY)
+                continue
+            result.congestion_by_edge[edge] += 1
             selected = self.prioritized_capacity_moves(pods, capacity, state, remaining_demand)
             selected_ids = {pod_id for pod_id, _ in selected}
             id_winners = {pod_id for pod_id, _ in sorted(pods)[:capacity]}
@@ -962,7 +990,6 @@ class Planner:
                 moves[pod_id] = move
                 remaining_demand[move] = max(0, remaining_demand[move] - POD_CAPACITY)
         used = Counter(route_key(*move) for move in moves.values())
-        service_counts = self.service_counts(state)
         for pod_id in sorted(set(requests) - set(moves)):
             if not state.pods[pod_id].dynamic:
                 continue

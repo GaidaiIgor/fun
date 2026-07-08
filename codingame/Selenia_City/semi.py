@@ -385,12 +385,13 @@ class Planner:
             total_score_gain = result.score - before_score
             total_efficiency = total_score_gain / max(1, state.cost)
             print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
+            if total_score_gain > 0:
+                positive_cost = min(positive_cost, state.cost)
             if score_gain > 0:
                 candidate = Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)
                 if best is None or (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > \
                         (best.efficiency, best.total_score_gain, -best.new_cost):
                     best = candidate
-                    positive_cost = state.cost
             if bundle.path_edges and not bundle.upgrades and score_gain <= 0:
                 no_gain_pod_counts[bundle.path_edges] = min(no_gain_block, pod_count)
         return best

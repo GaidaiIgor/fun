@@ -310,17 +310,9 @@ class Planner:
         state.actions.append(action)
 
     def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult, before_score: int) -> Candidate:
-        """Finds the most efficient affordable current-generation candidate for selected."""
-        best = None
-        for pool in self.speed_pools():
-            candidate = self.next_candidate(pool, selected, current_state, current_result, before_score)
-            if candidate is None:
-                continue
-            if best is None:
-                best = candidate
-            elif (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > (best.efficiency, best.total_score_gain, -best.new_cost):
-                best = candidate
-        return best
+        """Finds the next candidate for the speed pool missing the most points."""
+        pool = max(self.speed_pools(), key=lambda item: (self.buildings[item[0]].demand[item[1]] * 50 - current_result.speed_by_pool[item], -item[0], -item[1]))
+        return self.next_candidate(pool, selected, current_state, current_result, before_score)
 
     def next_candidate(self, pool: Pool, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
             before_score: int) -> Candidate:

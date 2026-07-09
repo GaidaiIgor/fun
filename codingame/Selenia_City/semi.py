@@ -308,19 +308,10 @@ class Planner:
         state.actions.append(action)
 
     def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult, before_score: int) -> Candidate:
-        """Finds the best candidate for the next pool in the current search phase."""
+        """Finds the best candidate for pools considered by missing points."""
         pools = self.speed_pools()
-        distances = self.distances_to_types(current_state)
-        disconnected = [pool for pool in pools if distances[pool[1]][pool[0]] >= INF]
-        for pool in sorted(disconnected, key=lambda item: (-self.buildings[item[0]].demand[item[1]] * 50, item[0], item[1])):
-            bundle = self.connection_bundle(pool, current_state)
-            if bundle:
-                candidate = self.next_candidate(pool, selected, current_state, current_result, before_score, [bundle])
-                if candidate:
-                    return candidate
-        connected = [pool for pool in pools if pool not in disconnected]
-        connected.sort(key=lambda item: (current_result.speed_by_pool[item] - self.buildings[item[0]].demand[item[1]] * 50, item[0], item[1]))
-        for pool in connected:
+        pools.sort(key=lambda item: (current_result.speed_by_pool[item] - self.buildings[item[0]].demand[item[1]] * 50, item[0], item[1]))
+        for pool in pools:
             if current_result.speed_by_pool[pool] >= self.buildings[pool[0]].demand[pool[1]] * 50:
                 continue
             candidate = self.next_candidate(pool, selected, current_state, current_result, before_score, self.generate_bundles(pool, current_state))
@@ -364,8 +355,14 @@ class Planner:
         return best
 
     def generate_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:
-        """Builds normal-phase bundles for connected pool in menu order."""
+        """Builds bundles for pool in menu order, including disconnected connection."""
         bundles = []
+        pad_id, astronaut_type = pool
+        module_ids = [building.id for building in self.buildings.values() if building.kind == astronaut_type]
+        if not self.shortest_existing_tube_path(pad_id, module_ids, state.tubes):
+            connection = self.connection_bundle(pool, state)
+            if connection:
+                bundles.append(connection)
         shortest = self.shortest_route_bundle(pool, state)
         if shortest:
             bundles.append(shortest)

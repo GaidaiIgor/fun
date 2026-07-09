@@ -14,8 +14,6 @@ POD_COST = 1000
 POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
-MAX_POD_ADDITIONS = 1
-MAX_UPGRADES = 1
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 2
@@ -310,64 +308,45 @@ class Planner:
         state.actions.append(action)
 
     def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult, before_score: int) -> Candidate:
-        """Finds the next candidate for the speed pool missing the most points."""
-        pool = max(self.speed_pools(), key=lambda item: (self.buildings[item[0]].demand[item[1]] * 50 - current_result.speed_by_pool[item], -item[0], -item[1]))
-        return self.next_candidate(pool, selected, current_state, current_result, before_score)
+        """Finds the best candidate for the next pool in the current search phase."""
+        pools = self.speed_pools()
+        distances = self.distances_to_types(current_state)
+        disconnected = [pool for pool in pools if distances[pool[1]][pool[0]] >= INF]
+        for pool in sorted(disconnected, key=lambda item: (-self.buildings[item[0]].demand[item[1]] * 50, item[0], item[1])):
+            bundle = self.connection_bundle(pool, current_state)
+            if bundle:
+                candidate = self.next_candidate(pool, selected, current_state, current_result, before_score, [bundle])
+                if candidate:
+                    return candidate
+        connected = [pool for pool in pools if pool not in disconnected]
+        connected.sort(key=lambda item: (current_result.speed_by_pool[item] - self.buildings[item[0]].demand[item[1]] * 50, item[0], item[1]))
+        for pool in connected:
+            if current_result.speed_by_pool[pool] >= self.buildings[pool[0]].demand[pool[1]] * 50:
+                continue
+            candidate = self.next_candidate(pool, selected, current_state, current_result, before_score, self.generate_bundles(pool, current_state))
+            if candidate:
+                return candidate
+        return None
 
     def next_candidate(self, pool: Pool, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
-            before_score: int) -> Candidate:
-        """Returns the next improving candidate for pool on top of selected."""
-        candidates = []
-        blocked_pod_counts = {}
-        blocked_upgrade_counts = {}
-        for bundle in sorted(self.generate_bundles(pool, current_state), key=lambda item: (item.rank_cost, item.fingerprint)):
+            before_score: int, bundles: list[Bundle]) -> Candidate:
+        """Returns the most efficient improving candidate from bundles for pool."""
+        best = None
+        seen = set()
+        for bundle in bundles:
             if bundle.fingerprint == Bundle(pool).fingerprint and not bundle.path_edges:
                 continue
             if bundle.path_edges and current_result.delivery_times.get(pool, INF) == len(bundle.path_edges):
                 continue
-            pod_count = len(bundle.pod_specs)
-            upgrade_count = len(bundle.upgrades)
-            pod_block = blocked_pod_counts.get(bundle.path_edges, INF)
-            upgrade_block = blocked_upgrade_counts.get((bundle.path_edges, pod_count), INF)
-            if pod_count > pod_block or pod_count == pod_block and upgrade_count or upgrade_count > upgrade_block:
+            if bundle.fingerprint in seen:
                 continue
+            seen.add(bundle.fingerprint)
             try:
                 state = self.replay_bundle_sequence([*selected, bundle])
             except ValueError:
                 continue
             action_text = self.state_delta_text(current_state, state)
             if action_text == "WAIT":
-                continue
-            candidates.append((state.cost, bundle.rank_cost, bundle.fingerprint, bundle, state, action_text))
-            if state.cost > self.resources:
-                if bundle.path_edges and not bundle.upgrades:
-                    blocked_pod_counts[bundle.path_edges] = min(pod_block, pod_count)
-                if bundle.upgrades:
-                    blocked_upgrade_counts[bundle.path_edges, pod_count] = min(upgrade_block, upgrade_count)
-        no_gain_pod_counts = {}
-        base_pod_counts = {}
-        for _, _, _, bundle, _, _ in candidates:
-            base_pod_counts[bundle.path_edges] = min(base_pod_counts.get(bundle.path_edges, INF), len(bundle.pod_specs))
-        affordable_pod_paths = set()
-        affordable_upgrade_paths = set()
-        for _, _, _, bundle, state, _ in candidates:
-            pod_step = len(bundle.pod_specs) > base_pod_counts[bundle.path_edges]
-            upgrade_step = bool(bundle.upgrades)
-            if state.cost <= self.resources and pod_step != upgrade_step:
-                (affordable_pod_paths if pod_step else affordable_upgrade_paths).add(bundle.path_edges)
-        best = None
-        positive_cost = INF
-        for _, _, _, bundle, state, action_text in sorted(candidates):
-            pod_count = len(bundle.pod_specs)
-            pod_step = pod_count > base_pod_counts[bundle.path_edges]
-            upgrade_step = bool(bundle.upgrades)
-            if pod_step and upgrade_step and (bundle.path_edges not in affordable_pod_paths or bundle.path_edges not in affordable_upgrade_paths):
-                continue
-            no_gain_block = no_gain_pod_counts.get(bundle.path_edges, INF)
-            if bundle.path_edges and not bundle.upgrades and pod_count > no_gain_block:
-                continue
-            if state.cost > positive_cost:
-                print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
                 continue
             if state.cost > self.resources:
                 print(f"bundle: {pool}, {action_text}, -, {state.cost}, -", file=sys.stderr)
@@ -377,42 +356,95 @@ class Planner:
             total_score_gain = result.score - before_score
             total_efficiency = total_score_gain / max(1, state.cost)
             print(f"bundle: {pool}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
-            if total_score_gain > 0:
-                positive_cost = min(positive_cost, state.cost)
             if score_gain > 0:
                 candidate = Candidate(pool, bundle, total_score_gain, state.cost, result.score, state.cost)
                 if best is None or (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > \
                         (best.efficiency, best.total_score_gain, -best.new_cost):
                     best = candidate
-            if bundle.path_edges and not bundle.upgrades and score_gain <= 0:
-                no_gain_pod_counts[bundle.path_edges] = min(no_gain_block, pod_count)
         return best
 
     def generate_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:
-        """Builds representative path, pod, and upgrade bundles for pool."""
-        pad_id, astronaut_type = pool
-        path_options = self.path_options(pad_id, astronaut_type, state)
+        """Builds normal-phase bundles for connected pool in menu order."""
         bundles = []
-        for label, path, tubes, teleport in path_options:
-            if teleport != (-1, -1):
-                cost = TELEPORT_COST
-                bundles.append(Bundle(pool, cost, teleport=teleport, label=label))
-                continue
-            base_specs = self.coverage_specs(path, state)
-            if base_specs is None:
-                continue
-            path_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
-            rank_cost = self.nominal_cost(tubes, base_specs, (), state)
-            base_bundle = Bundle(pool, rank_cost, tuple(tubes), pod_specs=tuple(base_specs), label=label, path_edges=path_edges)
-            bundles.extend(self.expand_pod_upgrade_bundles(base_bundle, path_edges, state))
-        unique = []
-        seen = set()
-        for bundle in bundles:
-            if bundle.fingerprint in seen:
-                continue
-            unique.append(bundle)
-            seen.add(bundle.fingerprint)
-        return unique
+        shortest = self.shortest_route_bundle(pool, state)
+        if shortest:
+            bundles.append(shortest)
+        bundles.extend(self.existing_path_upgrade_bundles(pool, state))
+        bundles.extend(self.teleport_bundles(pool, state))
+        return bundles
+
+    def connection_bundle(self, pool: Pool, state: PlanState) -> Bundle:
+        """Builds the cheapest connection bundle for disconnected pool."""
+        pad_id, astronaut_type = pool
+        module_ids = [building.id for building in self.buildings.values() if building.kind == astronaut_type]
+        path = self.cheapest_connecting_path(pad_id, module_ids, state)
+        return self.path_bundle(pool, "connect", path, state) if path else None
+
+    def shortest_route_bundle(self, pool: Pool, state: PlanState) -> Bundle:
+        """Builds the shortest possible tube route bundle for pool."""
+        pad_id, astronaut_type = pool
+        module_ids = [building.id for building in self.buildings.values() if building.kind == astronaut_type]
+        existing_path = self.shortest_existing_tube_path(pad_id, module_ids, state.tubes)
+        existing_length = len(existing_path) - 1 if existing_path else INF
+        for hop_count in range(1, min(existing_length - 1, MAX_TUBE_HOPS) + 1):
+            path = self.cheapest_hop_path(pad_id, module_ids, hop_count, state)
+            if path:
+                return self.path_bundle(pool, f"short-{hop_count}", path, state)
+        return None
+
+    def existing_path_upgrade_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:
+        """Builds focus, new-pod, upgrade, and combined bundles for the current tube path."""
+        bundles = []
+        pad_id, astronaut_type = pool
+        module_ids = [building.id for building in self.buildings.values() if building.kind == astronaut_type]
+        path = self.shortest_existing_tube_path(pad_id, module_ids, state.tubes)
+        base_bundle = self.path_bundle(pool, "existing", path, state)
+        if base_bundle is None:
+            return bundles
+        if base_bundle.pod_specs:
+            bundles.append(base_bundle)
+        projected = self.replay_bundle_on_state(state, base_bundle)
+        path_edges = base_bundle.path_edges
+        for spec in self.focus_specs(path_edges, projected):
+            specs = (*base_bundle.pod_specs, spec)
+            cost = self.nominal_cost(base_bundle.tubes, specs, (), state)
+            bundles.append(Bundle(pool, cost, base_bundle.tubes, pod_specs=specs, label="focus", path_edges=path_edges))
+        result = self.cached_simulate(projected)
+        pod_edge = self.best_pod_edge(path_edges, result)
+        upgrade_edge = self.best_counter_edge(path_edges, result.congestion_by_edge)
+        pod_specs = (*base_bundle.pod_specs, PodSpec(0, frozenset({pod_edge}))) if pod_edge != (-1, -1) else base_bundle.pod_specs
+        if pod_edge != (-1, -1):
+            cost = self.nominal_cost(base_bundle.tubes, pod_specs, (), state)
+            bundles.append(Bundle(pool, cost, base_bundle.tubes, pod_specs=pod_specs, label="pod", path_edges=path_edges))
+        if upgrade_edge != (-1, -1):
+            cost = self.nominal_cost(base_bundle.tubes, base_bundle.pod_specs, (upgrade_edge,), state)
+            bundles.append(Bundle(pool, cost, base_bundle.tubes, pod_specs=base_bundle.pod_specs,
+                upgrades=(upgrade_edge,), label="upgrade", path_edges=path_edges))
+        if pod_edge != (-1, -1) and upgrade_edge != (-1, -1):
+            cost = self.nominal_cost(base_bundle.tubes, pod_specs, (upgrade_edge,), state)
+            bundles.append(Bundle(pool, cost, base_bundle.tubes, pod_specs=pod_specs, upgrades=(upgrade_edge,), label="pod-upgrade", path_edges=path_edges))
+        return bundles
+
+    def teleport_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:
+        """Builds direct teleporter bundles for pool where endpoints are unused."""
+        pad_id, astronaut_type = pool
+        used = self.teleport_used_buildings(state.teleports)
+        modules = [building.id for building in self.buildings.values() if building.kind == astronaut_type]
+        if pad_id in used:
+            return []
+        return [Bundle(pool, TELEPORT_COST, teleport=(pad_id, module_id), label=f"teleport-{module_id}") for module_id in sorted(modules,
+            key=lambda item: tube_cost(self.buildings[pad_id], self.buildings[item])) if module_id not in used]
+
+    def path_bundle(self, pool: Pool, label: str, path: list[int], state: PlanState) -> Bundle:
+        """Builds a tube path bundle for pool, label, and path."""
+        if not path:
+            return None
+        specs = self.coverage_specs(path, state)
+        if specs is None:
+            return None
+        tubes = tuple(unique_new_tubes(path, state.tubes))
+        path_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
+        return Bundle(pool, self.nominal_cost(tubes, specs, (), state), tubes, pod_specs=tuple(specs), label=label, path_edges=path_edges)
 
     def state_action_text(self, state: PlanState) -> str:
         """Formats final projected debug actions from state."""
@@ -451,28 +483,6 @@ class Planner:
         """Formats pod_id and service_area as a debug POD action."""
         area_text = ", ".join(f"{a}-{b}" for a, b in sorted(service_area))
         return f"POD {pod_id} AUTO({area_text})"
-
-    def path_options(self, pad_id: int, astronaut_type: int, state: PlanState) -> list[tuple[str, list[int], list[Pair], Pair]]:
-        """Returns candidate infrastructure paths for pad_id and astronaut_type."""
-        options = []
-        module_ids = [building.id for building in self.buildings.values() if building.kind == astronaut_type]
-        existing_path = self.shortest_existing_tube_path(pad_id, module_ids, state.tubes)
-        if existing_path:
-            options.append(("existing", existing_path, [], (-1, -1)))
-        elif path := self.cheapest_connecting_path(pad_id, module_ids, state):
-            options.append(("connect", path, unique_new_tubes(path, state.tubes), (-1, -1)))
-        existing_length = len(existing_path) - 1 if existing_path else INF
-        max_hops = min(existing_length - 1, MAX_TUBE_HOPS)
-        for hop_count in range(1, max_hops + 1):
-            path = self.cheapest_hop_path(pad_id, module_ids, hop_count, state)
-            if path:
-                options.append((f"short-{hop_count}", path, unique_new_tubes(path, state.tubes), (-1, -1)))
-                break
-        used = self.teleport_used_buildings(state.teleports)
-        for module_id in sorted(module_ids, key=lambda item: tube_cost(self.buildings[pad_id], self.buildings[item])):
-            if pad_id not in used and module_id not in used:
-                options.append((f"teleport-{module_id}", [], [], (pad_id, module_id)))
-        return options
 
     def coverage_specs(self, path: list[int], state: PlanState) -> list[PodSpec]:
         """Returns pod specs that make path edges serviced in state."""
@@ -515,34 +525,6 @@ class Planner:
                 candidates.append((pod_id not in state.planned_pods, len(area), pod_id))
         return min(candidates)[2] if candidates else 0
 
-    def expand_pod_upgrade_bundles(self, base_bundle: Bundle, path_edges: tuple[Pair, ...], state: PlanState) -> list[Bundle]:
-        """Adds lazy wait-pod and congestion-upgrade variants for base_bundle."""
-        bundles = []
-        pod_specs = list(base_bundle.pod_specs)
-        for pod_level in range(MAX_POD_ADDITIONS + 1):
-            pod_bundle = Bundle(base_bundle.pool, self.nominal_cost(base_bundle.tubes, pod_specs, (), state), base_bundle.tubes,
-                pod_specs=tuple(pod_specs), label=f"{base_bundle.label}-pods-{pod_level}", path_edges=base_bundle.path_edges)
-            bundles.extend(self.expand_upgrade_bundles(pod_bundle, path_edges, state))
-            if pod_level == MAX_POD_ADDITIONS:
-                break
-            try:
-                projected = self.replay_bundle_on_state(state, pod_bundle)
-            except ValueError:
-                break
-            for spec in self.focus_specs(path_edges, projected):
-                focus_specs = [*pod_specs, spec]
-                focus_bundle = Bundle(base_bundle.pool, self.nominal_cost(base_bundle.tubes, focus_specs, (), state), base_bundle.tubes,
-                    pod_specs=tuple(focus_specs), label=f"{base_bundle.label}-focus-{spec.pod_id}", path_edges=base_bundle.path_edges)
-                bundles.extend(self.expand_upgrade_bundles(focus_bundle, path_edges, state))
-            result = self.cached_simulate(projected)
-            if result.delivery_times.get(base_bundle.pool, INF) == len(path_edges):
-                break
-            edge = self.best_pod_edge(path_edges, result)
-            if edge == (-1, -1):
-                break
-            pod_specs.append(PodSpec(0, frozenset({edge})))
-        return bundles
-
     def focus_specs(self, path_edges: tuple[Pair, ...], state: PlanState) -> list[PodSpec]:
         """Returns pod specs that remove overlapping service edges from pods serving path_edges."""
         specs = []
@@ -555,27 +537,6 @@ class Planner:
             if focused and focused & path_edge_set and focused != area and service_area_connected(focused):
                 specs.append(PodSpec(pod_id, frozenset(focused)))
         return specs
-
-    def expand_upgrade_bundles(self, bundle: Bundle, path_edges: tuple[Pair, ...], state: PlanState) -> list[Bundle]:
-        """Adds congestion-upgrade variants for bundle."""
-        bundles = []
-        upgrades = []
-        for level in range(MAX_UPGRADES + 1):
-            rank_cost = self.nominal_cost(bundle.tubes, bundle.pod_specs, upgrades, state)
-            label = f"{bundle.label}-up-{level}"
-            bundles.append(Bundle(bundle.pool, rank_cost, bundle.tubes, bundle.teleport, bundle.pod_specs, tuple(upgrades), label, bundle.path_edges))
-            if level == MAX_UPGRADES:
-                break
-            try:
-                projected = self.replay_bundle_on_state(state, bundles[-1])
-            except ValueError:
-                break
-            result = self.cached_simulate(projected)
-            edge = self.best_counter_edge(path_edges, result.congestion_by_edge)
-            if edge == (-1, -1):
-                break
-            upgrades.append(edge)
-        return bundles
 
     def best_pod_edge(self, path_edges: tuple[Pair, ...], result: SimulationResult) -> Pair:
         """Returns the path edge where the next dynamic pod should focus."""

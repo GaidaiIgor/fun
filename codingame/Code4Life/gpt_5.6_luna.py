@@ -144,6 +144,25 @@ def choose_sample(samples: list[Sample], player: Player, opponent: Player,
                                                                      completed_projects))
 
 
+def choose_collectable_sample(samples: list[Sample], player: Player, opponent: Player,
+                              available: tuple[int, ...], projects: list[tuple[int, ...]],
+                              completed_projects: set[int]) -> Sample | None:
+    """Chooses a feasible sample with at least one currently available molecule.
+
+    :param samples: Diagnosed samples carried by this bot.
+    :param player: Player whose storage and expertise are considered.
+    :param opponent: Opponent used for project-race valuation.
+    :param available: Molecule counts currently available at the distributor.
+    :param projects: Active science-project requirements.
+    :param completed_projects: Projects already considered completed by this bot.
+    :return: Highest-value sample that can make progress this turn, if one exists.
+    """
+    candidates = [sample for sample in samples if can_finish(sample, player) and any(
+        missing and available[index] for index, missing in enumerate(missing_molecules(sample, player)))]
+    return max(candidates, key=lambda sample: sample_value(sample, player, opponent, projects,
+                                                           completed_projects), default=None)
+
+
 def choose_cloud_sample(samples: list[Sample], player: Player, opponent: Player,
                         projects: list[tuple[int, ...]], completed_projects: set[int],
                         attempted_cloud: set[int]) -> Sample | None:
@@ -203,7 +222,9 @@ def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...
     if player.target == "DIAGNOSIS":
         if undiagnosed:
             return f"CONNECT {undiagnosed[0].identifier}"
-        if diagnosed and choose_sample(diagnosed, player, opponent, projects, completed_projects) is None:
+        if diagnosed and (choose_sample(diagnosed, player, opponent, projects, completed_projects) is None or
+                          (len(carried) >= 3 and choose_collectable_sample(diagnosed, player, opponent, available,
+                                                                           projects, completed_projects) is None)):
             discarded = min(diagnosed, key=lambda sample: sample_value(sample, player, opponent, projects, completed_projects))
             return f"CONNECT {discarded.identifier}"
         if len(carried) < 3:
@@ -225,6 +246,12 @@ def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...
         missing = missing_molecules(target, player)
         if not sum(missing):
             return "GOTO LABORATORY"
+        if not any(missing[index] and available[index] for index in range(5)):
+            target = choose_collectable_sample(diagnosed, player, opponent, available, projects,
+                                               completed_projects)
+            if target is None:
+                return "GOTO DIAGNOSIS"
+            missing = missing_molecules(target, player)
         molecule = next((index for index, amount in enumerate(missing) if amount and available[index]), None)
         if molecule is None:
             return "WAIT"

@@ -86,6 +86,7 @@ class Bot:
     :var projects: Stores the initial science-project expertise requirements.
     :var turn: Counts input turns in the current game.
     :var diagnosed_by_me: Stores samples diagnosed by this robot for cloud ties.
+    :var last_released: Identifies the most recently released sample.
     :var molecule_stalls: Counts consecutive unproductive molecule turns.
     """
 
@@ -93,6 +94,7 @@ class Bot:
         self.projects: list[tuple[int, int, int, int, int]] = projects
         self.turn: int = 0
         self.diagnosed_by_me: set[int] = set()
+        self.last_released: int | None = None
         self.molecule_stalls: int = 0
 
     def command(self, me: Robot, opponent: Robot, available: tuple[int, int, int, int, int], samples: list[Sample]) -> str:
@@ -167,14 +169,16 @@ class Bot:
         plan = self.best_plan(diagnosed, me, opponent, available, pressure, False)
         supplied = self.best_plan(diagnosed, me, opponent, available, pressure, True)
         collectable = self.best_plan(diagnosed, me, opponent, available, pressure, False, require_collectable=True)
-        cloud_sample, replacement = self.cloud_move(diagnosed, cloud, plan, me, opponent, available, pressure)
+        cloud_sample, replacement = (None, None) if self.turn >= 182 else self.cloud_move(diagnosed, cloud, plan, me, opponent, available, pressure)
         if replacement:
+            self.last_released = replacement.sample_id
             return f"CONNECT {replacement.sample_id}"
         if cloud_sample:
             return f"CONNECT {cloud_sample.sample_id}"
         disposable = [sample for sample in diagnosed if self.disposable(sample, me, opponent)]
         if disposable:
             sample = min(disposable, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
+            self.last_released = sample.sample_id
             return f"CONNECT {sample.sample_id}"
         if plan:
             if any(self.ready(sample, me.expertise, me.storage) for sample in diagnosed):
@@ -183,12 +187,18 @@ class Bot:
                 return "GOTO MOLECULES"
             if len(own) < 3 and self.turn <= 181:
                 return "GOTO SAMPLES"
+            if self.turn >= 182:
+                return "WAIT"
             planned_ids = {sample.sample_id for sample in plan.order}
             candidates = [sample for sample in diagnosed if sample.sample_id not in planned_ids]
             sample = min(candidates or diagnosed, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
+            self.last_released = sample.sample_id
             return f"CONNECT {sample.sample_id}"
         if me.stored() == 10 and diagnosed:
+            if self.turn >= 182:
+                return "WAIT"
             sample = min(diagnosed, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
+            self.last_released = sample.sample_id
             return f"CONNECT {sample.sample_id}"
         if len(own) < 3 and self.turn <= 181:
             return "GOTO SAMPLES"
@@ -220,7 +230,7 @@ class Bot:
         if ready:
             self.molecule_stalls = 0
             return "GOTO LABORATORY"
-        if self.molecule_stalls < 3:
+        if self.molecule_stalls < 1:
             self.molecule_stalls += 1
             return "WAIT"
         self.molecule_stalls = 0
@@ -259,7 +269,10 @@ class Bot:
         :return: Gives the rank requested from SAMPLES.
         """
         expertise = sum(me.expertise)
+        closest_project = min((self.project_remaining(project, me.expertise) for project in self.projects if self.project_active(project, me.expertise, opponent.expertise)), default=99)
         if self.turn >= 176:
+            return 2
+        if closest_project <= 3:
             return 2
         if expertise >= 6 or me.score + 40 < opponent.score and expertise >= 4:
             return 3
@@ -284,6 +297,8 @@ class Bot:
         best_replacement = None
         best_value = current_value
         for candidate in cloud:
+            if candidate.sample_id == self.last_released:
+                continue
             if self.disposable(candidate, me, opponent):
                 continue
             if len(own) < 3:
@@ -431,9 +446,9 @@ class Bot:
             if remaining == 1:
                 bonus += 600
             else:
-                bonus += 300 // remaining
+                bonus += 600 // remaining
                 if self.project_remaining(project, opponent_expertise) <= remaining:
-                    bonus += 50 // remaining
+                    bonus += 100 // remaining
         return bonus
 
     def project_active(self, project: tuple[int, int, int, int, int], expertise: tuple[int, int, int, int, int], opponent_expertise: tuple[int, int, int, int, int]) -> bool:
@@ -506,6 +521,7 @@ def main():
         return
     projects = [tuple(int(value) for value in reader.readline().split()) for _ in range(int(project_count_line))]
     bot = Bot(projects)
+    print(f"PROJECTS {projects}", file=sys.stderr, flush=True)
     while line := reader.readline():
         if not line.strip():
             continue

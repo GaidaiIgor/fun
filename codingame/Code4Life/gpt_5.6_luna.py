@@ -208,7 +208,7 @@ def choose_rank(player: Player, sample_count: int) -> int:
 
 def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...], samples: list[Sample],
                      projects: list[tuple[int, ...]], completed_projects: set[int],
-                     attempted_cloud: set[int], molecule_waits: int = 0) -> str:
+                     attempted_cloud: set[int]) -> str:
     """Chooses one valid action for the current turn.
 
     :param player: Current player state for this bot.
@@ -218,7 +218,6 @@ def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...
     :param projects: Active science-project requirements.
     :param completed_projects: Projects already considered completed by this bot.
     :param attempted_cloud: Cloud transfers that previously failed.
-    :param molecule_waits: Consecutive turns spent waiting for unavailable molecules.
     :return: One command accepted by the game protocol.
     """
     if player.eta:
@@ -240,8 +239,6 @@ def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...
             selected = choose_sample(diagnosed, player, opponent, projects, completed_projects)
             if selected is None or (len(carried) >= 3 and choose_collectable_sample(
                     diagnosed, player, opponent, available, projects, completed_projects) is None):
-                if selected is not None and molecule_waits < 3:
-                    return "GOTO MOLECULES"
                 discarded = min(diagnosed, key=lambda sample: sample_value(sample, player, opponent, projects,
                                                                             completed_projects) -
                                 250 * sum(leftover_molecules(sample, player)))
@@ -271,7 +268,7 @@ def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...
             target = choose_collectable_sample(diagnosed, player, opponent, available, projects,
                                                completed_projects)
             if target is None:
-                return "WAIT" if molecule_waits < 3 else "GOTO DIAGNOSIS"
+                return "GOTO DIAGNOSIS"
             missing = missing_molecules(target, player)
         molecule = next((index for index, amount in enumerate(missing) if amount and available[index]), None)
         if molecule is None:
@@ -301,7 +298,6 @@ def main():
     projects = [tuple(int(value) for value in read_line().split()) for _ in range(project_count)]
     completed_projects = set[int]()
     attempted_cloud = set[int]()
-    molecule_waits = 0
 
     while True:
         player_line = read_line().split()
@@ -320,16 +316,8 @@ def main():
             if is_complete(player.expertise, requirement):
                 completed_projects.add(index)
         command = command_for_turn(player, opponent, available, samples, projects, completed_projects,
-                                    attempted_cloud, molecule_waits)
+                                    attempted_cloud)
         print(command, flush=True)
-        if player.target == "MOLECULES" and not player.eta and command == "WAIT":
-            molecule_waits += 1
-        elif player.target == "MOLECULES" and command == "GOTO DIAGNOSIS":
-            molecule_waits = 3
-        elif player.target == "DIAGNOSIS" and not player.eta and command.startswith("CONNECT"):
-            molecule_waits = 0
-        elif command != "WAIT":
-            molecule_waits = 0
 
 
 if __name__ == "__main__":

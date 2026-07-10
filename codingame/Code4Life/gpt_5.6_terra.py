@@ -136,15 +136,15 @@ class Bot:
         :return: Gives a valid arena command.
         """
         diagnosed = [sample for sample in own if sample.diagnosed()]
+        if any(self.ready(sample, me.expertise, me.storage) for sample in diagnosed):
+            return "GOTO LABORATORY"
+        if len(own) < 3 and self.turn <= 184:
+            return f"CONNECT {self.sample_rank(me, opponent)}"
         if diagnosed:
             supplied = self.best_plan(diagnosed, me, opponent, available, pressure, True)
             collectable = self.best_plan(diagnosed, me, opponent, available, pressure, False, require_collectable=True)
-            if any(self.ready(sample, me.expertise, me.storage) for sample in diagnosed):
-                return "GOTO LABORATORY"
             if supplied or collectable:
                 return "GOTO MOLECULES"
-        if len(own) < 3 and self.turn <= 184:
-            return f"CONNECT {self.sample_rank(me, opponent)}"
         if own:
             return "GOTO DIAGNOSIS"
         return "WAIT"
@@ -180,21 +180,6 @@ class Bot:
             sample = min(disposable, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
             self.last_released = sample.sample_id
             return f"CONNECT {sample.sample_id}"
-        target = self.target_project(me.expertise, opponent.expertise)
-        if target and self.project_remaining(target, me.expertise) <= 3 and self.turn <= 165 and not any(self.ready(sample, me.expertise, me.storage) for sample in diagnosed):
-            needed = {TYPES[index] for index, requirement in enumerate(target) if requirement > me.expertise[index]}
-            target_cloud = [sample for sample in cloud if sample.gain in needed and sample.sample_id != self.last_released]
-            if not any(sample.gain in needed for sample in diagnosed):
-                if target_cloud and len(own) < 3:
-                    sample = max(target_cloud, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
-                    return f"CONNECT {sample.sample_id}"
-                if len(own) == 3:
-                    sample = min(diagnosed, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
-                    if sample.health <= 20:
-                        self.last_released = sample.sample_id
-                        return f"CONNECT {sample.sample_id}"
-                if len(own) < 3:
-                    return "GOTO SAMPLES"
         if plan:
             if any(self.ready(sample, me.expertise, me.storage) for sample in diagnosed):
                 return "GOTO LABORATORY"
@@ -465,9 +450,6 @@ class Bot:
         """
         index = TYPES.index(gain)
         bonus = 0
-        target = self.target_project(expertise, opponent_expertise)
-        if target and target[index] > expertise[index]:
-            bonus += 120
         for project in self.projects:
             if not self.project_active(project, expertise, opponent_expertise) or project[index] <= expertise[index]:
                 continue

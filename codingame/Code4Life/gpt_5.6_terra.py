@@ -141,7 +141,7 @@ class Bot:
                 return "GOTO LABORATORY"
             if supplied or collectable:
                 return "GOTO MOLECULES"
-        if len(own) < 3 and self.turn <= 181:
+        if len(own) < 3 and self.turn <= 184:
             return f"CONNECT {self.sample_rank(me, opponent)}"
         if own:
             return "GOTO DIAGNOSIS"
@@ -217,8 +217,8 @@ class Bot:
         if ready:
             self.molecule_stalls = 0
             return "GOTO LABORATORY"
-        if self.molecule_stalls == 0:
-            self.molecule_stalls = 1
+        if self.molecule_stalls < 3:
+            self.molecule_stalls += 1
             return "WAIT"
         self.molecule_stalls = 0
         return "GOTO DIAGNOSIS"
@@ -255,17 +255,12 @@ class Bot:
         :param opponent: Describes the opposing robot.
         :return: Gives the rank requested from SAMPLES.
         """
-        closest_project = min((self.project_remaining(project, me.expertise) for project in self.projects if self.project_active(project, me.expertise, opponent.expertise)), default=99)
         expertise = sum(me.expertise)
-        if self.turn > 165 or closest_project <= 2:
-            return 1 if expertise < 9 else 2
-        if me.score + 40 < opponent.score and expertise >= 6:
-            return 3
-        if expertise < 4:
-            return 1
-        if expertise < 10:
+        if self.turn >= 176:
             return 2
-        return 3
+        if expertise >= 6 or me.score + 40 < opponent.score and expertise >= 4:
+            return 3
+        return 2
 
     def cloud_move(self, own: list[Sample], cloud: list[Sample], current: Plan | None, me: Robot, opponent: Robot, available: tuple[int, int, int, int, int], pressure: tuple[int, int, int, int, int]) -> tuple[Sample | None, Sample | None]:
         """Finds a cloud pickup or the carried sample to release for one.
@@ -353,13 +348,14 @@ class Bot:
         for sample in order:
             cost = [max(0, needed - known) for needed, known in zip(sample.cost, expertise)]
             required = [total + needed for total, needed in zip(required, cost)]
-            value += sample.health * 12 - sum(cost) * 3 + self.project_bonus(sample.gain, tuple(expertise), opponent.expertise)
+            value += sample.health * 12 + self.project_bonus(sample.gain, tuple(expertise), opponent.expertise)
             expertise[TYPES.index(sample.gain)] += 1
         additional = tuple(max(0, needed - stored) for needed, stored in zip(required, me.storage))
         if me.stored() + sum(additional) > 10:
             return None
         if require_available and any(needed > stock for needed, stock in zip(additional, available)):
             return None
+        value -= sum(additional) * 3
         value += (len(order) - 1) * 12
         for needed, stock, demand in zip(additional, available, pressure):
             value -= needed * max(0, demand - stock) * 2
@@ -406,14 +402,14 @@ class Bot:
         return sample.health * 12 - cost * 3 + self.project_bonus(sample.gain, expertise, opponent_expertise)
 
     def disposable(self, sample: Sample, me: Robot, opponent: Robot) -> bool:
-        """Determines whether a sample is too weak to keep without an urgent project.
+        """Keeps diagnosed samples so low-value expertise is not discarded.
 
         :param sample: Gives the sample to assess.
         :param me: Describes this robot.
         :param opponent: Describes the opposing robot.
         :return: Gives whether the sample should be released when possible.
         """
-        return sample.health <= 1 and self.project_bonus(sample.gain, me.expertise, opponent.expertise) < 150
+        return False
 
     def project_bonus(self, gain: str, expertise: tuple[int, int, int, int, int], opponent_expertise: tuple[int, int, int, int, int]) -> int:
         """Scores expertise progress toward science projects.

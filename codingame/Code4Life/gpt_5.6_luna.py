@@ -98,6 +98,17 @@ def can_finish(sample: Sample, player: Player) -> bool:
     return sum(player.storage) + sum(missing_molecules(sample, player)) <= 10
 
 
+def leftover_molecules(sample: Sample, player: Player) -> tuple[int, ...]:
+    """Calculates molecules that would remain after researching a sample.
+
+    :param sample: Diagnosed sample to evaluate.
+    :param player: Player whose storage and expertise are considered.
+    :return: Molecules not consumed by the sample in A-to-E order.
+    """
+    return tuple(max(0, stored - max(0, cost - expertise)) for cost, expertise, stored in
+                 zip(sample.costs, player.expertise, player.storage))
+
+
 def sample_value(sample: Sample, player: Player, opponent: Player, projects: list[tuple[int, ...]],
                  completed_projects: set[int]) -> int:
     """Ranks a diagnosed sample by health, expertise, and project value.
@@ -141,7 +152,8 @@ def choose_sample(samples: list[Sample], player: Player, opponent: Player,
         return None
     ready = [sample for sample in candidates if not sum(missing_molecules(sample, player))]
     return max(ready or candidates, key=lambda sample: sample_value(sample, player, opponent, projects,
-                                                                     completed_projects))
+                                                                     completed_projects) -
+               250 * sum(leftover_molecules(sample, player)))
 
 
 def choose_collectable_sample(samples: list[Sample], player: Player, opponent: Player,
@@ -160,7 +172,8 @@ def choose_collectable_sample(samples: list[Sample], player: Player, opponent: P
     candidates = [sample for sample in samples if can_finish(sample, player) and any(
         missing and available[index] for index, missing in enumerate(missing_molecules(sample, player)))]
     return max(candidates, key=lambda sample: sample_value(sample, player, opponent, projects,
-                                                           completed_projects), default=None)
+                                                            completed_projects) -
+               250 * sum(leftover_molecules(sample, player)), default=None)
 
 
 def choose_cloud_sample(samples: list[Sample], player: Player, opponent: Player,
@@ -173,7 +186,7 @@ def choose_cloud_sample(samples: list[Sample], player: Player, opponent: Player,
     :param opponent: Opponent used for project-race valuation.
     :param projects: Active science-project requirements.
     :param completed_projects: Projects already considered completed by this bot.
-    :param attempted_cloud: Cloud sample identifiers that previously failed to transfer.
+    :param attempted_cloud: Cloud sample identifiers that should not be retried.
     :return: Highest-value transferable cloud sample, if one exists.
     """
     candidates = [sample for sample in samples if sample.owner == -1 and sample.identifier not in attempted_cloud
@@ -225,7 +238,10 @@ def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...
         if diagnosed and (choose_sample(diagnosed, player, opponent, projects, completed_projects) is None or
                           (len(carried) >= 3 and choose_collectable_sample(diagnosed, player, opponent, available,
                                                                            projects, completed_projects) is None)):
-            discarded = min(diagnosed, key=lambda sample: sample_value(sample, player, opponent, projects, completed_projects))
+            discarded = min(diagnosed, key=lambda sample: sample_value(sample, player, opponent, projects,
+                                                                        completed_projects) -
+                            250 * sum(leftover_molecules(sample, player)))
+            attempted_cloud.add(discarded.identifier)
             return f"CONNECT {discarded.identifier}"
         if len(carried) < 3:
             cloud_sample = choose_cloud_sample(samples, player, opponent, projects, completed_projects,

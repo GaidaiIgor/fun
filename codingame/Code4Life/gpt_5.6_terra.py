@@ -183,7 +183,10 @@ class Bot:
                 return "GOTO MOLECULES"
             if len(own) < 3 and self.turn <= 181:
                 return "GOTO SAMPLES"
-            return "WAIT"
+            planned_ids = {sample.sample_id for sample in plan.order}
+            candidates = [sample for sample in diagnosed if sample.sample_id not in planned_ids]
+            sample = min(candidates or diagnosed, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
+            return f"CONNECT {sample.sample_id}"
         if me.stored() == 10 and diagnosed:
             sample = min(diagnosed, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
             return f"CONNECT {sample.sample_id}"

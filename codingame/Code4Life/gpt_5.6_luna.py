@@ -206,6 +206,17 @@ def choose_rank(player: Player, sample_count: int) -> int:
     return 1 if level < 3 else 2 if level < 7 else 3
 
 
+def sample_batch_limit(samples: list[Sample], player: Player) -> int:
+    """Selects a batch size that matches sample difficulty.
+
+    :param samples: Samples currently carried by this bot.
+    :param player: Player whose expertise determines the initial rank.
+    :return: Maximum number of samples to carry in the current batch.
+    """
+    rank = max((sample.rank for sample in samples), default=choose_rank(player, 0))
+    return 3 if rank == 1 else 2 if rank == 2 else 1
+
+
 def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...], samples: list[Sample],
                      projects: list[tuple[int, ...]], completed_projects: set[int],
                      attempted_cloud: set[int]) -> str:
@@ -228,7 +239,7 @@ def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...
     undiagnosed = [sample for sample in carried if sample.health < 0]
 
     if player.target == "SAMPLES":
-        if len(carried) >= 3:
+        if len(carried) >= sample_batch_limit(carried, player):
             return "GOTO DIAGNOSIS"
         return f"CONNECT {choose_rank(player, len(carried))}"
 
@@ -244,15 +255,16 @@ def command_for_turn(player: Player, opponent: Player, available: tuple[int, ...
                                 250 * sum(leftover_molecules(sample, player)))
                 attempted_cloud.add(discarded.identifier)
                 return f"CONNECT {discarded.identifier}"
-        if len(carried) < 3 and (not diagnosed or choose_collectable_sample(diagnosed, player, opponent, available,
-                                                                             projects, completed_projects) is not None):
+        batch_limit = sample_batch_limit(carried, player)
+        if len(carried) < batch_limit and (not diagnosed or choose_collectable_sample(
+                diagnosed, player, opponent, available, projects, completed_projects) is not None):
             cloud_sample = choose_cloud_sample(samples, player, opponent, projects, completed_projects,
                                                attempted_cloud)
             if cloud_sample is not None:
                 attempted_cloud.add(cloud_sample.identifier)
                 return f"CONNECT {cloud_sample.identifier}"
         if diagnosed:
-            return "GOTO SAMPLES" if len(carried) < 3 else "GOTO MOLECULES"
+            return "GOTO SAMPLES" if len(carried) < batch_limit else "GOTO MOLECULES"
         return "GOTO SAMPLES"
 
     if player.target == "MOLECULES":

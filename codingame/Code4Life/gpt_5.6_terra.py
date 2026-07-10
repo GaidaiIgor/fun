@@ -180,6 +180,21 @@ class Bot:
             sample = min(disposable, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
             self.last_released = sample.sample_id
             return f"CONNECT {sample.sample_id}"
+        target = self.target_project(me.expertise, opponent.expertise)
+        if target and self.project_remaining(target, me.expertise) <= 3 and self.turn <= 165 and not any(self.ready(sample, me.expertise, me.storage) for sample in diagnosed):
+            needed = {TYPES[index] for index, requirement in enumerate(target) if requirement > me.expertise[index]}
+            target_cloud = [sample for sample in cloud if sample.gain in needed and sample.sample_id != self.last_released]
+            if not any(sample.gain in needed for sample in diagnosed):
+                if target_cloud and len(own) < 3:
+                    sample = max(target_cloud, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
+                    return f"CONNECT {sample.sample_id}"
+                if len(own) == 3:
+                    sample = min(diagnosed, key=lambda item: self.sample_value(item, me.expertise, opponent.expertise))
+                    if sample.health <= 20:
+                        self.last_released = sample.sample_id
+                        return f"CONNECT {sample.sample_id}"
+                if len(own) < 3:
+                    return "GOTO SAMPLES"
         if plan:
             if any(self.ready(sample, me.expertise, me.storage) for sample in diagnosed):
                 return "GOTO LABORATORY"
@@ -269,7 +284,8 @@ class Bot:
         :return: Gives the rank requested from SAMPLES.
         """
         expertise = sum(me.expertise)
-        closest_project = min((self.project_remaining(project, me.expertise) for project in self.projects if self.project_active(project, me.expertise, opponent.expertise)), default=99)
+        target = self.target_project(me.expertise, opponent.expertise)
+        closest_project = self.project_remaining(target, me.expertise) if target else 99
         if self.turn >= 176:
             return 2
         if closest_project <= 3:
@@ -277,6 +293,16 @@ class Bot:
         if expertise >= 6 or me.score + 40 < opponent.score and expertise >= 4:
             return 3
         return 2
+
+    def target_project(self, expertise: tuple[int, int, int, int, int], opponent_expertise: tuple[int, int, int, int, int]) -> tuple[int, int, int, int, int] | None:
+        """Selects the active project this robot can complete soonest.
+
+        :param expertise: Gives this robot's molecule expertise.
+        :param opponent_expertise: Gives the opposing robot's molecule expertise.
+        :return: Gives the selected project, if any remain unclaimed.
+        """
+        projects = [project for project in self.projects if self.project_active(project, expertise, opponent_expertise)]
+        return min(projects, key=lambda project: (self.project_remaining(project, expertise), self.project_remaining(project, opponent_expertise)), default=None)
 
     def cloud_move(self, own: list[Sample], cloud: list[Sample], current: Plan | None, me: Robot, opponent: Robot, available: tuple[int, int, int, int, int], pressure: tuple[int, int, int, int, int]) -> tuple[Sample | None, Sample | None]:
         """Finds a cloud pickup or the carried sample to release for one.
@@ -439,6 +465,9 @@ class Bot:
         """
         index = TYPES.index(gain)
         bonus = 0
+        target = self.target_project(expertise, opponent_expertise)
+        if target and target[index] > expertise[index]:
+            bonus += 120
         for project in self.projects:
             if not self.project_active(project, expertise, opponent_expertise) or project[index] <= expertise[index]:
                 continue

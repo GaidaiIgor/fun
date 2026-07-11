@@ -595,7 +595,16 @@ class Planner:
         for edges in active_by_pool.values():
             active_edges.update(edges)
         for pod_id in list(state.planned_pods):
-            state.service_areas[pod_id] &= state.planned_pod_edges[pod_id] & active_by_pool.get(state.planned_pod_pools[pod_id], set())
+            active = active_by_pool.get(state.planned_pod_pools[pod_id], set())
+            if pod_id in self.pods:
+                original = self.service_areas[pod_id]
+                selected = state.planned_pod_edges[pod_id]
+                state.service_areas[pod_id] = original | ((selected - original) & active) if original <= selected else selected if selected & active else set()
+                if state.service_areas[pod_id] == original:
+                    self.remove_planned_pod(state, pod_id)
+                    continue
+            else:
+                state.service_areas[pod_id] &= state.planned_pod_edges[pod_id] & active
             if state.service_areas[pod_id]:
                 state.pods[pod_id].service_area = state.service_areas[pod_id]
             else:
@@ -689,7 +698,7 @@ class Planner:
                 if edge not in state.tubes:
                     raise ValueError("service area missing tube")
             path_edges = set(bundle.path_edges)
-            state.planned_pod_edges[pod_id] = area & path_edges if path_edges else set(area)
+            state.planned_pod_edges[pod_id] = area if pod_id in self.pods else area & path_edges if path_edges else set(area)
             state.planned_pod_pools[pod_id] = bundle.pool
             state.service_areas[pod_id] = area
             state.pods[pod_id] = PodPlan(pod_id, [], area, True)

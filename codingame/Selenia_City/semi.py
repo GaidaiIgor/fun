@@ -411,17 +411,23 @@ class Planner:
         upgrade_edge = self.best_counter_edge(path_edges, result.congestion_by_edge)
         pod_specs = (*base_bundle.pod_specs, PodSpec(0, frozenset({pod_edge}))) if pod_edge != (-1, -1) else base_bundle.pod_specs
         pod_upgrade_edge = (-1, -1)
+        pod_affordable = False
         if pod_edge != (-1, -1):
             cost = self.nominal_cost(base_bundle.tubes, pod_specs, (), state)
             pod_bundle = Bundle(pool, cost, base_bundle.tubes, pod_specs=pod_specs, label="pod", path_edges=path_edges)
             bundles.append(pod_bundle)
-            pod_result = self.cached_simulate(self.replay_bundle_on_state(state, pod_bundle))
-            pod_upgrade_edge = self.best_counter_edge(path_edges, pod_result.congestion_by_edge)
+            pod_state = self.replay_bundle_on_state(state, pod_bundle)
+            pod_affordable = pod_state.cost <= self.resources
+            if pod_affordable:
+                pod_upgrade_edge = self.best_counter_edge(path_edges, self.cached_simulate(pod_state).congestion_by_edge)
+        upgrade_affordable = True
         if upgrade_edge != (-1, -1):
             cost = self.nominal_cost(base_bundle.tubes, base_bundle.pod_specs, (upgrade_edge,), state)
-            bundles.append(Bundle(pool, cost, base_bundle.tubes, pod_specs=base_bundle.pod_specs,
-                upgrades=(upgrade_edge,), label="upgrade", path_edges=path_edges))
-        if pod_upgrade_edge != (-1, -1):
+            upgrade_bundle = Bundle(pool, cost, base_bundle.tubes, pod_specs=base_bundle.pod_specs, upgrades=(upgrade_edge,),
+                label="upgrade", path_edges=path_edges)
+            bundles.append(upgrade_bundle)
+            upgrade_affordable = self.replay_bundle_on_state(state, upgrade_bundle).cost <= self.resources
+        if pod_affordable and upgrade_affordable and pod_upgrade_edge != (-1, -1):
             cost = self.nominal_cost(base_bundle.tubes, pod_specs, (pod_upgrade_edge,), state)
             bundles.append(Bundle(pool, cost, base_bundle.tubes, pod_specs=pod_specs, upgrades=(pod_upgrade_edge,), label="pod-upgrade", path_edges=path_edges))
         return bundles

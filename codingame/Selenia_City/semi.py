@@ -219,8 +219,11 @@ class Planner:
             current_result = self.score_state(current_state)
             selected_text = self.state_delta_text(previous_state, current_state)
             total_text = self.state_action_text(current_state)
-            text = f"selected {best.pool}; resources left: {self.resources - current_state.cost}; action: {selected_text}; "
-            print(f"{text}total bundle: {total_text}", file=sys.stderr)
+            total_score_gain = current_result.score - before_score
+            efficiency = total_score_gain / max(1, current_state.cost)
+            text = f"selected={best.pool}; action={selected_text}; total bundle={total_text}; cost={current_state.cost}; "
+            print(f"{text}score gain={total_score_gain}; efficiency={efficiency:.3f}; resources left={self.resources - current_state.cost}", file=sys.stderr)
+            print(self.pool_debug(current_result), file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)

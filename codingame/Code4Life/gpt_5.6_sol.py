@@ -87,6 +87,7 @@ class Bot:
     :var rejected_until: Prevents recently discarded samples from causing diagnosis loops.
     :var molecule_waits: Limits waits for molecules visibly held by the opponent.
     :var release_abandoned_until: Prevents repeated travel toward an opponent that refuses to produce.
+    :var planned_samples: Preserves the production order of a committed owned batch.
     :var project_eta_cache: Caches opponent science-project timing within one frame."""
 
     projects: tuple[Vector, ...]
@@ -95,6 +96,7 @@ class Bot:
     rejected_until: dict[int, int]
     molecule_waits: int
     release_abandoned_until: int
+    planned_samples: tuple[int, ...]
     project_eta_cache: dict[Vector, int]
 
     def __init__(self, projects: tuple[Vector, ...]):
@@ -106,6 +108,7 @@ class Bot:
         self.rejected_until = {}
         self.molecule_waits = 0
         self.release_abandoned_until = 0
+        self.planned_samples = ()
         self.project_eta_cache = {}
 
     def decide(self, frame: Frame) -> str:
@@ -113,10 +116,11 @@ class Bot:
         :param frame: Supplies both robots, molecule availability, and samples.
         :return: Provides one legal game command."""
         self.project_eta_cache.clear()
+        owned = [sample for sample in frame.samples if sample.carried_by == 0]
+        self.planned_samples = tuple(sample_id for sample_id in self.planned_samples if any(sample.sample_id == sample_id for sample in owned))
         if frame.me.eta > 0:
             self.molecule_waits = 0
             return "WAIT"
-        owned = [sample for sample in frame.samples if sample.carried_by == 0]
         if frame.me.target == "START_POS":
             return "GOTO SAMPLES"
         if frame.me.target == "SAMPLES":
@@ -135,35 +139,36 @@ class Bot:
         :param owned: Supplies samples carried by IGPro.
         :return: Provides a SAMPLES-module command."""
         self.molecule_waits = 0
+        self.planned_samples = ()
         if len(owned) == 3:
             return "GOTO DIAGNOSIS"
-        expertise = sum(frame.me.expertise)
         remaining = GAME_TURNS - self.turn
-        ranks = (1, 1, 1) if expertise < 3 else (2, 2, 1) if expertise < 6 else (3, 2, 2) if expertise < 10 \
-            else (3, 3, 2) if remaining < 45 else (3, 3, 3)
-        missing_ranks = list(ranks)
+        missing_ranks = list(self._sample_ranks(frame))
         for sample in owned:
             if sample.rank in missing_ranks:
                 missing_ranks.remove(sample.rank)
         rank = missing_ranks[0]
-        if expertise < 6 and sum(max(amount, 0) for amount in frame.available) < 8:
-            rank = max(1, rank - 1)
-        unknown_ranks = tuple(sample.rank for sample in owned if sample.health < 0) + (rank,)
-        estimated_pickups = self._estimated_unknown_pickups(unknown_ranks, frame.me)
-        estimated_finish = 8 + len(unknown_ranks) * 2 if estimated_pickups == 0 else 10 + len(unknown_ranks) * 2 + estimated_pickups
+        carried_ranks = tuple(sample.rank for sample in owned if sample.health < 0)
+        for candidate in range(rank, 0, -1):
+            unknown_ranks = carried_ranks + (candidate,)
+            estimated_pickups = self._estimated_unknown_pickups(unknown_ranks, frame.me)
+            estimated_finish = 8 + len(unknown_ranks) * 2 if estimated_pickups == 0 \
+                else 10 + len(unknown_ranks) * 2 + estimated_pickups + 6 * ((estimated_pickups - 1) // 10)
+            if remaining >= estimated_finish:
+                rank = candidate
+                break
+        else:
+            rank = 0
         cloud_plan = None
         if not owned:
             cloud = [sample for sample in frame.samples
                      if sample.carried_by == -1 and sample.health >= 0 and self.rejected_until.get(sample.sample_id, 0) <= self.turn]
             cloud_plan = self._best_plan(cloud, frame, "SAMPLES_CLOUD", True)
             if cloud_plan is None:
-                potential = self._best_plan(cloud, frame, "SAMPLES_CLOUD", False)
-                cloud_plan = potential if potential is not None \
-                    and self._opponent_will_release(frame, potential) else None
-        if cloud_plan is not None \
-                and (remaining < estimated_finish or cloud_plan.reward >= (10, 20, 30)[rank - 1] or cloud_plan.value >= 35):
+                cloud_plan = self._best_plan(cloud, frame, "SAMPLES_CLOUD", False)
+        if cloud_plan is not None and (rank == 0 or cloud_plan.reward >= (10, 20, 30)[rank - 1] or cloud_plan.value >= 35):
             return "GOTO DIAGNOSIS"
-        if remaining < estimated_finish:
+        if rank == 0:
             return "GOTO DIAGNOSIS" if owned else "WAIT"
         return f"CONNECT {rank}"
 
@@ -173,6 +178,7 @@ class Bot:
         :param owned: Supplies samples carried by IGPro.
         :return: Provides a DIAGNOSIS-module command."""
         self.molecule_waits = 0
+        self.planned_samples = ()
         ready = self._ready_samples(owned, frame.me)
         if ready and GAME_TURNS - self.turn <= 4 + len(ready):
             return "GOTO LABORATORY"
@@ -186,8 +192,7 @@ class Bot:
         candidates = owned + cloud
         plan = self._best_plan(candidates, frame, "DIAGNOSIS", True)
         if plan is None:
-            potential = self._best_plan(candidates, frame, "DIAGNOSIS", False)
-            plan = potential if potential is not None and self._opponent_will_release(frame, potential) else None
+            plan = self._best_plan(candidates, frame, "DIAGNOSIS", False)
         if plan is not None:
             target_ids = {sample.sample_id for sample in plan.samples}
             desired_cloud = [sample for sample in plan.samples if sample.carried_by == -1]
@@ -198,8 +203,7 @@ class Bot:
                 sample = min(rejected, key=lambda item: (self._evaluate_order((item,), frame, "DIAGNOSIS", False, len(owned)) is not None,
                                                           self._candidate_score(item, frame)))
                 target = desired_cloud[0]
-                if frame.opponent.target != "DIAGNOSIS" or frame.opponent.eta > 1 \
-                        or frame.opponent.eta == 1 and target.sample_id in self.diagnosed_by_me:
+                if frame.opponent.target != "DIAGNOSIS" or frame.opponent.eta > 1 or frame.opponent.eta == 1 and target.sample_id in self.diagnosed_by_me:
                     self.rejected_until[sample.sample_id] = self.turn + 8
                     return f"CONNECT {sample.sample_id}"
         owned_plan = self._best_plan(owned, frame, "DIAGNOSIS", True)
@@ -208,62 +212,75 @@ class Bot:
                 sample = owned_plan.samples[0]
                 self.rejected_until[sample.sample_id] = self.turn + 20
                 return f"CONNECT {sample.sample_id}"
-            if not any(owned_plan.pickups) or GAME_TURNS - self.turn <= 12 and self._ready_samples(owned, frame.me):
+            if not any(owned_plan.pickups):
+                self.planned_samples = tuple(sample.sample_id for sample in owned_plan.samples)
                 return "GOTO LABORATORY"
+            if GAME_TURNS - self.turn <= 12 and ready:
+                return "GOTO LABORATORY"
+            self.planned_samples = tuple(sample.sample_id for sample in owned_plan.samples)
             return "GOTO MOLECULES"
         owned_plan = self._best_plan(owned, frame, "DIAGNOSIS", False)
-        if owned_plan is not None and self._opponent_will_release(frame, owned_plan):
+        if owned_plan is not None:
+            self.planned_samples = tuple(sample.sample_id for sample in owned_plan.samples)
             return "GOTO MOLECULES"
         if GAME_TURNS - self.turn <= 8:
             return "GOTO LABORATORY" if self._ready_samples(owned, frame.me) else "WAIT"
         if owned:
             if GAME_TURNS - self.turn <= 12:
                 return "WAIT"
-            sample = min(owned, key=lambda item: (self._evaluate_order((item,), frame, "DIAGNOSIS", False, len(owned)) is not None,
-                                                  self._candidate_score(item, frame)))
-            self.rejected_until[sample.sample_id] = self.turn + 20
+            impossible = [sample for sample in owned if not self._physically_possible(sample, frame.me)]
+            if not impossible:
+                if not self._finishable_fresh_rank(frame):
+                    return "WAIT"
+                if len(owned) < 3:
+                    return "GOTO SAMPLES"
+            rejected = impossible or owned
+            sample = min(rejected, key=lambda item: self._candidate_score(item, frame))
+            self.rejected_until[sample.sample_id] = self.turn + (20 if impossible else 8)
             return f"CONNECT {sample.sample_id}"
-        expertise = sum(frame.me.expertise)
-        rank = 1 if expertise < 3 else 2 if expertise < 6 else 3
-        estimated_pickups = self._estimated_unknown_pickups((rank,), frame.me)
-        estimated_finish = 13 if estimated_pickups == 0 else 15 + estimated_pickups
-        return "GOTO SAMPLES" if GAME_TURNS - self.turn >= estimated_finish else "WAIT"
+        return "GOTO SAMPLES" if self._finishable_fresh_rank(frame) else "WAIT"
 
     def _at_molecules(self, frame: Frame, owned: list[Sample]) -> str:
         """Collects the scarcest required molecule for the best current batch.
         :param frame: Supplies the current game state.
         :param owned: Supplies samples carried by IGPro.
         :return: Provides a MOLECULES-module command."""
-        plan = self._best_plan(owned, frame, "MOLECULES", True)
+        plan = self._committed_plan(owned, frame, "MOLECULES")
         if plan is None:
-            potential = self._best_plan(owned, frame, "MOLECULES", False)
-            plan = potential if potential is not None and self._opponent_will_release(frame, potential) else None
+            self.molecule_waits = 0
+            plan = self._best_plan(owned, frame, "MOLECULES", True)
+        if plan is None:
+            plan = self._best_plan(owned, frame, "MOLECULES", False)
         if plan is not None:
             if self._is_lemon(plan):
                 self.molecule_waits = 0
+                self.planned_samples = ()
                 return "GOTO DIAGNOSIS"
+            self.planned_samples = tuple(sample.sample_id for sample in plan.samples)
             choices = [index for index, amount in enumerate(plan.pickups) if amount > 0 and frame.available[index] > 0]
             if choices:
                 self.molecule_waits = 0
                 opponent_need = self._opponent_need(frame)
-                first_missing = tuple(max(plan.samples[0].cost[index] - frame.me.expertise[index] - frame.me.storage[index], 0)
-                                      for index in range(5))
+                first_missing = tuple(max(plan.samples[0].cost[index] - frame.me.expertise[index] - frame.me.storage[index], 0) for index in range(5))
                 index = min(choices, key=lambda item: (max(frame.available[item], 0) - plan.pickups[item] - opponent_need[item],
                                                        0 if first_missing[item] else 1, frame.available[item], -plan.pickups[item], item))
                 return f"CONNECT {MOLECULE_NAMES[index]}"
             if not any(plan.pickups):
                 self.molecule_waits = 0
                 return "GOTO LABORATORY"
-        if self._ready_samples(owned, frame.me):
+        ready = self._ready_samples(owned, frame.me)
+        if ready:
             self.molecule_waits = 0
+            if self.planned_samples and all(sample.sample_id != self.planned_samples[0] for sample in ready):
+                self.planned_samples = ()
             return "GOTO LABORATORY"
-        if plan is not None and self.molecule_waits < 3 and plan.turns < GAME_TURNS - self.turn \
-                and self._opponent_will_release(frame, plan):
+        if plan is not None and self.molecule_waits < 4 and plan.turns < GAME_TURNS - self.turn and self._opponent_will_release(frame, plan):
             self.molecule_waits += 1
             return "WAIT"
         if plan is not None and self._opponent_will_release(frame, plan):
             self.release_abandoned_until = self.turn + 8
         self.molecule_waits = 0
+        self.planned_samples = ()
         if GAME_TURNS - self.turn <= 5:
             return "WAIT"
         return "GOTO DIAGNOSIS" if owned else "GOTO SAMPLES"
@@ -276,33 +293,99 @@ class Bot:
         self.molecule_waits = 0
         ready = self._ready_samples(owned, frame.me)
         if ready:
+            if self.planned_samples:
+                by_id = {sample.sample_id: sample for sample in owned}
+                sample = by_id[self.planned_samples[0]]
+                if sample in ready:
+                    return f"CONNECT {sample.sample_id}"
+                self.planned_samples = ()
             return f"CONNECT {self._best_laboratory_order(owned, frame)[0].sample_id}"
-        plan = self._best_plan(owned, frame, "LABORATORY", True)
+        plan = self._committed_plan(owned, frame, "LABORATORY")
+        if plan is None:
+            plan = self._best_plan(owned, frame, "LABORATORY", True)
         if plan is not None:
             if self._is_lemon(plan):
+                self.planned_samples = ()
                 return "GOTO DIAGNOSIS"
+            self.planned_samples = tuple(sample.sample_id for sample in plan.samples)
             return "GOTO MOLECULES"
         plan = self._best_plan(owned, frame, "LABORATORY", False)
-        if plan is not None and self._opponent_will_release(frame, plan):
+        if plan is not None:
             if self._is_lemon(plan):
+                self.planned_samples = ()
                 return "GOTO DIAGNOSIS"
+            self.planned_samples = tuple(sample.sample_id for sample in plan.samples)
             return "GOTO MOLECULES"
+        self.planned_samples = ()
         if owned:
-            return "GOTO DIAGNOSIS" if GAME_TURNS - self.turn > 12 else "WAIT"
+            if GAME_TURNS - self.turn <= 12:
+                return "WAIT"
+            possible = all(self._physically_possible(sample, frame.me) for sample in owned)
+            if possible and not self._finishable_fresh_rank(frame):
+                return "WAIT"
+            return "GOTO SAMPLES" if len(owned) < 3 and possible else "GOTO DIAGNOSIS"
         cloud = [sample for sample in frame.samples
                  if sample.carried_by == -1 and sample.health >= 0 and self.rejected_until.get(sample.sample_id, 0) <= self.turn]
         plan = self._best_plan(cloud, frame, "CLOUD", True)
         if plan is None:
-            potential = self._best_plan(cloud, frame, "CLOUD", False)
-            plan = potential if potential is not None and self._opponent_will_release(frame, potential) else None
-        expertise = sum(frame.me.expertise)
-        rank = 1 if expertise < 3 else 2 if expertise < 6 else 3
-        estimated_pickups = self._estimated_unknown_pickups((rank,), frame.me)
-        estimated_finish = 13 if estimated_pickups == 0 else 15 + estimated_pickups
-        if plan is not None \
-                and (plan.reward >= 20 or plan.value >= 25 or GAME_TURNS - self.turn < estimated_finish):
+            plan = self._best_plan(cloud, frame, "CLOUD", False)
+        rank = self._finishable_fresh_rank(frame)
+        if plan is not None and (plan.reward >= 20 or plan.value >= 25 or rank == 0):
             return "GOTO DIAGNOSIS"
-        return "GOTO SAMPLES" if GAME_TURNS - self.turn >= estimated_finish else "WAIT"
+        return "GOTO SAMPLES" if rank else "WAIT"
+
+    def _committed_plan(self, owned: list[Sample], frame: Frame, origin: str) -> Plan | None:
+        """Revalidates the exact owned batch previously selected for production.
+        :param owned: Supplies samples still carried by IGPro.
+        :param frame: Supplies the current game state.
+        :param origin: Identifies the current route origin.
+        :return: Provides the committed plan while feasible, or None after clearing it."""
+        if not self.planned_samples:
+            return None
+        by_id = {sample.sample_id: sample for sample in owned}
+        order = tuple(by_id[sample_id] for sample_id in self.planned_samples)
+        plan = self._evaluate_order(order, frame, origin, True, len(owned))
+        if plan is None:
+            potential = self._evaluate_order(order, frame, origin, False, len(owned))
+            plan = potential if potential is not None and self._opponent_will_release(frame, potential) \
+                and potential.turns + self._release_delay(frame, potential, origin) <= GAME_TURNS - self.turn else None
+        if plan is None:
+            self.planned_samples = ()
+        return plan
+
+    def _sample_ranks(self, frame: Frame) -> tuple[int, int, int]:
+        """Chooses an ordered three-sample portfolio from typed expertise and remaining time.
+        :param frame: Supplies expertise, storage, and the current turn horizon.
+        :return: Provides desired sample ranks in draw order."""
+        expertise = sum(frame.me.expertise)
+        if expertise < 6:
+            return (1, 1, 1)
+        if expertise < 10 or min(frame.me.expertise) == 0:
+            return (2, 2, 2)
+        if GAME_TURNS - self.turn < 45:
+            return (2, 2, 3)
+        return (3, 3, 3) if min(frame.me.expertise) >= 2 and self._estimated_unknown_pickups((3, 3, 3), frame.me) <= 10 else (3, 2, 2)
+
+    def _finishable_fresh_rank(self, frame: Frame) -> int:
+        """Finds the strongest fresh single-sample route that fits the remaining game.
+        :param frame: Supplies expertise, storage, and the current turn horizon.
+        :return: Provides the selected rank, or zero when none fits."""
+        for rank in range(self._sample_ranks(frame)[0], 0, -1):
+            pickups = self._estimated_unknown_pickups((rank,), frame.me)
+            if pickups > 10:
+                continue
+            finish = 13 if pickups == 0 else 15 + pickups
+            if GAME_TURNS - self.turn >= finish:
+                return rank
+        return 0
+
+    def _physically_possible(self, sample: Sample, robot: Robot) -> bool:
+        """Checks whether one medicine can ever fit the molecule tray after expertise discounts.
+        :param sample: Supplies the diagnosed medicine costs.
+        :param robot: Supplies permanent expertise discounts.
+        :return: Indicates whether effective costs respect tray and distributor limits."""
+        need = tuple(max(sample.cost[index] - robot.expertise[index], 0) for index in range(5))
+        return sum(need) <= 10 and max(need) <= 5
 
     def _best_laboratory_order(self, owned: list[Sample], frame: Frame) -> tuple[Sample, ...]:
         """Finds the highest-value sequence executable from molecules already held.
@@ -316,8 +399,7 @@ class Bot:
             for order in permutations(diagnosed, size):
                 storage = list(frame.me.storage)
                 expertise = list(frame.me.expertise)
-                claimed = [self._dominates(frame.me.expertise, project) or self._dominates(frame.opponent.expertise, project)
-                           for project in self.projects]
+                claimed = [self._dominates(frame.me.expertise, project) or self._dominates(frame.opponent.expertise, project) for project in self.projects]
                 reward = 0
                 for step, sample in enumerate(order, 1):
                     need = tuple(max(sample.cost[index] - expertise[index], 0) for index in range(5))
@@ -341,7 +423,7 @@ class Bot:
                         before = self._project_deficit(frame.me.expertise, project)
                         after = self._project_deficit(tuple(expertise), project)
                         opponent = self._project_deficit(frame.opponent.expertise, project)
-                        progress += (before - after) * (6 if before <= opponent + 1 else 3)
+                        progress += (before - after) * (10 if before <= opponent + 1 else 5)
                     key = (reward + expertise_value + progress, reward, size, sum(storage), tuple(-sample.sample_id for sample in order))
                     if best_key is None or key > best_key:
                         best, best_key = order, key
@@ -352,7 +434,7 @@ class Bot:
         :param candidates: Supplies samples eligible for the batch.
         :param frame: Supplies robots and current molecule availability.
         :param origin: Identifies the route whose turn cost should be estimated.
-        :param require_available: Requires every planned pickup to be immediately available when true.
+        :param require_available: Requires current supply when true, or visible timely opponent release when false.
         :return: Provides the best feasible ordered batch, or None when no batch fits."""
         diagnosed = [sample for sample in candidates if sample.health >= 0]
         owned = sorted((sample for sample in diagnosed if sample.carried_by == 0), key=lambda item: item.sample_id)
@@ -363,7 +445,8 @@ class Bot:
         for size in range(1, min(3, len(eligible)) + 1):
             for order in permutations(eligible, size):
                 plan = self._evaluate_order(order, frame, origin, require_available, len(owned))
-                if plan is None:
+                if plan is None or not require_available and (not self._opponent_will_release(frame, plan)
+                                                               or plan.turns + self._release_delay(frame, plan, origin) > GAME_TURNS - self.turn):
                     continue
                 rate = plan.value * 1000 // plan.turns
                 stable = (sum(sample.carried_by == 0 for sample in order), -sum(plan.pickups), len(order), tuple(-sample.sample_id for sample in order))
@@ -417,28 +500,24 @@ class Bot:
         pre_lab = tuple(max(required[index], frame.me.storage[index]) for index in range(5))
         if sum(pre_lab) > 10:
             return None
+        cloud_count = sum(sample.carried_by == -1 for sample in order)
+        switches = cloud_count + max(0, owned_count + cloud_count - 3) if origin in {"DIAGNOSIS", "CLOUD", "SAMPLES_CLOUD"} else 0
         if require_available and any(pickups[index] > max(frame.available[index], 0) for index in range(5)):
             return None
-        if require_available and origin == "LABORATORY" and frame.opponent.target == "MOLECULES":
-            opponent_window = min(max(0, 3 - frame.opponent.eta), 10 - sum(frame.opponent.storage))
+        if require_available and origin in {"DIAGNOSIS", "LABORATORY"} and frame.opponent.target == "MOLECULES":
+            opponent_window = min(max(0, 3 + switches - frame.opponent.eta), 10 - sum(frame.opponent.storage))
             opponent_need = self._opponent_need(frame)
             if any(pickups[index] > max(frame.available[index] - min(opponent_need[index], opponent_window), 0) for index in range(5)):
                 return None
-        if not require_available \
-                and any(pickups[index] > max(frame.available[index] + frame.opponent.storage[index], 0) for index in range(5)):
+        if not require_available and any(pickups[index] > max(frame.available[index] + frame.opponent.storage[index], 0) for index in range(5)):
             return None
-        cloud_count = sum(sample.carried_by == -1 for sample in order)
-        switches = cloud_count + max(0, owned_count + cloud_count - 3) \
-            if origin in {"DIAGNOSIS", "CLOUD", "SAMPLES_CLOUD"} else 0
         pickup_count = sum(pickups)
-        route = {"DIAGNOSIS": (4, 6), "MOLECULES": (3, 3), "CLOUD": (8, 10), "SAMPLES_CLOUD": (7, 9),
-                 "LABORATORY": (6, 6)}[origin][pickup_count > 0]
+        route = {"DIAGNOSIS": (4, 6), "MOLECULES": (3, 3), "CLOUD": (8, 10), "SAMPLES_CLOUD": (7, 9), "LABORATORY": (6, 6)}[origin][pickup_count > 0]
         turns = route + pickup_count + len(order) + switches
         if turns > GAME_TURNS - self.turn:
             return None
         preparation = route + pickup_count + switches
-        reward += sum(50 for index, step in completed_projects.items()
-                      if preparation + step <= self._opponent_project_eta(frame, self.projects[index]))
+        reward += sum(50 for index, step in completed_projects.items() if preparation + step <= self._opponent_project_eta(frame, self.projects[index]))
         expertise_value = len(order) * (3 if GAME_TURNS - self.turn > 50 else 1 if GAME_TURNS - self.turn > 20 else 0)
         progress = 0
         for index, project in enumerate(self.projects):
@@ -447,12 +526,11 @@ class Bot:
             before = self._project_deficit(frame.me.expertise, project)
             after = self._project_deficit(tuple(expertise), project)
             opponent = self._project_deficit(frame.opponent.expertise, project)
-            progress += (before - after) * (6 if before <= opponent + 1 else 3)
+            progress += (before - after) * (10 if before <= opponent + 1 else 5)
         leftovers = sum(pre_lab[index] - required[index] for index in range(5))
         ownership = sum(sample.carried_by == -1 and sample.sample_id in self.diagnosed_by_me for sample in order)
-        batching = max(0, len(order) - 1) * 4
-        return Plan(order, tuple(required), pickups, reward,
-                    reward + expertise_value + progress + ownership + batching - leftovers * 2, turns)
+        batching = max(0, len(order) - 1) * 8
+        return Plan(order, tuple(required), pickups, reward, reward + expertise_value + progress + ownership + batching - leftovers * 2, turns)
 
     def _estimated_unknown_pickups(self, ranks: tuple[int, ...], robot: Robot) -> int:
         """Estimates batch pickups without treating expertise types as interchangeable.
@@ -488,9 +566,12 @@ class Bot:
         :param frame: Supplies the opponent route, storage, expertise, and samples.
         :param plan: Supplies pickups that exceed current distributor inventory.
         :return: Indicates whether visible production can replenish every shortage."""
-        if self.turn < self.release_abandoned_until or frame.opponent.target != "LABORATORY" or frame.opponent.eta > 2:
+        releasing = frame.opponent.target == "LABORATORY" and frame.opponent.eta <= 2 or frame.opponent.target == "MOLECULES" and frame.opponent.eta == 0
+        if self.turn < self.release_abandoned_until or not releasing:
             return False
         required = tuple(max(plan.pickups[index] - frame.available[index], 0) if plan.pickups[index] > 0 else 0 for index in range(5))
+        if not any(required):
+            return False
         samples = [sample for sample in frame.samples if sample.carried_by == 1 and sample.health >= 0]
         for size in range(1, len(samples) + 1):
             for order in permutations(samples, size):
@@ -508,6 +589,20 @@ class Bot:
                     if all(released[index] >= required[index] for index in range(5)):
                         return True
         return False
+
+    def _release_delay(self, frame: Frame, plan: Plan, origin: str) -> int:
+        """Estimates waits before visibly promised opponent molecules become available.
+        :param frame: Supplies the opponent module and arrival time.
+        :param plan: Supplies planned samples and pickups.
+        :param origin: Identifies the current route origin.
+        :return: Provides additional turns beyond the ordinary batch route."""
+        cloud_count = sum(sample.carried_by == -1 for sample in plan.samples)
+        switches = cloud_count + max(0, sum(sample.carried_by == 0 for sample in frame.samples) + cloud_count - 3) \
+            if origin in {"DIAGNOSIS", "CLOUD", "SAMPLES_CLOUD"} else 0
+        approach = {"MOLECULES": 0, "DIAGNOSIS": 3, "LABORATORY": 3, "CLOUD": 7, "SAMPLES_CLOUD": 6}[origin] + switches
+        production = 4 if frame.opponent.target == "MOLECULES" else frame.opponent.eta + 1
+        available_pickups = sum(min(plan.pickups[index], max(frame.available[index], 0)) for index in range(5))
+        return max(production - approach - available_pickups, 0)
 
     def _opponent_project_eta(self, frame: Frame, project: Vector) -> int:
         """Estimates the earliest visible turn on which the opponent can claim a project.
@@ -580,10 +675,11 @@ def main():
         action = bot.decide(frame)
         print(action, flush=True)
         owned = ";".join(f"{sample.sample_id}:{sample.rank}:{sample.gain}:{sample.health}:{sample.cost}" for sample in frame.samples if sample.carried_by == 0)
+        theirs = ";".join(f"{sample.sample_id}:{sample.rank}:{sample.gain}:{sample.health}:{sample.cost}" for sample in frame.samples if sample.carried_by == 1)
         me = f"{frame.me.score}:{frame.me.storage}:{frame.me.expertise}"
         opponent = f"{frame.opponent.target}:{frame.opponent.eta}:{frame.opponent.score}:{frame.opponent.storage}:{frame.opponent.expertise}"
-        print(f"t={bot.turn} module={frame.me.target} action={action} me={me} available={frame.available} opponent={opponent} owned={owned} " \
-              f"projects={bot.projects if bot.turn == 0 else ()}", file=stderr)
+        print(f"t={bot.turn} module={frame.me.target} action={action} me={me} available={frame.available} " \
+              f"opponent={opponent} owned={owned} theirs={theirs} planned={bot.planned_samples} projects={bot.projects if bot.turn == 0 else ()}", file=stderr)
         bot.turn += 1
 
 

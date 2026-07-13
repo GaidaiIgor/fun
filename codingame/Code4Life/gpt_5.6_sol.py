@@ -667,23 +667,36 @@ class Bot:
         switches = cloud_count + max(0, owned_count + cloud_count - 3) if origin in {"DIAGNOSIS", "CLOUD", "SAMPLES_CLOUD"} else 0
         if require_available and any(pickups[index] > max(frame.available[index], 0) for index in range(5)):
             return None
-        if require_available and origin in {"DIAGNOSIS", "LABORATORY"} and frame.opponent.target == "MOLECULES":
-            opponent_window = min(max(0, 3 + switches - frame.opponent.eta), 10 - sum(frame.opponent.storage))
+        if origin in {"DIAGNOSIS", "LABORATORY", "MOLECULES"} and frame.opponent.target == "MOLECULES":
+            arrival = 0 if origin == "MOLECULES" else 3 + switches
+            opponent_window = min(max(0, arrival - frame.opponent.eta), 10 - sum(frame.opponent.storage))
             opponent_need = self._opponent_need(frame)
             forecast = [max(amount, 0) for amount in frame.available]
-            if forecast_contention:
-                opponent_need = list(opponent_need)
-                for _ in range(opponent_window):
-                    choices = [index for index in range(5) if opponent_need[index] > 0 and forecast[index] > 0]
-                    if not choices:
-                        break
-                    index = min(choices, key=lambda item: (forecast[item] - opponent_need[item], forecast[item], item))
-                    forecast[index] -= 1
-                    opponent_need[index] -= 1
-            else:
-                forecast = [max(forecast[index] - min(opponent_need[index], opponent_window), 0) for index in range(5)]
-            if any(pickups[index] > forecast[index] for index in range(5)):
-                return None
+            visible_need = sum(opponent_need)
+            if len(order) == 1:
+                opponent_storage = sum(frame.opponent.storage)
+                for index in range(5):
+                    if pickups[index] < 4 or pickups[index] != forecast[index]:
+                        continue
+                    targeted = opponent_need[index] > 0
+                    denial_turn = frame.opponent.eta if targeted else frame.opponent.eta + visible_need
+                    capacity = opponent_storage < 10 if targeted else opponent_storage + visible_need < 10
+                    if capacity and max(denial_turn - arrival, 0) < pickups[index] - 1:
+                        return None
+            if require_available:
+                if forecast_contention:
+                    opponent_need = list(opponent_need)
+                    for _ in range(opponent_window):
+                        choices = [index for index in range(5) if opponent_need[index] > 0 and forecast[index] > 0]
+                        if not choices:
+                            break
+                        index = min(choices, key=lambda item: (forecast[item] - opponent_need[item], forecast[item], item))
+                        forecast[index] -= 1
+                        opponent_need[index] -= 1
+                else:
+                    forecast = [max(forecast[index] - min(opponent_need[index], opponent_window), 0) for index in range(5)]
+                if any(pickups[index] > forecast[index] for index in range(5)):
+                    return None
         if not require_available and any(pickups[index] > max(frame.available[index] + frame.opponent.storage[index], 0) for index in range(5)):
             return None
         pickup_count = sum(pickups)

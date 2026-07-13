@@ -3,10 +3,10 @@
 from dataclasses import dataclass
 from itertools import permutations
 from sys import stderr, stdin
-from typing import TextIO
+from typing import TextIO, TypeAlias
 
 
-type Vector = tuple[int, int, int, int, int]
+Vector: TypeAlias = tuple[int, int, int, int, int]
 
 MOLECULE_NAMES = ("A", "B", "C", "D", "E")
 MOLECULE_INDEX = {name: index for index, name in enumerate(MOLECULE_NAMES)} | {"0": -1}

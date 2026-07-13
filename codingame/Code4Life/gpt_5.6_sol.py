@@ -138,15 +138,19 @@ class Bot:
         if len(owned) == 3:
             return "GOTO DIAGNOSIS"
         expertise = sum(frame.me.expertise)
-        ranks = (1, 1, 1) if expertise < 3 else (2, 2, 1) if expertise < 6 else (3, 2, 2) if expertise < 10 else (3, 3, 3)
-        rank = ranks[len(owned)]
+        remaining = GAME_TURNS - self.turn
+        ranks = (1, 1, 1) if expertise < 3 else (2, 2, 1) if expertise < 6 else (3, 2, 2) if expertise < 10 \
+            else (3, 3, 2) if remaining < 45 else (3, 3, 3)
+        missing_ranks = list(ranks)
+        for sample in owned:
+            if sample.rank in missing_ranks:
+                missing_ranks.remove(sample.rank)
+        rank = missing_ranks[0]
         if expertise < 6 and sum(max(amount, 0) for amount in frame.available) < 8:
             rank = max(1, rank - 1)
-        if GAME_TURNS - self.turn < 35 and frame.me.score < frame.opponent.score:
-            rank = min(3, rank + 1)
-        unknown_after_draw = sum(sample.health < 0 for sample in owned) + 1
-        minimum_pickups = max(0, (3, 5, 7)[rank - 1] - expertise - sum(frame.me.storage))
-        minimum_finish = 9 + unknown_after_draw if minimum_pickups == 0 else 11 + unknown_after_draw + minimum_pickups
+        unknown_ranks = tuple(sample.rank for sample in owned if sample.health < 0) + (rank,)
+        estimated_pickups = self._estimated_unknown_pickups(unknown_ranks, frame.me)
+        estimated_finish = 8 + len(unknown_ranks) * 2 if estimated_pickups == 0 else 10 + len(unknown_ranks) * 2 + estimated_pickups
         cloud_plan = None
         if not owned:
             cloud = [sample for sample in frame.samples
@@ -157,9 +161,9 @@ class Bot:
                 cloud_plan = potential if potential is not None \
                     and self._opponent_will_release(frame, potential) else None
         if cloud_plan is not None \
-                and (GAME_TURNS - self.turn < minimum_finish or cloud_plan.reward >= (10, 20, 30)[rank - 1] or cloud_plan.value >= 35):
+                and (remaining < estimated_finish or cloud_plan.reward >= (10, 20, 30)[rank - 1] or cloud_plan.value >= 35):
             return "GOTO DIAGNOSIS"
-        if GAME_TURNS - self.turn < minimum_finish:
+        if remaining < estimated_finish:
             return "GOTO DIAGNOSIS" if owned else "WAIT"
         return f"CONNECT {rank}"
 
@@ -191,7 +195,8 @@ class Bot:
                 if len(owned) < 3:
                     return f"CONNECT {desired_cloud[0].sample_id}"
                 rejected = [sample for sample in owned if sample.sample_id not in target_ids]
-                sample = min(rejected, key=lambda item: self._candidate_score(item, frame))
+                sample = min(rejected, key=lambda item: (self._evaluate_order((item,), frame, "DIAGNOSIS", False, len(owned)) is not None,
+                                                          self._candidate_score(item, frame)))
                 target = desired_cloud[0]
                 if frame.opponent.target != "DIAGNOSIS" or frame.opponent.eta > 1 \
                         or frame.opponent.eta == 1 and target.sample_id in self.diagnosed_by_me:
@@ -200,10 +205,8 @@ class Bot:
         owned_plan = self._best_plan(owned, frame, "DIAGNOSIS", True)
         if owned_plan is not None:
             if self._is_lemon(owned_plan):
-                if len(owned) < 3:
-                    return "GOTO SAMPLES"
-                sample = min(owned, key=lambda item: self._candidate_score(item, frame))
-                self.rejected_until[sample.sample_id] = self.turn + 8
+                sample = owned_plan.samples[0]
+                self.rejected_until[sample.sample_id] = self.turn + 20
                 return f"CONNECT {sample.sample_id}"
             if not any(owned_plan.pickups) or GAME_TURNS - self.turn <= 12 and self._ready_samples(owned, frame.me):
                 return "GOTO LABORATORY"
@@ -213,11 +216,18 @@ class Bot:
             return "GOTO MOLECULES"
         if GAME_TURNS - self.turn <= 8:
             return "GOTO LABORATORY" if self._ready_samples(owned, frame.me) else "WAIT"
-        if len(owned) == 3:
-            sample = min(owned, key=lambda item: self._candidate_score(item, frame))
-            self.rejected_until[sample.sample_id] = self.turn + 8
+        if owned:
+            if GAME_TURNS - self.turn <= 12:
+                return "WAIT"
+            sample = min(owned, key=lambda item: (self._evaluate_order((item,), frame, "DIAGNOSIS", False, len(owned)) is not None,
+                                                  self._candidate_score(item, frame)))
+            self.rejected_until[sample.sample_id] = self.turn + 20
             return f"CONNECT {sample.sample_id}"
-        return "GOTO SAMPLES"
+        expertise = sum(frame.me.expertise)
+        rank = 1 if expertise < 3 else 2 if expertise < 6 else 3
+        estimated_pickups = self._estimated_unknown_pickups((rank,), frame.me)
+        estimated_finish = 13 if estimated_pickups == 0 else 15 + estimated_pickups
+        return "GOTO SAMPLES" if GAME_TURNS - self.turn >= estimated_finish else "WAIT"
 
     def _at_molecules(self, frame: Frame, owned: list[Sample]) -> str:
         """Collects the scarcest required molecule for the best current batch.
@@ -231,13 +241,13 @@ class Bot:
         if plan is not None:
             if self._is_lemon(plan):
                 self.molecule_waits = 0
-                return "GOTO SAMPLES" if len(owned) < 3 else "GOTO DIAGNOSIS"
+                return "GOTO DIAGNOSIS"
             choices = [index for index, amount in enumerate(plan.pickups) if amount > 0 and frame.available[index] > 0]
             if choices:
                 self.molecule_waits = 0
                 opponent_need = self._opponent_need(frame)
-                first = plan.samples[0]
-                first_missing = tuple(max(first.cost[index] - frame.me.expertise[index] - frame.me.storage[index], 0) for index in range(5))
+                first_missing = tuple(max(plan.samples[0].cost[index] - frame.me.expertise[index] - frame.me.storage[index], 0)
+                                      for index in range(5))
                 index = min(choices, key=lambda item: (max(frame.available[item], 0) - plan.pickups[item] - opponent_need[item],
                                                        0 if first_missing[item] else 1, frame.available[item], -plan.pickups[item], item))
                 return f"CONNECT {MOLECULE_NAMES[index]}"
@@ -270,15 +280,15 @@ class Bot:
         plan = self._best_plan(owned, frame, "LABORATORY", True)
         if plan is not None:
             if self._is_lemon(plan):
-                return "GOTO SAMPLES" if len(owned) < 3 else "GOTO DIAGNOSIS"
+                return "GOTO DIAGNOSIS"
             return "GOTO MOLECULES"
         plan = self._best_plan(owned, frame, "LABORATORY", False)
         if plan is not None and self._opponent_will_release(frame, plan):
             if self._is_lemon(plan):
-                return "GOTO SAMPLES" if len(owned) < 3 else "GOTO DIAGNOSIS"
+                return "GOTO DIAGNOSIS"
             return "GOTO MOLECULES"
         if owned:
-            return "GOTO DIAGNOSIS"
+            return "GOTO DIAGNOSIS" if GAME_TURNS - self.turn > 12 else "WAIT"
         cloud = [sample for sample in frame.samples
                  if sample.carried_by == -1 and sample.health >= 0 and self.rejected_until.get(sample.sample_id, 0) <= self.turn]
         plan = self._best_plan(cloud, frame, "CLOUD", True)
@@ -287,12 +297,12 @@ class Bot:
             plan = potential if potential is not None and self._opponent_will_release(frame, potential) else None
         expertise = sum(frame.me.expertise)
         rank = 1 if expertise < 3 else 2 if expertise < 6 else 3
-        minimum_pickups = max(0, (3, 5, 7)[rank - 1] - expertise - sum(frame.me.storage))
-        minimum_finish = 13 if minimum_pickups == 0 else 15 + minimum_pickups
+        estimated_pickups = self._estimated_unknown_pickups((rank,), frame.me)
+        estimated_finish = 13 if estimated_pickups == 0 else 15 + estimated_pickups
         if plan is not None \
-                and (plan.reward >= 20 or plan.value >= 25 or GAME_TURNS - self.turn < minimum_finish):
+                and (plan.reward >= 20 or plan.value >= 25 or GAME_TURNS - self.turn < estimated_finish):
             return "GOTO DIAGNOSIS"
-        return "GOTO SAMPLES" if GAME_TURNS - self.turn >= minimum_finish else "WAIT"
+        return "GOTO SAMPLES" if GAME_TURNS - self.turn >= estimated_finish else "WAIT"
 
     def _best_laboratory_order(self, owned: list[Sample], frame: Frame) -> tuple[Sample, ...]:
         """Finds the highest-value sequence executable from molecules already held.
@@ -409,6 +419,11 @@ class Bot:
             return None
         if require_available and any(pickups[index] > max(frame.available[index], 0) for index in range(5)):
             return None
+        if require_available and origin == "LABORATORY" and frame.opponent.target == "MOLECULES":
+            opponent_window = min(max(0, 3 - frame.opponent.eta), 10 - sum(frame.opponent.storage))
+            opponent_need = self._opponent_need(frame)
+            if any(pickups[index] > max(frame.available[index] - min(opponent_need[index], opponent_window), 0) for index in range(5)):
+                return None
         if not require_available \
                 and any(pickups[index] > max(frame.available[index] + frame.opponent.storage[index], 0) for index in range(5)):
             return None
@@ -438,6 +453,13 @@ class Bot:
         batching = max(0, len(order) - 1) * 4
         return Plan(order, tuple(required), pickups, reward,
                     reward + expertise_value + progress + ownership + batching - leftovers * 2, turns)
+
+    def _estimated_unknown_pickups(self, ranks: tuple[int, ...], robot: Robot) -> int:
+        """Estimates batch pickups without treating expertise types as interchangeable.
+        :param ranks: Supplies ranks of the undiagnosed samples in the prospective batch.
+        :param robot: Supplies current expertise and molecule storage.
+        :return: Provides a symmetric representative pickup estimate."""
+        return sum(max(sum(ranks) - len(ranks) * robot.expertise[index] - robot.storage[index], 0) for index in range(5))
 
     def _ready_samples(self, samples: list[Sample], robot: Robot) -> list[Sample]:
         """Selects diagnosed samples immediately producible from current storage.
@@ -557,7 +579,11 @@ def main():
     while (frame := read_frame(stdin)) is not None:
         action = bot.decide(frame)
         print(action, flush=True)
-        print(f"t={bot.turn} module={frame.me.target} action={action}", file=stderr)
+        owned = ";".join(f"{sample.sample_id}:{sample.rank}:{sample.gain}:{sample.health}:{sample.cost}" for sample in frame.samples if sample.carried_by == 0)
+        me = f"{frame.me.score}:{frame.me.storage}:{frame.me.expertise}"
+        opponent = f"{frame.opponent.target}:{frame.opponent.eta}:{frame.opponent.score}:{frame.opponent.storage}:{frame.opponent.expertise}"
+        print(f"t={bot.turn} module={frame.me.target} action={action} me={me} available={frame.available} opponent={opponent} owned={owned} " \
+              f"projects={bot.projects if bot.turn == 0 else ()}", file=stderr)
         bot.turn += 1
 
 

@@ -161,7 +161,7 @@ class Bot:
             estimated_pickups = self._estimated_unknown_pickups(unknown_ranks, frame.me)
             estimated_finish = 8 + len(unknown_ranks) * 2 if estimated_pickups == 0 \
                 else 10 + len(unknown_ranks) * 2 + estimated_pickups + 6 * ((estimated_pickups - 1) // 10)
-            if remaining >= estimated_finish:
+            if remaining >= estimated_finish + 2 * bool(carried_ranks and estimated_pickups == 0):
                 rank = candidate
                 break
         else:
@@ -672,16 +672,27 @@ class Bot:
             opponent_window = min(max(0, arrival - frame.opponent.eta), 10 - sum(frame.opponent.storage))
             opponent_need = self._opponent_need(frame)
             forecast = [max(amount, 0) for amount in frame.available]
-            visible_need = sum(opponent_need)
             if len(order) == 1:
+                visible_need = sum(opponent_need)
+                prior_need = max(visible_need - 1, 0)
+                denial_supply = tuple(max(forecast[index] - min(opponent_need[index], opponent_window), 0) for index in range(5))
+                future_need = tuple(max(opponent_need[index] - opponent_window, 0) for index in range(5))
                 opponent_storage = sum(frame.opponent.storage)
+                deadlines = {}
                 for index in range(5):
-                    if pickups[index] < 4 or pickups[index] != forecast[index]:
+                    if pickups[index] < 3 or pickups[index] != denial_supply[index]:
                         continue
                     targeted = opponent_need[index] > 0
-                    denial_turn = frame.opponent.eta if targeted else frame.opponent.eta + visible_need
-                    capacity = opponent_storage < 10 if targeted else opponent_storage + visible_need < 10
-                    if capacity and max(denial_turn - arrival, 0) < pickups[index] - 1:
+                    preceding = min(opponent_need[index], opponent_window) if targeted else prior_need
+                    denial_turn = frame.opponent.eta + preceding
+                    if opponent_storage + preceding < 10:
+                        deadlines[index] = max(denial_turn - arrival, 0) + 1
+                schedule = sorted((index for index in range(5) if pickups[index] > 0),
+                                  key=lambda index: (denial_supply[index] - pickups[index] - future_need[index], denial_supply[index], -pickups[index], index))
+                elapsed = 0
+                for index in schedule:
+                    elapsed += pickups[index]
+                    if index in deadlines and elapsed > deadlines[index]:
                         return None
             if require_available:
                 if forecast_contention:

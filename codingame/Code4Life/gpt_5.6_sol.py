@@ -161,7 +161,7 @@ class Bot:
             estimated_pickups = self._estimated_unknown_pickups(unknown_ranks, frame.me)
             estimated_finish = 8 + len(unknown_ranks) * 2 if estimated_pickups == 0 \
                 else 10 + len(unknown_ranks) * 2 + estimated_pickups + 6 * ((estimated_pickups - 1) // 10)
-            if remaining >= estimated_finish + 2 * bool(carried_ranks and estimated_pickups == 0):
+            if remaining >= estimated_finish + 2 * bool(carried_ranks):
                 rank = candidate
                 break
         else:
@@ -684,12 +684,12 @@ class Bot:
         switches = cloud_count + max(0, owned_count + cloud_count - 3) if origin in {"DIAGNOSIS", "CLOUD", "SAMPLES_CLOUD"} else 0
         if require_available and any(pickups[index] > max(frame.available[index], 0) for index in range(5)):
             return None
-        if origin in {"DIAGNOSIS", "LABORATORY", "MOLECULES"} and frame.opponent.target == "MOLECULES":
-            arrival = 0 if origin == "MOLECULES" else 3 + switches
+        if origin in {"DIAGNOSIS", "LABORATORY", "MOLECULES", "CLOUD"} and frame.opponent.target == "MOLECULES":
+            arrival = {"MOLECULES": 0, "DIAGNOSIS": 3, "LABORATORY": 3, "CLOUD": 7}[origin] + switches
             opponent_window = min(max(0, arrival - frame.opponent.eta), 10 - sum(frame.opponent.storage))
             opponent_need = self._opponent_need(frame)
             forecast = [max(amount, 0) for amount in frame.available]
-            if len(order) == 1:
+            if len(order) == 1 and origin != "CLOUD":
                 visible_need = sum(opponent_need)
                 prior_need = max(visible_need - 1, 0)
                 denial_supply = tuple(max(forecast[index] - min(opponent_need[index], opponent_window), 0) for index in range(5))

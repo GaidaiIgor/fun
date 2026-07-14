@@ -1,7 +1,7 @@
 """Plays the Roche Code4Life arena game with deadline-aware batch planning."""
 
 from dataclasses import dataclass
-from itertools import permutations
+from itertools import permutations, product
 from sys import stderr, stdin
 from typing import TextIO, TypeAlias
 
@@ -331,11 +331,7 @@ class Bot:
             self.planned_samples = tuple(sample.sample_id for sample in plan.samples)
             if choices:
                 self.molecule_waits = 0
-                opponent_need = self._opponent_need(frame)
-                first_missing = tuple(max(plan.samples[0].cost[index] - frame.me.expertise[index] - frame.me.storage[index], 0) for index in range(5))
-                index = min(choices, key=lambda item: (max(frame.available[item], 0) - plan.pickups[item] - opponent_need[item],
-                                                       0 if first_missing[item] else 1, frame.available[item], -plan.pickups[item], item))
-                return f"CONNECT {MOLECULE_NAMES[index]}"
+                return f"CONNECT {MOLECULE_NAMES[self._molecule_choice(plan, frame, choices)]}"
             if not any(plan.pickups):
                 self.molecule_waits = 0
                 return "GOTO LABORATORY"
@@ -359,6 +355,17 @@ class Bot:
         if GAME_TURNS - self.turn <= 5:
             return "WAIT"
         return "GOTO DIAGNOSIS" if owned else "GOTO SAMPLES"
+
+    def _molecule_choice(self, plan: Plan, frame: Frame, choices: list[int]) -> int:
+        """Chooses the scarcest planned molecule available for immediate collection.
+        :param plan: Supplies the current batch and outstanding pickups.
+        :param frame: Supplies shared inventory and opponent demand.
+        :param choices: Lists available required molecule indices.
+        :return: Provides the selected molecule index."""
+        opponent_need = self._opponent_need(frame)
+        first_missing = tuple(max(plan.samples[0].cost[index] - frame.me.expertise[index] - frame.me.storage[index], 0) for index in range(5))
+        return min(choices, key=lambda item: (max(frame.available[item], 0) - plan.pickups[item] - opponent_need[item],
+                                             0 if first_missing[item] else 1, frame.available[item], -plan.pickups[item], item))
 
     def _at_laboratory(self, frame: Frame, owned: list[Sample]) -> str:
         """Produces the best ready medicine or starts the next profitable route.
@@ -780,14 +787,16 @@ class Bot:
         required = tuple(max(plan.pickups[index] - frame.available[index], 0) if plan.pickups[index] > 0 else 0 for index in range(5))
         if self.turn < self.release_abandoned_until or not releasing or not any(required):
             return GAME_TURNS + 1
-        first_production = 4 if frame.opponent.target == "MOLECULES" else frame.opponent.eta + 1
         cloud_count = sum(sample.carried_by == -1 for sample in plan.samples)
         switches = cloud_count + max(0, sum(sample.carried_by == 0 for sample in frame.samples) + cloud_count - 3) \
             if origin in {"DIAGNOSIS", "CLOUD", "SAMPLES_CLOUD"} else 0
         approach = {"MOLECULES": 0, "DIAGNOSIS": 3, "LABORATORY": 3, "CLOUD": 7, "SAMPLES_CLOUD": 6}[origin] + switches
+        first_production = 4 if frame.opponent.target == "MOLECULES" else frame.opponent.eta + 1
         pickup_count = sum(plan.pickups)
-        initial = sum(min(plan.pickups[index], max(frame.available[index], 0)) for index in range(5))
+        available = tuple(max(amount, 0) for amount in frame.available)
+        initial = sum(min(plan.pickups[index], available[index]) for index in range(5))
         best = GAME_TURNS + 1
+        release_pools = []
         samples = [sample for sample in frame.samples if sample.carried_by == 1 and sample.health >= 0]
         for order in permutations(samples):
             storage = list(frame.opponent.storage)
@@ -806,8 +815,30 @@ class Bot:
                 ready.extend([first_production + step - 1] * (unlocked - len(ready)))
                 if len(ready) == pickup_count:
                     best = min(best, max((turn - approach - index for index, turn in enumerate(ready)), default=0))
+                    release_pools.append(tuple(available[index] + released[index] for index in range(5)))
                     break
-        return max(best, 0) if best <= GAME_TURNS else best
+        if best > GAME_TURNS:
+            return best
+        if frame.opponent.target == "MOLECULES" and frame.opponent.eta == 0 and sum(frame.opponent.storage) < 10:
+            standalone = [tuple(max(sample.cost[index] - frame.me.expertise[index] - frame.me.storage[index], 0) for index in range(5))
+                          for sample in plan.samples]
+            choices = [index for index, amount in enumerate(plan.pickups) if amount > 0 and frame.available[index] > 0]
+            secured = self._molecule_choice(plan, frame, choices) if origin == "MOLECULES" and choices else -1
+            opportunities = sum(min(plan.pickups[index], max(frame.available[index], 0)) for index in range(5))
+            theft_limit = min(10 - sum(frame.opponent.storage), opportunities if origin == "MOLECULES" else approach + 1)
+            for pool in release_pools:
+                costs = [tuple(max(pool[index] - need[index] + 1, 0) for index in range(5)) for need in standalone]
+                for assignment in product(range(5), repeat=len(plan.samples)):
+                    theft = [0, 0, 0, 0, 0]
+                    for sample_index, index in enumerate(assignment):
+                        cost = costs[sample_index][index]
+                        if cost and (index == secured and standalone[sample_index][index] <= 1 \
+                                or len(plan.samples) > 1 and plan.pickups[index] <= available[index]):
+                            cost = GAME_TURNS + 1
+                        theft[index] = max(theft[index], cost)
+                    if sum(theft) <= theft_limit and all(theft[index] <= available[index] for index in range(5)):
+                        return GAME_TURNS + 1
+        return max(best, 0)
 
     def _opponent_project_eta(self, frame: Frame, project: Vector) -> int:
         """Estimates the earliest visible turn on which the opponent can claim a project.

@@ -336,14 +336,15 @@ class Bot:
                     plan = alternative
                     choices = [index for index, amount in enumerate(plan.pickups) if amount > 0 and frame.available[index] > 0]
             self.planned_samples = tuple(sample.sample_id for sample in plan.samples)
+            denial = self._terminal_denial_choice(plan, frame)
+            if denial >= 0:
+                self.molecule_waits = 0
+                return f"CONNECT {MOLECULE_NAMES[denial]}"
             if choices:
                 self.molecule_waits = 0
                 return f"CONNECT {MOLECULE_NAMES[self._molecule_choice(plan, frame, choices)]}"
             if not any(plan.pickups):
                 self.molecule_waits = 0
-                denial = self._terminal_denial_choice(plan, frame)
-                if denial >= 0:
-                    return f"CONNECT {MOLECULE_NAMES[denial]}"
                 return "GOTO LABORATORY"
         ready = self._ready_samples(owned, frame.me)
         if ready:
@@ -378,27 +379,46 @@ class Bot:
                                              0 if first_missing[item] else 1, frame.available[item], -plan.pickups[item], item))
 
     def _terminal_denial_choice(self, plan: Plan, frame: Frame) -> int:
-        """Selects a spare-capacity molecule that can permanently block the opponent without sacrificing our final batch.
-        :param plan: Supplies the fully collected final owned batch.
-        :param frame: Supplies shared inventory and the opponent sample.
+        """Selects a spare molecule that permanently blocks the opponent without sacrificing our final batch.
+        :param plan: Supplies the finishable final owned batch.
+        :param frame: Supplies shared inventory and opponent samples.
         :return: Provides the molecule index to hoard, or -1 when denial is not guaranteed."""
         remaining = GAME_TURNS - self.turn
         owned_count = sum(sample.carried_by == 0 for sample in frame.samples)
-        opponent_count = sum(sample.carried_by == 1 and sample.health >= 0 for sample in frame.samples)
-        if remaining > 12 or frame.opponent.target != "MOLECULES" or len(plan.samples) != owned_count or opponent_count != 1 \
-                or plan.reward != sum(sample.health for sample in plan.samples):
+        if remaining > 12 or frame.opponent.target != "MOLECULES" or len(plan.samples) != owned_count \
+                or plan.reward != sum(sample.health for sample in plan.samples) \
+                or any(plan.pickups[index] > max(frame.available[index], 0) for index in range(5)):
             return -1
-        budget = min(remaining - plan.turns, 10 - sum(frame.me.storage))
-        opponent_need = self._opponent_need(frame)
-        if sum(opponent_need) > 10 - sum(frame.opponent.storage) or frame.opponent.eta + sum(opponent_need) + 4 > remaining \
-                or any(opponent_need[index] > max(frame.available[index], 0) for index in range(5)):
+        budget = min(remaining - plan.turns,
+                     10 - sum(max(plan.required[index], frame.me.storage[index]) for index in range(5)))
+        finishable = []
+        for sample in frame.samples:
+            if sample.carried_by != 1 or sample.health < 0:
+                continue
+            need = tuple(max(sample.cost[index] - frame.opponent.expertise[index] - frame.opponent.storage[index], 0)
+                         for index in range(5))
+            if sum(need) <= 10 - sum(frame.opponent.storage) and frame.opponent.eta + sum(need) + 4 <= remaining \
+                    and all(need[index] <= max(frame.available[index], 0) for index in range(5)):
+                finishable.append(need)
+        if len(finishable) != 1 or not any(finishable[0]):
             return -1
         choices = []
-        for index, need in enumerate(opponent_need):
+        capacity = 10 - sum(frame.opponent.storage)
+        for index, need in enumerate(finishable[0]):
             supply = max(frame.available[index], 0)
-            if not plan.required[index] and supply >= need > (supply + 1) // 2 and supply - need + 1 <= budget:
+            denial_turns = supply - need + 1
+            if plan.required[index] or not supply >= need > (supply + 1) // 2 or denial_turns > budget:
+                continue
+            for target, amount in enumerate(plan.pickups):
+                if not amount:
+                    continue
+                pool = max(frame.available[target], 0)
+                stolen = min(denial_turns, capacity, pool)
+                if pool - stolen < amount + min(capacity - stolen, amount - 1):
+                    break
+            else:
                 choices.append(index)
-        return min(choices, key=lambda index: (frame.available[index] - opponent_need[index], index), default=-1)
+        return min(choices, key=lambda index: (frame.available[index] - finishable[0][index], index), default=-1)
 
     def _at_laboratory(self, frame: Frame, owned: list[Sample]) -> str:
         """Produces the best ready medicine or starts the next profitable route.
@@ -693,6 +713,7 @@ class Bot:
     def _evaluate_order(self, order: tuple[Sample, ...], frame: Frame, origin: str, require_available: bool, owned_count: int,
                         forecast_contention: bool = False, preparation_delay: int = 0) -> Plan | None:
         """Simulates expertise, molecule use, projects, capacity, and route time for one batch order.
+        Treats one payoff-qualified opponent production as an expected, not guaranteed, routing delay.
         :param order: Supplies the proposed laboratory production order.
         :param frame: Supplies current robot and molecule state.
         :param origin: Identifies the route whose turn cost should be estimated.
@@ -723,16 +744,38 @@ class Bot:
         switches = cloud_count + max(0, owned_count + cloud_count - 3) if origin in {"DIAGNOSIS", "CLOUD", "SAMPLES_CLOUD"} else 0
         if require_available and any(pickups[index] > max(frame.available[index], 0) for index in range(5)):
             return None
-        if require_available and len(order) == 1 and order[0].carried_by == 0 and origin in {"DIAGNOSIS", "LABORATORY"} \
-                and frame.opponent.target in {"DIAGNOSIS", "LABORATORY"}:
+        singleton_race = require_available and len(order) == 1 and order[0].carried_by == 0 \
+            and origin in {"DIAGNOSIS", "LABORATORY"}
+        if singleton_race and frame.opponent.target == "MOLECULES":
             opponent_need = self._opponent_need(frame)
             capacity = 10 - sum(frame.opponent.storage)
+            lead = min(max(3 - frame.opponent.eta, 0), capacity)
             for index, amount in enumerate(pickups):
                 supply = max(frame.available[index], 0)
-                competing = min(opponent_need[index], capacity)
-                secured = min(amount, frame.opponent.eta, supply)
-                amount, supply = amount - secured, supply - secured
+                demand = opponent_need[index]
+                taken = min(demand, lead, supply)
+                competing = min(demand - taken, capacity - taken)
+                supply -= taken
                 if amount and supply < amount + min(competing, amount - 1):
+                    return None
+        if singleton_race and frame.opponent.target in {"DIAGNOSIS", "LABORATORY"}:
+            opponent_need = self._opponent_need(frame)
+            capacity = 10 - sum(frame.opponent.storage)
+            opponent_ready = self._ready_samples([sample for sample in frame.samples if sample.carried_by == 1 and sample.health >= 0],
+                                                 frame.opponent) if frame.opponent.target == "LABORATORY" else []
+            production_delay = not completed_projects and any(sample.health >= order[0].health for sample in opponent_ready)
+            for index, amount in enumerate(pickups):
+                initial_supply = max(frame.available[index], 0)
+                competing = min(opponent_need[index], capacity)
+                secured = min(amount, frame.opponent.eta, initial_supply)
+                amount, supply = amount - secured, initial_supply - secured
+                if amount and supply < amount + min(competing, amount - 1):
+                    return None
+                if opponent_need[index] or not capacity or pickups[index] != initial_supply:
+                    continue
+                secured = min(pickups[index], frame.opponent.eta + production_delay, initial_supply)
+                amount, supply = pickups[index] - secured, initial_supply - secured
+                if amount and supply < amount + min(1, amount - 1):
                     return None
         if origin in {"DIAGNOSIS", "LABORATORY", "MOLECULES", "CLOUD"} and frame.opponent.target == "MOLECULES":
             arrival = {"MOLECULES": 0, "DIAGNOSIS": 3, "LABORATORY": 3, "CLOUD": 7}[origin] + switches
@@ -742,15 +785,16 @@ class Bot:
             if len(order) == 1 and origin != "CLOUD":
                 visible_need = sum(opponent_need)
                 prior_need = max(visible_need - 1, 0)
+                immediate_race = arrival == frame.opponent.eta == 0 and visible_need <= 2
                 denial_supply = tuple(max(forecast[index] - min(opponent_need[index], opponent_window), 0) for index in range(5))
                 future_need = tuple(max(opponent_need[index] - opponent_window, 0) for index in range(5))
                 opponent_storage = sum(frame.opponent.storage)
                 deadlines = {}
                 for index in range(5):
                     targeted = opponent_need[index] > 0
-                    if pickups[index] < (3 if targeted else 2) or pickups[index] != denial_supply[index]:
+                    if pickups[index] < 2 or pickups[index] != denial_supply[index]:
                         continue
-                    preceding = min(opponent_need[index], opponent_window) if targeted else prior_need
+                    preceding = min(opponent_need[index], opponent_window) if targeted else 0 if immediate_race else prior_need
                     denial_turn = frame.opponent.eta + preceding
                     if opponent_storage + preceding < 10:
                         deadlines[index] = max(denial_turn - arrival, 0) + 1
@@ -828,7 +872,7 @@ class Bot:
                          - frame.opponent.storage[index], 0) for index in range(5))
 
     def _release_delay(self, frame: Frame, plan: Plan, origin: str) -> int:
-        """Estimates waits before visibly promised opponent molecules become available.
+        """Calculates a release delay guaranteed across every maximal valid opponent production branch.
         :param frame: Supplies the opponent module and arrival time.
         :param plan: Supplies planned samples and pickups.
         :param origin: Identifies the current route origin.
@@ -841,54 +885,56 @@ class Bot:
         switches = cloud_count + max(0, sum(sample.carried_by == 0 for sample in frame.samples) + cloud_count - 3) \
             if origin in {"DIAGNOSIS", "CLOUD", "SAMPLES_CLOUD"} else 0
         approach = {"MOLECULES": 0, "DIAGNOSIS": 3, "LABORATORY": 3, "CLOUD": 7, "SAMPLES_CLOUD": 6}[origin] + switches
-        first_production = 4 if frame.opponent.target == "MOLECULES" else frame.opponent.eta + 1
         pickup_count = sum(plan.pickups)
         available = tuple(max(amount, 0) for amount in frame.available)
+        theft_delay = 1 if frame.opponent.target == "MOLECULES" and frame.opponent.eta == 0 and origin != "MOLECULES" \
+            and sum(frame.opponent.storage) < 10 and any(available) else 0
+        first_production = 4 + theft_delay if frame.opponent.target == "MOLECULES" else frame.opponent.eta + 1
         initial = sum(min(plan.pickups[index], available[index]) for index in range(5))
-        best = GAME_TURNS + 1
+        worst = 0
         release_pools = []
         samples = [sample for sample in frame.samples if sample.carried_by == 1 and sample.health >= 0]
-        for order in permutations(samples):
-            storage = list(frame.opponent.storage)
-            expertise = list(frame.opponent.expertise)
-            released = [0, 0, 0, 0, 0]
-            ready = [0] * initial
-            for step, sample in enumerate(order, 1):
+        states = [(tuple(samples), frame.opponent.storage, frame.opponent.expertise, (0, 0, 0, 0, 0), (0,) * initial)]
+        while states:
+            remaining, storage, expertise, released, ready = states.pop()
+            produced = False
+            production = first_production + len(samples) - len(remaining)
+            for sample_index, sample in enumerate(remaining):
                 need = tuple(max(sample.cost[index] - expertise[index], 0) for index in range(5))
                 if any(need[index] > storage[index] for index in range(5)):
-                    break
-                for index in range(5):
-                    storage[index] -= need[index]
-                    released[index] += need[index]
-                expertise[sample.gain] += 1
-                unlocked = sum(min(plan.pickups[index], max(frame.available[index] + released[index], 0)) for index in range(5))
-                ready.extend([first_production + step - 1] * (unlocked - len(ready)))
-                if len(ready) == pickup_count:
-                    best = min(best, max((turn - approach - index for index, turn in enumerate(ready)), default=0))
-                    release_pools.append(tuple(available[index] + released[index] for index in range(5)))
-                    break
-        if best > GAME_TURNS:
-            return best
+                    continue
+                produced = True
+                next_storage = tuple(storage[index] - need[index] for index in range(5))
+                next_expertise = tuple(expertise[index] + (index == sample.gain) for index in range(5))
+                next_released = tuple(released[index] + need[index] for index in range(5))
+                unlocked = sum(min(plan.pickups[index], max(frame.available[index] + next_released[index], 0)) for index in range(5))
+                next_ready = ready + (production,) * (unlocked - len(ready))
+                if len(next_ready) < pickup_count:
+                    states.append((remaining[:sample_index] + remaining[sample_index + 1:], next_storage, next_expertise, next_released, next_ready))
+                    continue
+                worst = max(worst, max((turn - approach - index for index, turn in enumerate(next_ready)), default=0))
+                release_pools.append(tuple(max(frame.available[index] + next_released[index], 0) for index in range(5)))
+            if not produced:
+                return GAME_TURNS + 1
         if frame.opponent.target == "MOLECULES" and frame.opponent.eta == 0 and sum(frame.opponent.storage) < 10:
             standalone = [tuple(max(sample.cost[index] - frame.me.expertise[index] - frame.me.storage[index], 0) for index in range(5))
                           for sample in plan.samples]
             choices = [index for index, amount in enumerate(plan.pickups) if amount > 0 and frame.available[index] > 0]
             secured = self._molecule_choice(plan, frame, choices) if origin == "MOLECULES" and choices else -1
             opportunities = sum(min(plan.pickups[index], max(frame.available[index], 0)) for index in range(5))
-            theft_limit = min(10 - sum(frame.opponent.storage), opportunities if origin == "MOLECULES" else approach + 1)
+            theft_limit = min(10 - sum(frame.opponent.storage), opportunities if origin == "MOLECULES" else 1)
             for pool in release_pools:
                 costs = [tuple(max(pool[index] - need[index] + 1, 0) for index in range(5)) for need in standalone]
                 for assignment in product(range(5), repeat=len(plan.samples)):
                     theft = [0, 0, 0, 0, 0]
                     for sample_index, index in enumerate(assignment):
                         cost = costs[sample_index][index]
-                        if cost and (index == secured and standalone[sample_index][index] <= 1 \
-                                or len(plan.samples) > 1 and plan.pickups[index] <= available[index]):
+                        if cost and index == secured and standalone[sample_index][index] <= 1:
                             cost = GAME_TURNS + 1
                         theft[index] = max(theft[index], cost)
                     if sum(theft) <= theft_limit and all(theft[index] <= available[index] for index in range(5)):
                         return GAME_TURNS + 1
-        return max(best, 0)
+        return max(worst, 0)
 
     def _opponent_project_eta(self, frame: Frame, project: Vector) -> int:
         """Estimates the earliest visible turn on which the opponent can claim a project.

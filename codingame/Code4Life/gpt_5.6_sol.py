@@ -236,7 +236,13 @@ class Bot:
                 self.rejected_until[sample.sample_id] = self.turn + 20
                 return f"CONNECT {sample.sample_id}"
             if any(owned_plan.pickups) and GAME_TURNS - self.turn <= 12 and ready:
-                return "GOTO LABORATORY"
+                ready_plan = self._best_plan(ready, frame, "DIAGNOSIS", True)
+                shortage = any(owned_plan.pickups[index] > max(frame.available[index], 0) for index in range(5))
+                opponent_ready = self._ready_samples([sample for sample in frame.samples if sample.carried_by == 1], frame.opponent)
+                released = shortage and len(opponent_ready) == 1 and frame.opponent.target == "LABORATORY" and frame.opponent.eta == 0 \
+                    and owned_plan.reward > ready_plan.reward and self._release_delay(frame, owned_plan, "DIAGNOSIS") == 0
+                if not released:
+                    return "GOTO LABORATORY"
             expertise = list(frame.me.expertise)
             for sample in owned_plan.samples:
                 expertise[sample.gain] += 1
@@ -339,6 +345,8 @@ class Bot:
             if self.planned_samples and all(sample.sample_id != self.planned_samples[0] for sample in ready):
                 self.planned_samples = ()
             return "GOTO LABORATORY"
+        if frame.opponent.target == "LABORATORY" and frame.opponent.eta > 0:
+            self.molecule_waits = 0
         release_delay = self._release_delay(frame, plan, "MOLECULES") if plan is not None else GAME_TURNS + 1
         if plan is not None and self.molecule_waits < MOLECULE_WAIT_LIMIT \
                 and plan.turns + release_delay <= GAME_TURNS - self.turn and release_delay <= GAME_TURNS:
@@ -524,7 +532,7 @@ class Bot:
         return best
 
     def _best_routable_plan(self, candidates: list[Sample], frame: Frame, origin: str, prefix: tuple[int, ...] = ()) -> Plan | None:
-        """Finds an available batch or a safe zero-delay release extension.
+        """Finds the best currently supplied or safely release-backed batch.
         :param candidates: Supplies samples eligible for the batch.
         :param frame: Supplies robots and current molecule availability.
         :param origin: Identifies the route whose turn cost should be estimated.
@@ -549,8 +557,10 @@ class Bot:
             forecast = self._best_plan(candidates, frame, origin, True, prefix, True)
             if forecast is not None and self._plan_key(forecast) > self._plan_key(available):
                 available = forecast
-        if origin != "MOLECULES" and not prefix and candidates and any(available.pickups) \
-                and all(sample.carried_by == 0 for sample in candidates):
+        late_release = GAME_TURNS - self.turn <= 30 and frame.opponent.target == "LABORATORY" and frame.opponent.eta == 0 \
+            and len(self._ready_samples([sample for sample in frame.samples if sample.carried_by == 1], frame.opponent)) == 1
+        if origin != "MOLECULES" and not prefix and candidates and all(sample.carried_by == 0 for sample in candidates) \
+                and (any(available.pickups) or late_release):
             released = self._best_plan(candidates, frame, origin, False, wait_limit=0)
             if released is not None and self._plan_key(released) > self._plan_key(available):
                 available = released

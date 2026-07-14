@@ -564,6 +564,12 @@ class Bot:
             forecast = self._best_plan(candidates, frame, origin, True, prefix, True)
             if forecast is not None and self._plan_key(forecast) > self._plan_key(available):
                 available = forecast
+        cloud_fallback = not any(available.pickups) and any(sample.carried_by == -1 for sample in available.samples) \
+            and any(sample.carried_by == 0 for sample in candidates)
+        if origin != "MOLECULES" and not prefix and cloud_fallback:
+            released = self._best_plan([sample for sample in candidates if sample.carried_by == 0], frame, origin, False, wait_limit=0)
+            if released is not None and self._plan_key(released) > self._plan_key(available):
+                available = released
         late_release = GAME_TURNS - self.turn <= 30 and frame.opponent.target == "LABORATORY" and frame.opponent.eta == 0 \
             and len(self._ready_samples([sample for sample in frame.samples if sample.carried_by == 1], frame.opponent)) == 1
         if origin != "MOLECULES" and not prefix and candidates and all(sample.carried_by == 0 for sample in candidates) \

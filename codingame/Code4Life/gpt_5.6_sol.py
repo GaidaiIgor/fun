@@ -241,7 +241,9 @@ class Bot:
                 opponent_ready = self._ready_samples([sample for sample in frame.samples if sample.carried_by == 1], frame.opponent)
                 released = shortage and len(opponent_ready) == 1 and frame.opponent.target == "LABORATORY" and frame.opponent.eta == 0 \
                     and owned_plan.reward > ready_plan.reward and self._release_delay(frame, owned_plan, "DIAGNOSIS") == 0
-                if not released:
+                secure = frame.opponent.target != "MOLECULES" and owned_plan.reward > ready_plan.reward \
+                    and all(amount * 2 <= max(frame.available[index], 0) for index, amount in enumerate(owned_plan.pickups))
+                if not released and not secure:
                     return "GOTO LABORATORY"
             expertise = list(frame.me.expertise)
             for sample in owned_plan.samples:
@@ -708,9 +710,9 @@ class Bot:
                 opponent_storage = sum(frame.opponent.storage)
                 deadlines = {}
                 for index in range(5):
-                    if pickups[index] < 3 or pickups[index] != denial_supply[index]:
-                        continue
                     targeted = opponent_need[index] > 0
+                    if pickups[index] < (3 if targeted else 2) or pickups[index] != denial_supply[index]:
+                        continue
                     preceding = min(opponent_need[index], opponent_window) if targeted else prior_need
                     denial_turn = frame.opponent.eta + preceding
                     if opponent_storage + preceding < 10:

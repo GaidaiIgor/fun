@@ -268,8 +268,13 @@ class Bot:
                     return "WAIT"
                 if len(owned) < 3:
                     return "GOTO SAMPLES"
-            rejected = impossible or owned
-            sample = min(rejected, key=lambda item: self._candidate_score(item, frame))
+            if impossible:
+                sample = min(impossible, key=lambda item: self._candidate_score(item, frame))
+            else:
+                scores = {item: self._candidate_score(item, frame) for item in owned}
+                gaps = {item: 1 + sum(max(item.cost[index] - frame.me.expertise[index] - frame.me.storage[index] - max(frame.available[index], 0), 0)
+                                           for index in range(5)) for item in owned}
+                sample = min(owned, key=lambda item: (scores[item] / gaps[item], scores[item]))
             self.rejected_until[sample.sample_id] = self.turn + (20 if impossible else 8)
             return f"CONNECT {sample.sample_id}"
         return "GOTO SAMPLES" if self._finishable_fresh_rank(frame) else "WAIT"

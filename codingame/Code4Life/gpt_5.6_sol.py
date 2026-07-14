@@ -341,6 +341,9 @@ class Bot:
                 return f"CONNECT {MOLECULE_NAMES[self._molecule_choice(plan, frame, choices)]}"
             if not any(plan.pickups):
                 self.molecule_waits = 0
+                denial = self._terminal_denial_choice(plan, frame)
+                if denial >= 0:
+                    return f"CONNECT {MOLECULE_NAMES[denial]}"
                 return "GOTO LABORATORY"
         ready = self._ready_samples(owned, frame.me)
         if ready:
@@ -373,6 +376,29 @@ class Bot:
         first_missing = tuple(max(plan.samples[0].cost[index] - frame.me.expertise[index] - frame.me.storage[index], 0) for index in range(5))
         return min(choices, key=lambda item: (max(frame.available[item], 0) - plan.pickups[item] - opponent_need[item],
                                              0 if first_missing[item] else 1, frame.available[item], -plan.pickups[item], item))
+
+    def _terminal_denial_choice(self, plan: Plan, frame: Frame) -> int:
+        """Selects a spare-capacity molecule that can permanently block the opponent without sacrificing our final batch.
+        :param plan: Supplies the fully collected final owned batch.
+        :param frame: Supplies shared inventory and the opponent sample.
+        :return: Provides the molecule index to hoard, or -1 when denial is not guaranteed."""
+        remaining = GAME_TURNS - self.turn
+        owned_count = sum(sample.carried_by == 0 for sample in frame.samples)
+        opponent_count = sum(sample.carried_by == 1 and sample.health >= 0 for sample in frame.samples)
+        if remaining > 12 or frame.opponent.target != "MOLECULES" or len(plan.samples) != owned_count or opponent_count != 1 \
+                or plan.reward != sum(sample.health for sample in plan.samples):
+            return -1
+        budget = min(remaining - plan.turns, 10 - sum(frame.me.storage))
+        opponent_need = self._opponent_need(frame)
+        if sum(opponent_need) > 10 - sum(frame.opponent.storage) or frame.opponent.eta + sum(opponent_need) + 4 > remaining \
+                or any(opponent_need[index] > max(frame.available[index], 0) for index in range(5)):
+            return -1
+        choices = []
+        for index, need in enumerate(opponent_need):
+            supply = max(frame.available[index], 0)
+            if not plan.required[index] and supply >= need > (supply + 1) // 2 and supply - need + 1 <= budget:
+                choices.append(index)
+        return min(choices, key=lambda index: (frame.available[index] - opponent_need[index], index), default=-1)
 
     def _at_laboratory(self, frame: Frame, owned: list[Sample]) -> str:
         """Produces the best ready medicine or starts the next profitable route.
@@ -697,6 +723,17 @@ class Bot:
         switches = cloud_count + max(0, owned_count + cloud_count - 3) if origin in {"DIAGNOSIS", "CLOUD", "SAMPLES_CLOUD"} else 0
         if require_available and any(pickups[index] > max(frame.available[index], 0) for index in range(5)):
             return None
+        if require_available and len(order) == 1 and order[0].carried_by == 0 and origin in {"DIAGNOSIS", "LABORATORY"} \
+                and frame.opponent.target in {"DIAGNOSIS", "LABORATORY"}:
+            opponent_need = self._opponent_need(frame)
+            capacity = 10 - sum(frame.opponent.storage)
+            for index, amount in enumerate(pickups):
+                supply = max(frame.available[index], 0)
+                competing = min(opponent_need[index], capacity)
+                secured = min(amount, frame.opponent.eta, supply)
+                amount, supply = amount - secured, supply - secured
+                if amount and supply < amount + min(competing, amount - 1):
+                    return None
         if origin in {"DIAGNOSIS", "LABORATORY", "MOLECULES", "CLOUD"} and frame.opponent.target == "MOLECULES":
             arrival = {"MOLECULES": 0, "DIAGNOSIS": 3, "LABORATORY": 3, "CLOUD": 7}[origin] + switches
             opponent_window = min(max(0, arrival - frame.opponent.eta), 10 - sum(frame.opponent.storage))

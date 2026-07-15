@@ -216,9 +216,15 @@ class Planner:
             if best is None or best.new_cost > self.resources:
                 break
             selected.append(best.bundle)
+            previous_state = current_state
             current_state = self.replay_bundle_sequence(selected)
             current_result = self.score_state(current_state)
-            print(f"selected={best.number}", file=sys.stderr)
+            selected_text = self.state_delta_text(previous_state, current_state)
+            total_text = self.state_action_text(current_state)
+            total_score_gain = current_result.score - before_score
+            efficiency = total_score_gain / max(1, current_state.cost)
+            text = f"selected={best.number}; action={selected_text}; total bundle={total_text}; cost={current_state.cost}; "
+            print(f"{text}score gain={total_score_gain}; efficiency={efficiency:.3f}; resources left={self.resources - current_state.cost}", file=sys.stderr)
             print("\n" + self.status_debug(current_result), file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)

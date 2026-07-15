@@ -122,9 +122,10 @@ class SimulationResult:
 
 @dataclass(slots=True)
 class Candidate:
-    """Stores a possible greedy replacement for one pool."""
+    """Stores a possible greedy replacement for one pool, with number identifying its debug listing."""
     pool: PoolOwner
     bundle: Bundle
+    number: int
     total_score_gain: int
     total_cost: int
     new_score: int
@@ -215,15 +216,9 @@ class Planner:
             if best is None or best.new_cost > self.resources:
                 break
             selected.append(best.bundle)
-            previous_state = current_state
             current_state = self.replay_bundle_sequence(selected)
             current_result = self.score_state(current_state)
-            selected_text = self.state_delta_text(previous_state, current_state)
-            total_text = self.state_action_text(current_state)
-            total_score_gain = current_result.score - before_score
-            efficiency = total_score_gain / max(1, current_state.cost)
-            text = f"selected={best.pool}; action={selected_text}; total bundle={total_text}; cost={current_state.cost}; "
-            print(f"{text}score gain={total_score_gain}; efficiency={efficiency:.3f}; resources left={self.resources - current_state.cost}", file=sys.stderr)
+            print(f"selected={best.number}", file=sys.stderr)
             print("\n" + self.status_debug(current_result), file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
@@ -350,6 +345,7 @@ class Planner:
         """Returns the most efficient candidate in bundles for owner and group after selected, using current_state, current_result, and before_score."""
         plans = []
         seen = set()
+        print(f"Considering {owner}", file=sys.stderr)
         for bundle in bundles:
             if bundle.fingerprint == Bundle(owner).fingerprint and not bundle.path_edges:
                 continue
@@ -368,18 +364,18 @@ class Planner:
             plans.append((state.cost, bundle.rank_cost, bundle.label, bundle.fingerprint, bundle, state, action_text))
         best = None
         positive_cost = INF
-        for _, _, _, _, bundle, state, action_text in sorted(plans):
+        for bundle_number, (_, _, _, _, bundle, state, action_text) in enumerate(sorted(plans), 1):
             if state.cost > self.resources or state.cost > positive_cost and bundle.label != "pod-upgrade":
-                print(f"bundle: {owner}, {action_text}, -, {state.cost}, -", file=sys.stderr)
+                print(f"bundle {bundle_number}: {action_text}, -, {state.cost}, -", file=sys.stderr)
                 continue
             result = self.score_state(state)
             score_gain = result.score - current_result.score
             total_score_gain = result.score - before_score
             total_efficiency = total_score_gain / max(1, state.cost)
-            print(f"bundle: {owner}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
+            print(f"bundle {bundle_number}: {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
             if score_gain > 0:
                 positive_cost = min(positive_cost, state.cost)
-                candidate = Candidate(owner, bundle, total_score_gain, state.cost, result.score, state.cost)
+                candidate = Candidate(owner, bundle, bundle_number, total_score_gain, state.cost, result.score, state.cost)
                 if best is None or (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > \
                         (best.efficiency, best.total_score_gain, -best.new_cost):
                     best = candidate

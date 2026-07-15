@@ -401,11 +401,10 @@ class Planner:
         existing_path = self.shortest_existing_tube_path(pad_id, module_ids, state.tubes)
         if not existing_path:
             connections = self.connection_bundles(owner, group, module_ids, state)
-            if connections and all(any(not spec.pod_id for spec in bundle.pod_specs) for bundle in connections):
-                connections.extend(self.pod_connection_bundles(owner, group, module_ids, state))
-            connections.sort(key=lambda bundle: (bundle.rank_cost, tube_cost(self.buildings[pad_id], self.buildings[bundle.destination]), bundle.path_length))
             bundles.extend(connections)
             route_length = connections[0].path_length if connections else 1
+            if connections and all(any(not spec.pod_id for spec in bundle.pod_specs) for bundle in connections):
+                bundles.extend(self.pod_connection_bundles(owner, group, module_ids, state))
         else:
             route_length = len(existing_path) - 1
         bundles.extend(self.shortest_route_bundles(owner, group, module_ids, route_length, state))

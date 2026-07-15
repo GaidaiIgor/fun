@@ -70,7 +70,7 @@ class PodSpec:
 
 @dataclass(slots=True)
 class Bundle:
-    """Describes one selectable action bundle whose destination and path_length identify its transport route."""
+    """Describes one selectable action bundle whose destination, path_length, and path identify its transport route."""
     pool: PoolOwner
     rank_cost: int = 0
     tubes: tuple[Pair, ...] = ()
@@ -81,6 +81,7 @@ class Bundle:
     path_edges: tuple[Pair, ...] = ()
     destination: int = -1
     path_length: int = 0
+    path: tuple[int, ...] = ()
 
     @property
     def fingerprint(self) -> tuple:
@@ -124,8 +125,9 @@ class SimulationResult:
 
 @dataclass(slots=True)
 class Candidate:
-    """Stores a possible greedy replacement for one pool, with number identifying its debug listing."""
+    """Stores a possible greedy replacement whose pair and number identify its debug listing."""
     bundle: Bundle
+    pair: PoolOwner
     number: int
     points_gain: int
     cost: int
@@ -220,7 +222,7 @@ class Planner:
             total_text = self.state_action_text(current_state)
             score_gain = current_result.score - before_score
             efficiency = score_gain / max(1, current_state.cost)
-            text = f"selected={best.number}; bundle={total_text}; cost={current_state.cost}; "
+            text = f"selected={best.pair}, bundle {best.number}; bundle={total_text}; cost={current_state.cost}; "
             print(f"{text}score gain={score_gain}; efficiency={efficiency:.3f}; "
                 f"resources left={self.resources - current_state.cost}", file=sys.stderr)
             print("\n" + self.status_debug(current_result), file=sys.stderr)
@@ -320,37 +322,38 @@ class Planner:
         for pool in self.speed_pools():
             missing = self.buildings[pool[0]].demand[pool[1]] * 50 - current_result.speed_by_pool[pool]
             if missing > 0:
-                modules = [building.id for building in self.buildings.values() if building.kind == pool[1]]
-                pools.append((missing, (0, pool[0], pool[1]), pool, pool, modules))
+                modules = sorted(building.id for building in self.buildings.values() if building.kind == pool[1])
+                pools.append((missing, (0, pool[0], pool[1]), pool, [(module_id, pool, [module_id]) for module_id in modules]))
         for module in sorted(self.buildings.values(), key=lambda item: item.id):
             if module.kind <= 0:
                 continue
             missing = self.max_diversity(module.kind) - current_result.diversity_by_module[module.id]
             if missing <= 0:
                 continue
-            group = self.diversity_group(module, current_result)
-            if group:
-                pools.append((missing, (1, module.id), module.id, group, [module.id]))
+            groups = [pool for pool in self.speed_pools() if pool[1] == module.kind and not current_result.delivered_by_pool[pool]]
+            if groups:
+                pools.append((missing, (1, module.id), module.id, [(group, group, [module.id]) for group in groups]))
         pools.sort(key=lambda item: (-item[0], item[1]))
-        for _, _, owner, group, module_ids in pools:
-            candidate = self.next_candidate(owner, group, selected, current_state, current_result,
-                self.generate_bundles(owner, group, module_ids, current_state))
-            if candidate:
-                return candidate
+        for _, _, owner, pairs in pools:
+            print(f"Considering {owner}:", file=sys.stderr)
+            best = None
+            for pair, group, module_ids in pairs:
+                print(f"  Considering {pair}:", file=sys.stderr)
+                candidate = self.next_candidate(owner, pair, group, selected, current_state, current_result,
+                    self.generate_bundles(owner, group, module_ids, current_state))
+                if candidate and (best is None or (candidate.efficiency, candidate.points_gain, -candidate.cost) >
+                        (best.efficiency, best.points_gain, -best.cost)):
+                    best = candidate
+            if best:
+                return best
         return None
 
-    def diversity_group(self, module: Building, result: SimulationResult) -> Pool:
-        """Returns the largest speed group matching module with no deliveries in result."""
-        groups = [pool for pool in self.speed_pools() if pool[1] == module.kind and not result.delivered_by_pool[pool]]
-        return max(groups, key=lambda pool: (self.buildings[pool[0]].demand[pool[1]], -pool[0])) if groups else None
-
-    def next_candidate(self, owner: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
-            bundles: list[Bundle]) -> Candidate:
-        """Returns the most efficient candidate in bundles for owner and group after selected, using current_state and current_result."""
+    def next_candidate(self, owner: PoolOwner, pair: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState,
+            current_result: SimulationResult, bundles: list[Bundle]) -> Candidate:
+        """Returns the most efficient candidate in bundles for owner paired with pair and group after selected."""
         best = None
         seen = set()
         current_pool_score = current_result.speed_by_pool[owner] if isinstance(owner, tuple) else current_result.diversity_by_module[owner]
-        print(f"Considering {owner}", file=sys.stderr)
         plans = []
         for bundle in bundles:
             if bundle.fingerprint == Bundle(owner).fingerprint and not bundle.path_edges:
@@ -374,16 +377,18 @@ class Planner:
                     other.path_length < bundle.path_length and other_cost <= cost for other, _, _, other_cost in plans):
                 continue
             bundle_number += 1
+            path_text = ", ".join(map(str, bundle.path))
+            text = f"    bundle {bundle_number}: path=[{path_text}], action={action_text}, "
             if state.cost > self.resources:
-                print(f"bundle {bundle_number}: {action_text}, -, {cost}, -", file=sys.stderr)
+                print(f"{text}gain=-, cost={cost}, efficiency=-", file=sys.stderr)
                 continue
             result = self.score_state(state)
             pool_score = result.speed_by_pool[owner] if isinstance(owner, tuple) else result.diversity_by_module[owner]
             points_gain = pool_score - current_pool_score
             efficiency = points_gain / cost if cost > 0 else inf
-            print(f"bundle {bundle_number}: {action_text}, {points_gain}, {cost}, {efficiency:.3f}", file=sys.stderr)
+            print(f"{text}gain={points_gain}, cost={cost}, efficiency={efficiency:.3f}", file=sys.stderr)
             if points_gain > 0:
-                candidate = Candidate(bundle, bundle_number, points_gain, cost)
+                candidate = Candidate(bundle, pair, bundle_number, points_gain, cost)
                 if best is None or (candidate.efficiency, candidate.points_gain, -candidate.cost) > \
                         (best.efficiency, best.points_gain, -best.cost):
                     best = candidate
@@ -447,7 +452,7 @@ class Planner:
                 projected_tubes.update((edge, 1) for edge in path_edges)
                 route = self.shortest_existing_tube_path(group[0], [module_id], projected_tubes)
                 bundle = Bundle(owner, cost, tubes, pod_specs=specs, label="connect-pod", path_edges=path_edges, destination=module_id,
-                    path_length=len(route) - 1)
+                    path_length=len(route) - 1, path=tuple(route))
                 if best_order is None or order < best_order:
                     best_order = order
                     best = [bundle]
@@ -478,7 +483,7 @@ class Planner:
                 specs = (*base_bundle.pod_specs, spec)
                 cost = self.nominal_cost(base_bundle.tubes, specs, (), state)
                 bundles.append(Bundle(owner, cost, base_bundle.tubes, pod_specs=specs, label="focus", path_edges=path_edges,
-                    destination=base_bundle.destination, path_length=base_bundle.path_length))
+                    destination=base_bundle.destination, path_length=base_bundle.path_length, path=base_bundle.path))
             result = self.cached_simulate(projected)
             pod_edge = self.best_pod_edge(path_edges, result)
             upgrade_edge = self.best_counter_edge(path_edges, result.congestion_by_edge)
@@ -488,7 +493,7 @@ class Planner:
             if pod_edge != (-1, -1):
                 cost = self.nominal_cost(base_bundle.tubes, pod_specs, (), state)
                 pod_bundle = Bundle(owner, cost, base_bundle.tubes, pod_specs=pod_specs, label="pod", path_edges=path_edges,
-                    destination=base_bundle.destination, path_length=base_bundle.path_length)
+                    destination=base_bundle.destination, path_length=base_bundle.path_length, path=base_bundle.path)
                 bundles.append(pod_bundle)
                 pod_state = self.replay_bundle_on_state(state, pod_bundle)
                 pod_affordable = pod_state.cost <= self.resources
@@ -498,13 +503,14 @@ class Planner:
             if upgrade_edge != (-1, -1):
                 cost = self.nominal_cost(base_bundle.tubes, base_bundle.pod_specs, (upgrade_edge,), state)
                 upgrade_bundle = Bundle(owner, cost, base_bundle.tubes, pod_specs=base_bundle.pod_specs, upgrades=(upgrade_edge,),
-                    label="upgrade", path_edges=path_edges, destination=base_bundle.destination, path_length=base_bundle.path_length)
+                    label="upgrade", path_edges=path_edges, destination=base_bundle.destination, path_length=base_bundle.path_length,
+                    path=base_bundle.path)
                 bundles.append(upgrade_bundle)
                 upgrade_affordable = self.replay_bundle_on_state(state, upgrade_bundle).cost <= self.resources
             if pod_affordable and upgrade_affordable and pod_upgrade_edge != (-1, -1):
                 cost = self.nominal_cost(base_bundle.tubes, pod_specs, (pod_upgrade_edge,), state)
                 bundles.append(Bundle(owner, cost, base_bundle.tubes, pod_specs=pod_specs, upgrades=(pod_upgrade_edge,), label="pod-upgrade",
-                    path_edges=path_edges, destination=base_bundle.destination, path_length=base_bundle.path_length))
+                    path_edges=path_edges, destination=base_bundle.destination, path_length=base_bundle.path_length, path=base_bundle.path))
         return bundles
 
     def teleport_bundles(self, owner: PoolOwner, group: Pool, modules: list[int], state: PlanState) -> list[Bundle]:
@@ -513,8 +519,9 @@ class Planner:
         used = self.teleport_used_buildings(state.teleports)
         if pad_id in used:
             return []
-        return [Bundle(owner, TELEPORT_COST, teleport=(pad_id, module_id), label=f"teleport-{module_id}") for module_id in sorted(modules,
-            key=lambda item: tube_cost(self.buildings[pad_id], self.buildings[item])) if module_id not in used]
+        return [Bundle(owner, TELEPORT_COST, teleport=(pad_id, module_id), label=f"teleport-{module_id}", destination=module_id,
+            path=(pad_id, module_id)) for module_id in sorted(modules, key=lambda item: tube_cost(self.buildings[pad_id], self.buildings[item]))
+            if module_id not in used]
 
     def path_bundles(self, owner: PoolOwner, label: str, path: list[int], state: PlanState) -> list[Bundle]:
         """Builds owner tube-bundle variants named label along path using state."""
@@ -524,7 +531,7 @@ class Planner:
         tubes = tuple(unique_new_tubes(path, state.tubes))
         path_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
         return [Bundle(owner, self.nominal_cost(tubes, specs, (), state), tubes, pod_specs=tuple(specs), label=label, path_edges=path_edges,
-            destination=path[-1], path_length=len(path) - 1) for specs in spec_options]
+            destination=path[-1], path_length=len(path) - 1, path=tuple(path)) for specs in spec_options]
 
     def state_action_text(self, state: PlanState) -> str:
         """Formats final projected debug actions from state."""

@@ -222,8 +222,8 @@ class Planner:
             total_text = self.state_action_text(current_state)
             score_gain = current_result.score - before_score
             efficiency = score_gain / max(1, current_state.cost)
-            text = f"selected={best.pair}, bundle {best.number}; bundle={total_text}; cost={current_state.cost}; "
-            print(f"{text}score gain={score_gain}; efficiency={efficiency:.3f}; "
+            text = f"selected={best.pair}, bundle {best.number}; bundle={total_text}; gain={score_gain}; cost={current_state.cost}; "
+            print(f"{text}efficiency={efficiency:.3f}; "
                 f"resources left={self.resources - current_state.cost}", file=sys.stderr)
             print("\n" + self.status_debug(current_result), file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)

@@ -1324,7 +1324,7 @@ class Planner:
             for pad in self.landing_pads():
                 demand_text = ", ".join(f"{kind}x{count}" for kind, count in sorted(pad.demand.items()))
                 landings.append(f"landing {pad.id}: {demand_text}")
-            return "\n".join((*landings, stats))
+            return "\n".join((*landings, "", stats))
         return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
             f"score: {result.score}, resources: {self.resources - cost}\n{stats}"
 

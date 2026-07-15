@@ -16,8 +16,8 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 2 5;POD 1 AUTO(0-2, 2-3, 2-5);POD 2 AUTO(1-4);"
+OVERRIDE_MONTH = 1
+OVERRIDE_COMMAND = "TUBE 0 2; TUBE 2 5; TUBE 2 3; TUBE 3 4; TUBE 1 4; TUBE 4 6; POD 1 2 0 2 0 2 3 2 3 2 3 2 0 2 0 2 0 2 5 2 5; POD 2 3 4 3 4 1 4 1 4 1 4 1 4 1 4 6 4 6 4 3 2"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -914,13 +914,13 @@ class Planner:
                 queues[pad.id] = passengers
         return queues
 
-    def wanted_edges(self, distances: dict[int, dict[int, int]], graph: dict[int, list[int]]) -> dict[tuple[int, int], DirectedPair]:
-        """Returns the best directed tube edge for each building and astronaut type."""
+    def wanted_edges(self, distances: dict[int, dict[int, int]], graph: dict[int, list[int]]) -> dict[tuple[int, int], tuple[DirectedPair, ...]]:
+        """Returns every distance-reducing directed tube edge for each building and astronaut type."""
         wanted = {}
         for kind, kind_distances in distances.items():
             for building_id, distance in kind_distances.items():
                 options = [neighbor_id for neighbor_id in graph.get(building_id, []) if kind_distances[neighbor_id] < distance]
-                wanted[building_id, kind] = (building_id, min(options, key=lambda item: (kind_distances[item], item))) if options else (-1, -1)
+                wanted[building_id, kind] = tuple((building_id, neighbor_id) for neighbor_id in options)
         return wanted
 
     def teleport_phase(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], teleports: dict[int, int]):
@@ -970,13 +970,13 @@ class Planner:
             else:
                 del queues[building_id]
 
-    def directed_demand(self, queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], DirectedPair]) -> Counter[DirectedPair]:
-        """Counts best directed tube demand from queues under wanted_edges."""
+    def directed_demand(self, queues: dict[int, list[Passenger]],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]]) -> Counter[DirectedPair]:
+        """Counts all distance-reducing directed tube demand from queues under wanted_edges."""
         demand = Counter()
         for building_id, passengers in queues.items():
             for passenger in passengers:
-                move = wanted_edges[building_id, passenger.kind]
-                if move != (-1, -1):
+                for move in wanted_edges[building_id, passenger.kind]:
                     demand[move] += 1
         return demand
 
@@ -1110,7 +1110,7 @@ class Planner:
         return -1, -1
 
     def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]],
-            wanted_edges: dict[tuple[int, int], DirectedPair], state: PlanState, moves: dict[int, DirectedPair],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], state: PlanState, moves: dict[int, DirectedPair],
             pod_positions: dict[int, int], dynamic_current: dict[int, int], dynamic_paths: dict[int, list[int]], result: SimulationResult):
         """Boards passengers into moves, launches pods, and updates wait counters."""
         by_start = {}
@@ -1125,7 +1125,6 @@ class Planner:
             candidates = by_start.get(building_id, [])
             remaining = []
             for passenger in sorted(queues[building_id], key=lambda item: item.id):
-                wanted = wanted_edges[building_id, passenger.kind]
                 chosen_pod = 0
                 for pod_id, target_id in candidates:
                     if seats[pod_id] and distances[passenger.kind][target_id] < distances[passenger.kind][building_id]:
@@ -1136,7 +1135,7 @@ class Planner:
                     onboard.setdefault(chosen_pod, []).append(passenger)
                 else:
                     remaining.append(passenger)
-                    if wanted != (-1, -1):
+                    for wanted in wanted_edges[building_id, passenger.kind]:
                         wait_today[route_key(*wanted)] += 1
             if remaining:
                 queues[building_id] = remaining

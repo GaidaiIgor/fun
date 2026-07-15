@@ -16,8 +16,8 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "TUBE 0 3;POD 2 AUTO(0-2, 0-3)"
+OVERRIDE_MONTH = 1
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 2 5;POD 1 AUTO(0-2, 2-3, 2-5);POD 2 AUTO(1-4);"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -1320,7 +1320,11 @@ class Planner:
         demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
         stats = self.status_debug(result)
         if label == "before":
-            return stats
+            landings = []
+            for pad in self.landing_pads():
+                demand_text = ", ".join(f"{kind}x{count}" for kind, count in sorted(pad.demand.items()))
+                landings.append(f"landing {pad.id}: {demand_text}")
+            return "\n".join((*landings, stats))
         return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
             f"score: {result.score}, resources: {self.resources - cost}\n{stats}"
 

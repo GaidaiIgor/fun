@@ -406,16 +406,32 @@ class Planner:
         for pod_id, area in sorted(state.service_areas.items()):
             via_nodes = tuple(sorted({node for edge in area for node in edge}))
             path = self.cheapest_path_with_hop_limit(group[0], module_ids, MAX_TUBE_HOPS, state, via_nodes=via_nodes)
-            if not path:
-                continue
-            path_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
-            tubes = tuple(unique_new_tubes(path, state.tubes))
-            specs = (PodSpec(pod_id, frozenset(area | set(path_edges))),)
-            cost = self.nominal_cost(tubes, specs, (), state)
-            order = cost, len(path), pod_id, path
-            if best_order is None or order < best_order:
-                best_order = order
-                best = Bundle(owner, cost, tubes, pod_specs=specs, label="connect-pod", path_edges=path_edges)
+            routes = []
+            if path:
+                routes.append((tuple(route_key(a, b) for a, b in zip(path, path[1:])), path[-1]))
+            for module_id in module_ids:
+                base_path = self.cheapest_connecting_path(group[0], [module_id], state)
+                base_edges = tuple(route_key(a, b) for a, b in zip(base_path, base_path[1:]))
+                for junction_id in base_path:
+                    remaining_hops = MAX_TUBE_HOPS - len(base_edges)
+                    connector = [junction_id] if junction_id in via_nodes else \
+                        self.cheapest_path_with_hop_limit(junction_id, list(via_nodes), remaining_hops, state)
+                    if not connector:
+                        continue
+                    edges = tuple(dict.fromkeys((*base_edges, *(route_key(a, b) for a, b in zip(connector, connector[1:])))))
+                    if len(edges) <= MAX_TUBE_HOPS and self.can_add_tubes([edge for edge in edges if edge not in state.tubes], state.tubes):
+                        routes.append((edges, module_id))
+            for path_edges, module_id in routes:
+                tubes = tuple(edge for edge in path_edges if edge not in state.tubes)
+                specs = (PodSpec(pod_id, frozenset(area | set(path_edges))),)
+                cost = self.nominal_cost(tubes, specs, (), state)
+                source = self.buildings[group[0]]
+                target = self.buildings[module_id]
+                distance = (source.x - target.x) * (source.x - target.x) + (source.y - target.y) * (source.y - target.y)
+                order = cost, distance, len(path_edges), pod_id, path_edges
+                if best_order is None or order < best_order:
+                    best_order = order
+                    best = Bundle(owner, cost, tubes, pod_specs=specs, label="connect-pod", path_edges=path_edges)
         return best
 
     def shortest_route_bundle(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState, result: SimulationResult) -> Bundle:

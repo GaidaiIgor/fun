@@ -612,17 +612,16 @@ class Planner:
         for edges in active_by_pool.values():
             active_edges.update(edges)
         for pod_id in list(state.planned_pods):
-            active = active_by_pool.get(state.planned_pod_pools[pod_id], set())
             if pod_id in self.pods:
                 original = self.service_areas[pod_id]
                 selected = state.planned_pod_edges[pod_id]
-                state.service_areas[pod_id] = original | ((selected - original) & active) if original <= selected else \
-                    selected if selected & active or (original - selected) & active else set()
+                state.service_areas[pod_id] = original | ((selected - original) & active_edges) if original <= selected else \
+                    selected if selected & active_edges or (original - selected) & active_edges else set()
                 if state.service_areas[pod_id] == original:
                     self.remove_planned_pod(state, pod_id)
                     continue
             else:
-                state.service_areas[pod_id] &= state.planned_pod_edges[pod_id] & active
+                state.service_areas[pod_id] &= active_edges
             if state.service_areas[pod_id]:
                 state.pods[pod_id].service_area = state.service_areas[pod_id]
             else:

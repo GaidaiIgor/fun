@@ -206,19 +206,20 @@ class Planner:
         selected = []
         current_state = self.replay_bundle_sequence(selected)
         current_result = self.score_state(current_state)
+        before_score = current_result.score
         print("\n" + self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
         while True:
             best = self.best_candidate(selected, current_state, current_result)
             if best is None:
                 break
             selected.append(best.bundle)
-            previous_state = current_state
             current_state = self.replay_bundle_sequence(selected)
             current_result = self.score_state(current_state)
-            selected_text = self.state_delta_text(previous_state, current_state)
             total_text = self.state_action_text(current_state)
-            text = f"selected={best.number}; action={selected_text}; total bundle={total_text}; cost={best.cost}; "
-            print(f"{text}score gain={best.points_gain}; efficiency={best.efficiency:.3f}; "
+            score_gain = current_result.score - before_score
+            efficiency = score_gain / max(1, current_state.cost)
+            text = f"selected={best.number}; bundle={total_text}; cost={current_state.cost}; "
+            print(f"{text}score gain={score_gain}; efficiency={efficiency:.3f}; "
                 f"resources left={self.resources - current_state.cost}", file=sys.stderr)
             print("\n" + self.status_debug(current_result), file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)

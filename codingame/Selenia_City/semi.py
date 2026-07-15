@@ -548,7 +548,7 @@ class Planner:
             if len(area) <= 1 or not area & path_edge_set:
                 continue
             focused = area - {edge for edge in area if service_counts[edge] > 1}
-            if focused and focused & path_edge_set and focused != area and service_area_connected(focused):
+            if focused and focused != area and service_area_connected(focused):
                 specs.append(PodSpec(pod_id, frozenset(focused)))
         return specs
 
@@ -616,7 +616,8 @@ class Planner:
             if pod_id in self.pods:
                 original = self.service_areas[pod_id]
                 selected = state.planned_pod_edges[pod_id]
-                state.service_areas[pod_id] = original | ((selected - original) & active) if original <= selected else selected if selected & active else set()
+                state.service_areas[pod_id] = original | ((selected - original) & active) if original <= selected else \
+                    selected if selected & active or (original - selected) & active else set()
                 if state.service_areas[pod_id] == original:
                     self.remove_planned_pod(state, pod_id)
                     continue

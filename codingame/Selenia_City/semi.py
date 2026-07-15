@@ -223,7 +223,7 @@ class Planner:
             efficiency = total_score_gain / max(1, current_state.cost)
             text = f"selected={best.pool}; action={selected_text}; total bundle={total_text}; cost={current_state.cost}; "
             print(f"{text}score gain={total_score_gain}; efficiency={efficiency:.3f}; resources left={self.resources - current_state.cost}", file=sys.stderr)
-            print(self.pool_debug(current_result), file=sys.stderr)
+            print(self.status_debug(current_result), file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
@@ -1263,11 +1263,15 @@ class Planner:
     def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
         """Formats score diagnostics for label, result, and cost."""
         demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
-        stats = f"{self.pool_debug(result)}\n{self.diversity_debug(result)}"
+        stats = self.status_debug(result)
         if label == "before":
             return stats
         return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
             f"score: {result.score}, resources: {self.resources - cost}\n{stats}"
+
+    def status_debug(self, result: SimulationResult) -> str:
+        """Formats all speed-pool and diversity-module statistics in result."""
+        return f"{self.pool_debug(result)}\n{self.diversity_debug(result)}"
 
     def pool_debug(self, result: SimulationResult) -> str:
         """Formats speed and delivery diagnostics for each astronaut pool."""

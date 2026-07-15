@@ -16,9 +16,8 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2; TUBE 2 5; TUBE 2 3; TUBE 3 4; TUBE 1 4; TUBE 4 6; " \
-    "POD 1 2 0 2 0 2 3 2 3 2 3 2 0 2 0 2 0 2 5 2 5; POD 2 3 4 3 4 1 4 1 4 1 4 1 4 1 4 6 4 6 4 3 2"
+OVERRIDE_MONTH = -1
+OVERRIDE_COMMAND = "TUBE 0 2; TUBE 2 5; TUBE 2 3; TUBE 3 4; TUBE 1 4; TUBE 4 6; POD 1 AUTO(0-2, 2-3, 2-5); POD 2 AUTO(1-4, 3-4, 4-6)"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -577,37 +576,21 @@ class Planner:
             return [[]]
         path_edges = [route_key(a, b) for a, b in zip(path, path[1:])]
         service_counts = self.service_counts(state)
-        unserviced = [edge for edge in path_edges if service_counts[edge] == 0]
-        options = [([], set(), set(unserviced))]
-        complete = []
-        while options:
-            specs, used_pods, remaining = options.pop()
-            if not remaining:
-                complete.append(specs)
-                continue
-            edge = min(remaining)
-            pod_ids = self.best_adjacent_pods(edge, state, used_pods)
-            for pod_id in reversed(pod_ids):
-                area = set(state.service_areas[pod_id])
-                area.add(edge)
-                if service_area_connected(area):
-                    options.append(([*specs, PodSpec(pod_id, frozenset(area))], used_pods | {pod_id}, remaining - {edge}))
-            if pod_ids:
-                continue
-            area = set(path_edges)
-            if not service_area_connected(area):
-                continue
-            complete.append([*specs, PodSpec(0, frozenset(area))])
-        return complete
+        if all(service_counts[edge] for edge in path_edges):
+            return [[]]
+        area = set(path_edges)
+        pod_ids = self.best_adjacent_pods(area, state)
+        if pod_ids:
+            return [[PodSpec(pod_id, frozenset(state.service_areas[pod_id] | area))] for pod_id in pod_ids]
+        return [[PodSpec(0, frozenset(area))]]
 
-    def best_adjacent_pods(self, edge: Pair, state: PlanState, used_pods: set[int]) -> list[int]:
-        """Finds all equally preferred adjacent service pods for edge."""
+    def best_adjacent_pods(self, edges: set[Pair], state: PlanState) -> list[int]:
+        """Finds all equally preferred service pods adjacent to edges in state."""
+        edge_nodes = {node for edge in edges for node in edge}
         candidates = []
         for pod_id, area in state.service_areas.items():
-            if pod_id in used_pods:
-                continue
             nodes = {node for area_edge in area for node in area_edge}
-            if edge[0] in nodes or edge[1] in nodes:
+            if edge_nodes & nodes:
                 candidates.append((pod_id not in state.planned_pods, len(area), pod_id))
         if not candidates:
             return []

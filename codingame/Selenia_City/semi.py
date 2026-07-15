@@ -385,9 +385,8 @@ class Planner:
         bundles = []
         pad_id = group[0]
         if not self.shortest_existing_tube_path(pad_id, module_ids, state.tubes):
-            connection = self.connection_bundle(owner, group, module_ids, state)
-            if connection:
-                bundles.append(connection)
+            connections = [self.connection_bundle(owner, group, module_ids, state), self.pod_connection_bundle(owner, group, module_ids, state)]
+            bundles.extend(sorted((bundle for bundle in connections if bundle), key=lambda bundle: (bundle.rank_cost, bundle.label)))
         shortest = self.shortest_route_bundle(owner, group, module_ids, state, result)
         if shortest:
             bundles.append(shortest)
@@ -399,6 +398,25 @@ class Planner:
         """Builds owner and group the cheapest connection to module_ids from state."""
         path = self.cheapest_connecting_path(group[0], module_ids, state)
         return self.path_bundle(owner, "connect", path, state) if path else None
+
+    def pod_connection_bundle(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> Bundle:
+        """Builds owner and group the cheapest state connection to module_ids through an existing pod service area."""
+        best = None
+        best_order = None
+        for pod_id, area in sorted(state.service_areas.items()):
+            via_nodes = tuple(sorted({node for edge in area for node in edge}))
+            path = self.cheapest_path_with_hop_limit(group[0], module_ids, MAX_TUBE_HOPS, state, via_nodes=via_nodes)
+            if not path:
+                continue
+            path_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
+            tubes = tuple(unique_new_tubes(path, state.tubes))
+            specs = (PodSpec(pod_id, frozenset(area | set(path_edges))),)
+            cost = self.nominal_cost(tubes, specs, (), state)
+            order = cost, len(path), pod_id, path
+            if best_order is None or order < best_order:
+                best_order = order
+                best = Bundle(owner, cost, tubes, pod_specs=specs, label="connect-pod", path_edges=path_edges)
+        return best
 
     def shortest_route_bundle(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState, result: SimulationResult) -> Bundle:
         """Builds owner and group the shortest route to the most deficient module_ids destination using state and result."""
@@ -1125,32 +1143,34 @@ class Planner:
         return path
 
     def cheapest_path_with_hop_limit(self, start_id: int, targets: list[int], hop_limit: int, state: PlanState,
-            exact_hops: bool = False) -> list[int]:
-        """Searches buildable and existing tube paths up to hop_limit from start_id to targets."""
+            exact_hops: bool = False, via_nodes: tuple[int, ...] = ()) -> list[int]:
+        """Searches state paths from start_id to targets up to hop_limit, optionally with exact_hops and a required via_nodes visit."""
         target_set = set(targets)
+        via_set = set(via_nodes)
         edge_graph = self.build_candidate_edge_graph(state.tubes)
-        costs = {(start_id, 0): 0}
+        start_key = start_id, 0, not via_set or start_id in via_set
+        costs = {start_key: 0}
         parents = {}
-        queue = deque([(start_id, 0)])
+        queue = deque([start_key])
         while queue:
-            building_id, hops = queue.popleft()
+            building_id, hops, visited_via = queue.popleft()
             if hops >= hop_limit:
                 continue
             for neighbor_id, edge_cost in edge_graph.get(building_id, []):
                 next_hops = hops + 1
-                cost = costs[building_id, hops] + edge_cost
-                key = neighbor_id, next_hops
+                cost = costs[building_id, hops, visited_via] + edge_cost
+                key = neighbor_id, next_hops, visited_via or neighbor_id in via_set
                 if cost >= costs.get(key, INF):
                     continue
                 costs[key] = cost
-                parents[key] = building_id, hops
+                parents[key] = building_id, hops, visited_via
                 queue.append(key)
         best_key = None
         for target_id in target_set:
             for hops in range(1, hop_limit + 1):
-                if exact_hops and hops != hop_limit or (target_id, hops) not in costs:
+                key = target_id, hops, True
+                if exact_hops and hops != hop_limit or key not in costs:
                     continue
-                key = target_id, hops
                 candidate_order = costs[key], tube_cost(self.buildings[start_id], self.buildings[target_id])
                 best_order = (INF, INF) if best_key is None else (costs[best_key], tube_cost(self.buildings[start_id], self.buildings[best_key[0]]))
                 if candidate_order < best_order:

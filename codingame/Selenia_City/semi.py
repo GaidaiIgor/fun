@@ -288,10 +288,14 @@ class Planner:
             raise ValueError(f"unknown override action {command}")
 
     def apply_override_pod(self, state: PlanState, action: str):
-        """Applies one override POD action, resolving AUTO service areas through simulation later."""
+        """Applies one override POD action, rerouting an existing pod and resolving AUTO service areas through simulation later."""
         _, pod_text, route_text = action.split(maxsplit=2)
         pod_id = int(pod_text)
-        assert pod_id not in state.pods, f"override POD {pod_id} already exists"
+        if pod_id in state.pods:
+            del state.pods[pod_id]
+            del state.service_areas[pod_id]
+            state.cost -= POD_REFUND
+            state.actions.append(f"DESTROY {pod_id}")
         if route_text.startswith("AUTO("):
             area = parse_auto_area(route_text)
             for edge in area:

@@ -391,14 +391,13 @@ class Planner:
         module_ids = [building.id for building in self.buildings.values() if building.kind == astronaut_type]
         demand = sum(pad.demand[astronaut_type] for pad in self.landing_pads())
         max_diversity = sum(max(0, 50 - index) for index in range(demand))
-        module_ids.sort(key=lambda module_id: (result.diversity_by_module[module_id] - max_diversity, module_id))
-        existing_path = self.shortest_existing_tube_path(pad_id, module_ids, state.tubes)
+        module_id = max(module_ids, key=lambda item: (max_diversity - result.diversity_by_module[item], -item))
+        existing_path = self.shortest_existing_tube_path(pad_id, [module_id], state.tubes)
         existing_length = len(existing_path) - 1 if existing_path else INF
         for hop_count in range(1, min(existing_length - 1, MAX_TUBE_HOPS) + 1):
-            for module_id in module_ids:
-                path = self.cheapest_hop_path(pad_id, [module_id], hop_count, state)
-                if path:
-                    return self.path_bundle(pool, f"short-{hop_count}", path, state)
+            path = self.cheapest_hop_path(pad_id, [module_id], hop_count, state)
+            if path:
+                return self.path_bundle(pool, f"short-{hop_count}", path, state)
         return None
 
     def existing_path_upgrade_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:

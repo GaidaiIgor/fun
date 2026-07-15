@@ -348,7 +348,7 @@ class Planner:
     def next_candidate(self, owner: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
             before_score: int, bundles: list[Bundle]) -> Candidate:
         """Returns the most efficient candidate in bundles for owner and group after selected, using current_state, current_result, and before_score."""
-        best = None
+        plans = []
         seen = set()
         for bundle in bundles:
             if bundle.fingerprint == Bundle(owner).fingerprint and not bundle.path_edges:
@@ -365,7 +365,11 @@ class Planner:
             action_text = self.state_delta_text(current_state, state)
             if action_text == "WAIT":
                 continue
-            if state.cost > self.resources:
+            plans.append((state.cost, bundle.rank_cost, bundle.label, bundle.fingerprint, bundle, state, action_text))
+        best = None
+        positive_cost = INF
+        for _, _, _, _, bundle, state, action_text in sorted(plans):
+            if state.cost > self.resources or state.cost > positive_cost and bundle.label != "pod-upgrade":
                 print(f"bundle: {owner}, {action_text}, -, {state.cost}, -", file=sys.stderr)
                 continue
             result = self.score_state(state)
@@ -374,6 +378,7 @@ class Planner:
             total_efficiency = total_score_gain / max(1, state.cost)
             print(f"bundle: {owner}, {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
             if score_gain > 0:
+                positive_cost = min(positive_cost, state.cost)
                 candidate = Candidate(owner, bundle, total_score_gain, state.cost, result.score, state.cost)
                 if best is None or (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > \
                         (best.efficiency, best.total_score_gain, -best.new_cost):

@@ -208,7 +208,7 @@ class Planner:
         current_state = self.replay_bundle_sequence(selected)
         current_result = self.score_state(current_state)
         before_score = current_result.score
-        print(self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
+        print("\n" + self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
         while True:
             best = self.best_candidate(selected, current_state, current_result, before_score)
             if best is None or best.new_cost > self.resources:
@@ -223,12 +223,12 @@ class Planner:
             efficiency = total_score_gain / max(1, current_state.cost)
             text = f"selected={best.pool}; action={selected_text}; total bundle={total_text}; cost={current_state.cost}; "
             print(f"{text}score gain={total_score_gain}; efficiency={efficiency:.3f}; resources left={self.resources - current_state.cost}", file=sys.stderr)
-            print(self.status_debug(current_result), file=sys.stderr)
+            print("\n" + self.status_debug(current_result), file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
         self.service_areas = {pod_id: set(pod.service_area) for pod_id, pod in final_state.pods.items() if pod.service_area}
-        print(self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
+        print("\n" + self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
         action_order = {"TUBE": 0, "TELEPORT": 0, "UPGRADE": 1, "DESTROY": 2, "POD": 3}
         return sorted((action for action in final_state.actions if action), key=lambda action: action_order[action.split()[0]])
 
@@ -236,13 +236,13 @@ class Planner:
         """Applies OVERRIDE_COMMAND for the current month and resolves AUTO pod routes."""
         current_state = self.replay_bundle_sequence([])
         current_result = self.score_state(current_state)
-        print(self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
+        print("\n" + self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
         final_state = self.override_state(OVERRIDE_COMMAND)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
         self.service_areas = {pod_id: set(pod.service_area) for pod_id, pod in final_state.pods.items() if pod.service_area}
         print(f"override month {self.month + 1}: {OVERRIDE_COMMAND}", file=sys.stderr)
-        print(self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
+        print("\n" + self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
         return [action for action in final_state.actions if action]
 
     def override_state(self, command: str) -> PlanState:

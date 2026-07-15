@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from dataclasses import dataclass, field
-from math import isqrt
+from math import inf, isqrt
 import sys
 
 MONTH_DAYS = 20
@@ -16,7 +16,7 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = 1
+OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 2 5;POD 1 AUTO(0-2, 2-3, 2-5);POD 2 AUTO(1-4);"
 
 Pair = tuple[int, int]
@@ -123,18 +123,15 @@ class SimulationResult:
 @dataclass(slots=True)
 class Candidate:
     """Stores a possible greedy replacement for one pool, with number identifying its debug listing."""
-    pool: PoolOwner
     bundle: Bundle
     number: int
-    total_score_gain: int
-    total_cost: int
-    new_score: int
-    new_cost: int
+    points_gain: int
+    cost: int
 
     @property
     def efficiency(self) -> float:
-        """Returns total_score_gain per total_cost."""
-        return self.total_score_gain / max(1, self.total_cost)
+        """Returns marginal pool points_gain per marginal cost."""
+        return self.points_gain / self.cost if self.cost > 0 else inf
 
 
 class Planner:
@@ -209,11 +206,10 @@ class Planner:
         selected = []
         current_state = self.replay_bundle_sequence(selected)
         current_result = self.score_state(current_state)
-        before_score = current_result.score
         print("\n" + self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
         while True:
-            best = self.best_candidate(selected, current_state, current_result, before_score)
-            if best is None or best.new_cost > self.resources:
+            best = self.best_candidate(selected, current_state, current_result)
+            if best is None:
                 break
             selected.append(best.bundle)
             previous_state = current_state
@@ -221,10 +217,9 @@ class Planner:
             current_result = self.score_state(current_state)
             selected_text = self.state_delta_text(previous_state, current_state)
             total_text = self.state_action_text(current_state)
-            total_score_gain = current_result.score - before_score
-            efficiency = total_score_gain / max(1, current_state.cost)
-            text = f"selected={best.number}; action={selected_text}; total bundle={total_text}; cost={current_state.cost}; "
-            print(f"{text}score gain={total_score_gain}; efficiency={efficiency:.3f}; resources left={self.resources - current_state.cost}", file=sys.stderr)
+            text = f"selected={best.number}; action={selected_text}; total bundle={total_text}; cost={best.cost}; "
+            print(f"{text}score gain={best.points_gain}; efficiency={best.efficiency:.3f}; "
+                f"resources left={self.resources - current_state.cost}", file=sys.stderr)
             print("\n" + self.status_debug(current_result), file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
@@ -316,8 +311,8 @@ class Planner:
         state.pods[pod_id] = PodPlan(pod_id, path, area, False)
         state.actions.append(action)
 
-    def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult, before_score: int) -> Candidate:
-        """Finds the best candidate from selected, current_state, current_result, and before_score by missing points."""
+    def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult) -> Candidate:
+        """Finds the best candidate from selected, current_state, and current_result by missing points."""
         pools = []
         for pool in self.speed_pools():
             missing = self.buildings[pool[0]].demand[pool[1]] * 50 - current_result.speed_by_pool[pool]
@@ -335,7 +330,7 @@ class Planner:
                 pools.append((missing, (1, module.id), module.id, group, [module.id]))
         pools.sort(key=lambda item: (-item[0], item[1]))
         for _, _, owner, group, module_ids in pools:
-            candidate = self.next_candidate(owner, group, selected, current_state, current_result, before_score,
+            candidate = self.next_candidate(owner, group, selected, current_state, current_result,
                 self.generate_bundles(owner, group, module_ids, current_state, current_result))
             if candidate:
                 return candidate
@@ -347,11 +342,12 @@ class Planner:
         return max(groups, key=lambda pool: (self.buildings[pool[0]].demand[pool[1]], -pool[0])) if groups else None
 
     def next_candidate(self, owner: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
-            before_score: int, bundles: list[Bundle]) -> Candidate:
-        """Returns the most efficient candidate in bundles for owner and group after selected, using current_state, current_result, and before_score."""
+            bundles: list[Bundle]) -> Candidate:
+        """Returns the most efficient candidate in bundles for owner and group after selected, using current_state and current_result."""
         best = None
         seen = set()
         bundle_number = 0
+        current_pool_score = current_result.speed_by_pool[owner] if isinstance(owner, tuple) else current_result.diversity_by_module[owner]
         print(f"Considering {owner}", file=sys.stderr)
         for bundle in bundles:
             if bundle.fingerprint == Bundle(owner).fingerprint and not bundle.path_edges:
@@ -369,18 +365,19 @@ class Planner:
             if action_text == "WAIT":
                 continue
             bundle_number += 1
+            cost = state.cost - current_state.cost
             if state.cost > self.resources:
-                print(f"bundle {bundle_number}: {action_text}, -, {state.cost}, -", file=sys.stderr)
+                print(f"bundle {bundle_number}: {action_text}, -, {cost}, -", file=sys.stderr)
                 continue
             result = self.score_state(state)
-            score_gain = result.score - current_result.score
-            total_score_gain = result.score - before_score
-            total_efficiency = total_score_gain / max(1, state.cost)
-            print(f"bundle {bundle_number}: {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
-            if score_gain > 0:
-                candidate = Candidate(owner, bundle, bundle_number, total_score_gain, state.cost, result.score, state.cost)
-                if best is None or (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > \
-                        (best.efficiency, best.total_score_gain, -best.new_cost):
+            pool_score = result.speed_by_pool[owner] if isinstance(owner, tuple) else result.diversity_by_module[owner]
+            points_gain = pool_score - current_pool_score
+            efficiency = points_gain / cost if cost > 0 else inf
+            print(f"bundle {bundle_number}: {action_text}, {points_gain}, {cost}, {efficiency:.3f}", file=sys.stderr)
+            if points_gain > 0:
+                candidate = Candidate(bundle, bundle_number, points_gain, cost)
+                if best is None or (candidate.efficiency, candidate.points_gain, -candidate.cost) > \
+                        (best.efficiency, best.points_gain, -best.cost):
                     best = candidate
         return best
 

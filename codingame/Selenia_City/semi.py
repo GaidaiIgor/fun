@@ -17,7 +17,8 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2; TUBE 2 5; TUBE 2 3; TUBE 3 4; TUBE 1 4; TUBE 4 6; POD 1 2 0 2 0 2 3 2 3 2 3 2 0 2 0 2 0 2 5 2 5; POD 2 3 4 3 4 1 4 1 4 1 4 1 4 1 4 6 4 6 4 3 2"
+OVERRIDE_COMMAND = "TUBE 0 2; TUBE 2 5; TUBE 2 3; TUBE 3 4; TUBE 1 4; TUBE 4 6; " \
+    "POD 1 2 0 2 0 2 3 2 3 2 3 2 0 2 0 2 0 2 5 2 5; POD 2 3 4 3 4 1 4 1 4 1 4 1 4 1 4 6 4 6 4 3 2"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -849,7 +850,7 @@ class Planner:
 
     def simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         """Simulates one month of astronaut movement through state."""
-        distances = self.distances_to_types(state)
+        distances, module_distances = self.distances_to_targets(state)
         graph = tube_graph(state.tubes)
         wanted_edges = self.wanted_edges(distances, graph)
         queues = self.initial_queues(distances)
@@ -862,22 +863,24 @@ class Planner:
         dynamic_current = {pod_id: -1 for pod_id, _ in dynamic_pods}
         dynamic_paths = {pod_id: [] for pod_id, _ in dynamic_pods}
         module_arrivals = Counter()
+        reservations = {}
         for day in range(MONTH_DAYS):
             self.teleport_phase(queues, distances, state.teleports)
             self.settle(day, queues, module_arrivals, result)
-            demand = self.directed_demand(queues, wanted_edges)
+            demand, priorities = self.prioritized_demand(queues, wanted_edges, distances, module_distances, module_arrivals, reservations)
             if not demand:
                 break
-            requests = self.pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, demand, graph, service_counts, service_graphs)
-            moves = self.allocate_tube_capacity(requests, state, demand, result, service_counts)
+            requests = self.pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, demand, priorities, graph, service_counts,
+                service_graphs)
+            moves = self.allocate_tube_capacity(requests, state, demand, priorities, result, service_counts)
             self.board_and_launch(queues, distances, wanted_edges, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
             self.settle(day + 1, queues, module_arrivals, result)
         if keep_dynamic_paths:
             result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
         return result
 
-    def distances_to_types(self, state: PlanState) -> dict[int, dict[int, int]]:
-        """Calculates shortest distances from every building to each demanded module type."""
+    def distances_to_targets(self, state: PlanState) -> tuple[dict[int, dict[int, int]], dict[int, dict[int, int]]]:
+        """Calculates shortest distances from every building to demanded module types and individual modules."""
         demanded = {kind for pad in self.landing_pads() for kind in pad.demand}
         reverse_edges = {}
         for a, b in state.tubes:
@@ -885,25 +888,27 @@ class Planner:
             reverse_edges.setdefault(b, []).append((a, 1))
         for a, b in state.teleports.items():
             reverse_edges.setdefault(b, []).append((a, 0))
-        distances = {}
-        for kind in demanded:
-            distances[kind] = {building_id: INF for building_id in self.buildings}
+        module_distances = {}
+        for module in self.buildings.values():
+            if module.kind not in demanded:
+                continue
+            module_distances[module.id] = {building_id: INF for building_id in self.buildings}
             queue = deque()
-            for building in self.buildings.values():
-                if building.kind == kind:
-                    distances[kind][building.id] = 0
-                    queue.append(building.id)
+            module_distances[module.id][module.id] = 0
+            queue.append(module.id)
             while queue:
                 building_id = queue.popleft()
                 for neighbor_id, cost in reverse_edges.get(building_id, []):
-                    distance = distances[kind][building_id] + cost
-                    if distance < distances[kind][neighbor_id]:
-                        distances[kind][neighbor_id] = distance
+                    distance = module_distances[module.id][building_id] + cost
+                    if distance < module_distances[module.id][neighbor_id]:
+                        module_distances[module.id][neighbor_id] = distance
                         if cost:
                             queue.append(neighbor_id)
                         else:
                             queue.appendleft(neighbor_id)
-        return distances
+        distances = {kind: {building_id: min(module_distances[module.id][building_id] for module in self.buildings.values() if module.kind == kind)
+            for building_id in self.buildings} for kind in demanded}
+        return distances, module_distances
 
     def initial_queues(self, distances: dict[int, dict[int, int]]) -> dict[int, list[Passenger]]:
         """Creates starting passenger queues using distances to drop impossible groups."""
@@ -970,19 +975,92 @@ class Planner:
             else:
                 del queues[building_id]
 
-    def directed_demand(self, queues: dict[int, list[Passenger]],
-            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]]) -> Counter[DirectedPair]:
-        """Counts all distance-reducing directed tube demand from queues under wanted_edges."""
+    def prioritized_demand(self, queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
+            distances: dict[int, dict[int, int]], module_distances: dict[int, dict[int, int]], module_arrivals: Counter[int],
+            reservations: dict[int, int]) -> tuple[Counter[DirectedPair], dict[DirectedPair, int]]:
+        """Counts demand and resolves overlapping current batches into low, normal, or high priorities using diversity."""
         demand = Counter()
-        for building_id, passengers in queues.items():
-            for passenger in passengers:
+        batches = {}
+        active = {}
+        for building_id in sorted(queues):
+            for passenger in sorted(queues[building_id], key=lambda item: item.id):
+                active[passenger.id] = building_id, passenger
                 for move in wanted_edges[building_id, passenger.kind]:
                     demand[move] += 1
-        return demand
+                    batch = batches.setdefault(move, [])
+                    if len(batch) < POD_CAPACITY:
+                        batch.append(passenger)
+        for passenger_id in set(reservations) - set(active):
+            del reservations[passenger_id]
+        inbound = Counter(module_arrivals)
+        counted = set()
+        for passenger_id, (building_id, passenger) in active.items():
+            modules = self.nearest_modules(building_id, passenger.kind, distances, module_distances)
+            if reservations.get(passenger_id) in modules:
+                inbound[reservations[passenger_id]] += 1
+                counted.add(passenger_id)
+            elif len(modules) == 1:
+                reservations[passenger_id] = modules[0]
+                inbound[modules[0]] += 1
+                counted.add(passenger_id)
+            else:
+                reservations.pop(passenger_id, None)
+        priorities = {move: 1 for move in demand}
+        for building_id in sorted(queues):
+            remaining = {move for move in demand if move[0] == building_id}
+            batch_ids = {move: {passenger.id for passenger in batches[move]} for move in remaining}
+            while remaining:
+                component = {min(remaining)}
+                passenger_ids = set(batch_ids[next(iter(component))])
+                while True:
+                    added = {move for move in remaining - component if passenger_ids & batch_ids[move]}
+                    if not added:
+                        break
+                    component.update(added)
+                    passenger_ids.update(*(batch_ids[move] for move in added))
+                remaining -= component
+                if len(component) == 1:
+                    continue
+                for passenger_id in passenger_ids:
+                    if passenger_id in counted:
+                        inbound[reservations[passenger_id]] -= 1
+                        counted.remove(passenger_id)
+                    reservations.pop(passenger_id, None)
+                scored = []
+                for move in sorted(component):
+                    gain, assignments = self.diversity_assignments(move, batches[move], inbound, distances, module_distances)
+                    scored.append((gain, -move[1], move, assignments))
+                _, _, preferred, assignments = max(scored)
+                for move in component:
+                    priorities[move] = 2 if move == preferred else 0
+                reservations.update(assignments)
+                inbound.update(assignments.values())
+                counted.update(assignments)
+        return demand, priorities
+
+    def nearest_modules(self, building_id: int, kind: int, distances: dict[int, dict[int, int]],
+            module_distances: dict[int, dict[int, int]]) -> list[int]:
+        """Returns nearest kind modules to building_id under distances and module_distances."""
+        return sorted(module.id for module in self.buildings.values()
+            if module.kind == kind and module_distances[module.id][building_id] == distances[kind][building_id])
+
+    def diversity_assignments(self, move: DirectedPair, passengers: list[Passenger], inbound: Counter[int],
+            distances: dict[int, dict[int, int]], module_distances: dict[int, dict[int, int]]) -> tuple[int, dict[int, int]]:
+        """Estimates diversity gain and best eventual module assignments for passengers taking move."""
+        projected = Counter(inbound)
+        assignments = {}
+        gain = 0
+        for passenger in passengers:
+            modules = self.nearest_modules(move[1], passenger.kind, distances, module_distances)
+            module_id = min(modules, key=lambda item: (-max(0, 50 - projected[item]), item))
+            gain += max(0, 50 - projected[module_id])
+            projected[module_id] += 1
+            assignments[passenger.id] = module_id
+        return gain, assignments
 
     def pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
-            dynamic_current: dict[int, int], demand: Counter[DirectedPair], graph: dict[int, list[int]], service_counts: Counter[Pair],
-            service_graphs: dict[int, dict[int, list[int]]]) -> dict[int, DirectedPair]:
+            dynamic_current: dict[int, int], demand: Counter[DirectedPair], priorities: dict[DirectedPair, int], graph: dict[int, list[int]],
+            service_counts: Counter[Pair], service_graphs: dict[int, dict[int, list[int]]]) -> dict[int, DirectedPair]:
         """Returns daily pod move requests, with dynamic pods choosing requests after fixed pods."""
         requests = {}
         for pod_id, pod in fixed_pods:
@@ -992,13 +1070,13 @@ class Planner:
                 continue
             requests[pod_id] = (pod.path[index], pod.path[next_index])
         for pod_id, pod in dynamic_pods:
-            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, service_counts, graph, service_graphs[pod_id])
+            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, priorities, service_counts, graph, service_graphs[pod_id])
             if move != (-1, -1):
                 requests[pod_id] = move
         return requests
 
-    def dynamic_move(self, pod: PodPlan, current_id: int, demand: Counter[DirectedPair], service_counts: Counter[Pair],
-            full_graph: dict[int, list[int]], graph: dict[int, list[int]]) -> DirectedPair:
+    def dynamic_move(self, pod: PodPlan, current_id: int, demand: Counter[DirectedPair], priorities: dict[DirectedPair, int],
+            service_counts: Counter[Pair], full_graph: dict[int, list[int]], graph: dict[int, list[int]]) -> DirectedPair:
         """Chooses one dynamic pod move according to service_area and demand."""
         area_nodes = set(graph)
         loads = {edge: count for edge, count in demand.items() if route_key(*edge) in pod.service_area}
@@ -1009,6 +1087,8 @@ class Planner:
             area_nodes = set(full_graph)
         if not loads:
             return -1, -1
+        priority = max(priorities[edge] for edge in loads)
+        loads = {edge: count for edge, count in loads.items() if priorities[edge] == priority}
         current = None if current_id == -1 else current_id
         if current is not None and current not in area_nodes:
             active_graph = full_graph
@@ -1033,7 +1113,7 @@ class Planner:
         return current, next_id
 
     def allocate_tube_capacity(self, requests: dict[int, DirectedPair], state: PlanState, demand: Counter[DirectedPair],
-            result: SimulationResult, service_counts: Counter[Pair]) -> dict[int, DirectedPair]:
+            priorities: dict[DirectedPair, int], result: SimulationResult, service_counts: Counter[Pair]) -> dict[int, DirectedPair]:
         """Applies tube capacities, rerouting blocked dynamic pods to available demanded outgoing edges."""
         moves = {}
         by_tube = {}
@@ -1060,7 +1140,8 @@ class Planner:
         for pod_id in sorted(set(requests) - set(moves)):
             if not state.pods[pod_id].dynamic:
                 continue
-            move = self.capacity_fallback_move(pod_id, requests[pod_id], remaining_demand, state, used, service_counts, pod_id in arbitrary_fallback_pods)
+            move = self.capacity_fallback_move(pod_id, requests[pod_id], remaining_demand, priorities, state, used, service_counts,
+                pod_id in arbitrary_fallback_pods)
             if move != (-1, -1):
                 moves[pod_id] = move
                 used[route_key(*move)] += 1
@@ -1084,17 +1165,20 @@ class Planner:
             waiting.remove(best)
         return selected
 
-    def capacity_fallback_move(self, pod_id: int, blocked_move: DirectedPair, demand: Counter[DirectedPair], state: PlanState,
-            used: Counter[Pair], service_counts: Counter[Pair], allow_arbitrary: bool) -> DirectedPair:
+    def capacity_fallback_move(self, pod_id: int, blocked_move: DirectedPair, demand: Counter[DirectedPair], priorities: dict[DirectedPair, int],
+            state: PlanState, used: Counter[Pair], service_counts: Counter[Pair], allow_arbitrary: bool) -> DirectedPair:
         """Chooses an available demanded or arbitrary outgoing edge from the blocked move source."""
         source_id = blocked_move[0]
         candidates = []
         for move, count in demand.items():
             edge = route_key(*move)
             if count and move[0] == source_id and move != blocked_move and edge in state.tubes and used[edge] < state.tubes[edge]:
-                candidates.append((-min(count, POD_CAPACITY), service_counts[edge], move))
+                candidates.append((-priorities[move], -min(count, POD_CAPACITY), service_counts[edge], move))
+        in_service = [candidate for candidate in candidates if route_key(*candidate[3]) in state.pods[pod_id].service_area]
+        if in_service:
+            candidates = in_service
         if candidates:
-            return min(candidates)[2]
+            return min(candidates)[3]
         return self.arbitrary_capacity_move(pod_id, source_id, state, used) if allow_arbitrary else (-1, -1)
 
     def arbitrary_capacity_move(self, pod_id: int, source_id: int, state: PlanState, used: Counter[Pair]) -> DirectedPair:

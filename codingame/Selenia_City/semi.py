@@ -321,7 +321,8 @@ class Planner:
         for pool in pools:
             if current_result.speed_by_pool[pool] >= self.buildings[pool[0]].demand[pool[1]] * 50:
                 continue
-            candidate = self.next_candidate(pool, selected, current_state, current_result, before_score, self.generate_bundles(pool, current_state))
+            candidate = self.next_candidate(pool, selected, current_state, current_result, before_score,
+                self.generate_bundles(pool, current_state, current_result))
             if candidate:
                 return candidate
         return None
@@ -361,7 +362,7 @@ class Planner:
                     best = candidate
         return best
 
-    def generate_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:
+    def generate_bundles(self, pool: Pool, state: PlanState, result: SimulationResult) -> list[Bundle]:
         """Builds bundles for pool in menu order, including disconnected connection."""
         bundles = []
         pad_id, astronaut_type = pool
@@ -370,7 +371,7 @@ class Planner:
             connection = self.connection_bundle(pool, state)
             if connection:
                 bundles.append(connection)
-        shortest = self.shortest_route_bundle(pool, state)
+        shortest = self.shortest_route_bundle(pool, state, result)
         if shortest:
             bundles.append(shortest)
         bundles.extend(self.existing_path_upgrade_bundles(pool, state))
@@ -384,16 +385,20 @@ class Planner:
         path = self.cheapest_connecting_path(pad_id, module_ids, state)
         return self.path_bundle(pool, "connect", path, state) if path else None
 
-    def shortest_route_bundle(self, pool: Pool, state: PlanState) -> Bundle:
+    def shortest_route_bundle(self, pool: Pool, state: PlanState, result: SimulationResult) -> Bundle:
         """Builds the shortest possible tube route bundle for pool."""
         pad_id, astronaut_type = pool
         module_ids = [building.id for building in self.buildings.values() if building.kind == astronaut_type]
+        demand = sum(pad.demand[astronaut_type] for pad in self.landing_pads())
+        max_diversity = sum(max(0, 50 - index) for index in range(demand))
+        module_ids.sort(key=lambda module_id: (result.diversity_by_module[module_id] - max_diversity, module_id))
         existing_path = self.shortest_existing_tube_path(pad_id, module_ids, state.tubes)
         existing_length = len(existing_path) - 1 if existing_path else INF
         for hop_count in range(1, min(existing_length - 1, MAX_TUBE_HOPS) + 1):
-            path = self.cheapest_hop_path(pad_id, module_ids, hop_count, state)
-            if path:
-                return self.path_bundle(pool, f"short-{hop_count}", path, state)
+            for module_id in module_ids:
+                path = self.cheapest_hop_path(pad_id, [module_id], hop_count, state)
+                if path:
+                    return self.path_bundle(pool, f"short-{hop_count}", path, state)
         return None
 
     def existing_path_upgrade_bundles(self, pool: Pool, state: PlanState) -> list[Bundle]:

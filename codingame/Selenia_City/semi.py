@@ -936,21 +936,25 @@ class Planner:
         if not loads:
             return -1, -1
         current = None if current_id == -1 else current_id
+        if current is not None and current not in area_nodes:
+            active_graph = full_graph
         best_edge = (-1, -1)
         best_key = (INF, INF, INF, INF, INF)
         for source_id, target_id in loads:
             distance = 0 if current is None else graph_distance(active_graph, current, source_id)
+            if distance == INF:
+                continue
             key = (-min(loads[source_id, target_id], POD_CAPACITY), distance, service_counts[route_key(source_id, target_id)], source_id, target_id)
             if key < best_key:
                 best_key = key
                 best_edge = source_id, target_id
+        if best_edge == (-1, -1):
+            return -1, -1
         source_id, target_id = best_edge
         if current is None:
             return source_id, target_id
         if current == source_id:
             return source_id, target_id
-        if current not in area_nodes:
-            active_graph = full_graph
         next_id = next_step(active_graph, current, source_id)
         return current, next_id
 

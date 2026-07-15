@@ -11,15 +11,18 @@ if not __package__:
 from Selenia_City.semi import Building, Planner, Pod, route_key
 
 TURN_STATE = """
-month 2
-resources 1000
-landing 0 80 60 1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2
-module 1 1 40 30
-module 2 2 120 30
-tube 0 1 1
-tube 0 2 1
-pod id=1, service={0-1, 0-2}, path=[0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 0, 1, 0, 2, 0, 1, 0]
+month 1
+resources 5000
+module 0 1 20 15
+module 1 2 140 15
+landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+landing 3 80 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
+landing 4 120 45 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
+module 5 2 20 75
+module 6 1 140 75
 """
+
+
 def run_turn_state(text: str) -> str:
     """Parses text into a Planner, runs debug printing and choose_actions, and returns the command."""
     planner = parse_turn_state(text)

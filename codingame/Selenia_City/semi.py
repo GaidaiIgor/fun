@@ -16,8 +16,8 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = 2
-OVERRIDE_COMMAND = "POD 2 AUTO(0-1)"
+OVERRIDE_MONTH = -1
+OVERRIDE_COMMAND = "TUBE 0 3;POD 2 AUTO(0-2, 0-3)"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -343,8 +343,9 @@ class Planner:
     def next_candidate(self, owner: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
             before_score: int, bundles: list[Bundle]) -> Candidate:
         """Returns the most efficient candidate in bundles for owner and group after selected, using current_state, current_result, and before_score."""
-        plans = []
+        best = None
         seen = set()
+        bundle_number = 0
         print(f"Considering {owner}", file=sys.stderr)
         for bundle in bundles:
             if bundle.fingerprint == Bundle(owner).fingerprint and not bundle.path_edges:
@@ -361,11 +362,8 @@ class Planner:
             action_text = self.state_delta_text(current_state, state)
             if action_text == "WAIT":
                 continue
-            plans.append((state.cost, bundle.rank_cost, bundle.label, bundle.fingerprint, bundle, state, action_text))
-        best = None
-        positive_cost = INF
-        for bundle_number, (_, _, _, _, bundle, state, action_text) in enumerate(sorted(plans), 1):
-            if state.cost > self.resources or state.cost > positive_cost and bundle.label != "pod-upgrade":
+            bundle_number += 1
+            if state.cost > self.resources:
                 print(f"bundle {bundle_number}: {action_text}, -, {state.cost}, -", file=sys.stderr)
                 continue
             result = self.score_state(state)
@@ -374,7 +372,6 @@ class Planner:
             total_efficiency = total_score_gain / max(1, state.cost)
             print(f"bundle {bundle_number}: {action_text}, {total_score_gain}, {state.cost}, {total_efficiency:.3f}", file=sys.stderr)
             if score_gain > 0:
-                positive_cost = min(positive_cost, state.cost)
                 candidate = Candidate(owner, bundle, bundle_number, total_score_gain, state.cost, result.score, state.cost)
                 if best is None or (candidate.efficiency, candidate.total_score_gain, -candidate.new_cost) > \
                         (best.efficiency, best.total_score_gain, -best.new_cost):
@@ -598,7 +595,7 @@ class Planner:
             if len(area) <= 1 or not area & path_edge_set:
                 continue
             focused = area - {edge for edge in area if service_counts[edge] > 1}
-            if focused and focused != area and service_area_connected(focused):
+            if focused and focused & path_edge_set and focused != area and service_area_connected(focused):
                 specs.append(PodSpec(pod_id, frozenset(focused)))
         return specs
 
@@ -666,7 +663,7 @@ class Planner:
                 original = self.service_areas[pod_id]
                 selected = state.planned_pod_edges[pod_id]
                 state.service_areas[pod_id] = original | ((selected - original) & active_edges) if original <= selected else \
-                    selected if selected & active_edges or (original - selected) & active_edges else set()
+                    selected if selected & active_edges else set()
                 if state.service_areas[pod_id] == original:
                     self.remove_planned_pod(state, pod_id)
                     continue

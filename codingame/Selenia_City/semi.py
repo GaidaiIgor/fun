@@ -381,9 +381,13 @@ class Planner:
                     other.path_length < bundle.path_length and other_cost <= cost for other, _, _, other_cost in plans):
                 continue
             if bundle.debug_parent:
-                if bundle.debug_parent not in bundle_numbers:
-                    continue
-                bundle_id = f"{bundle_numbers[bundle.debug_parent]}{bundle.debug_suffix}"
+                if bundle.debug_parent in bundle_numbers:
+                    bundle_id = f"{bundle_numbers[bundle.debug_parent]}{bundle.debug_suffix}"
+                else:
+                    bundle_number += 1
+                    bundle_id = str(bundle_number)
+                    bundle_numbers[bundle.debug_parent] = bundle_id
+                    bundle_numbers[bundle.fingerprint] = bundle_id
             else:
                 bundle_number += 1
                 bundle_id = str(bundle_number)
@@ -445,6 +449,8 @@ class Planner:
             projected = self.replay_bundle_on_state(base_state, Bundle(owner, pod_specs=tuple(specs), path_edges=base.path_edges))
             bundle = self.projection_bundle(owner, base, state, projected, f"{base.label}-balance")
             if bundle.fingerprint != base.fingerprint:
+                bundle.debug_parent = base.fingerprint
+                bundle.debug_suffix = "r" if not balanced else f"r{len(balanced) + 1}"
                 bundles.append(bundle)
                 balanced.append(bundle)
         for parent in balanced or [base]:

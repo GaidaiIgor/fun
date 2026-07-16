@@ -82,6 +82,8 @@ class Bundle:
     destination: int = -1
     path_length: int = 0
     path: tuple[int, ...] = ()
+    debug_parent: tuple = ()
+    debug_suffix: str = ""
 
     @property
     def fingerprint(self) -> tuple:
@@ -128,7 +130,7 @@ class Candidate:
     """Stores a possible greedy replacement whose pair and number identify its debug listing."""
     bundle: Bundle
     pair: PoolOwner
-    number: int
+    number: str
     points_gain: int
     cost: int
 
@@ -372,17 +374,25 @@ class Planner:
                 continue
             plans.append((bundle, state, action_text, state.cost - current_state.cost))
         bundle_number = 0
+        bundle_numbers = {}
         path = ()
         for bundle, state, action_text, cost in plans:
             if bundle.label.startswith("short-") and any(other.label.startswith("short-") and other.destination == bundle.destination and
                     other.path_length < bundle.path_length and other_cost <= cost for other, _, _, other_cost in plans):
                 continue
+            if bundle.debug_parent:
+                if bundle.debug_parent not in bundle_numbers:
+                    continue
+                bundle_id = f"{bundle_numbers[bundle.debug_parent]}{bundle.debug_suffix}"
+            else:
+                bundle_number += 1
+                bundle_id = str(bundle_number)
+                bundle_numbers[bundle.fingerprint] = bundle_id
             if bundle.path != path:
                 path = bundle.path
                 path_text = ", ".join(map(str, path))
                 print(f"    Considering path=[{path_text}]:", file=sys.stderr)
-            bundle_number += 1
-            text = f"      {bundle_number}: action={action_text}, "
+            text = f"      {bundle_id}: action={action_text}, "
             if state.cost > self.resources:
                 print(f"{text}gain=-, cost={cost}, efficiency=-", file=sys.stderr)
                 continue
@@ -392,7 +402,7 @@ class Planner:
             efficiency = points_gain / cost if cost > 0 else inf
             print(f"{text}gain={points_gain}, cost={cost}, efficiency={efficiency:.3f}", file=sys.stderr)
             if points_gain > 0:
-                candidate = Candidate(bundle, pair, bundle_number, points_gain, cost)
+                candidate = Candidate(bundle, pair, bundle_id, points_gain, cost)
                 if best is None or (candidate.efficiency, candidate.points_gain, -candidate.cost) > \
                         (best.efficiency, best.points_gain, -best.cost):
                     best = candidate
@@ -451,28 +461,41 @@ class Planner:
             if result.delivery_times.get(group, INF) == parent.path_length:
                 break
             options = []
+            pod_options = []
             pod_edge = self.best_pod_edge(parent.path_edges, result)
-            pod_metrics = None
             if pod_edge != (-1, -1):
                 projected = self.replay_bundle_on_state(parent_state,
                     Bundle(owner, pod_specs=(PodSpec(0, frozenset({pod_edge})),), path_edges=parent.path_edges))
-                pod_bundle = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod")
-                pod_metrics = self.bundle_metrics(owner, pod_bundle, selected, state, current_result)
-                options.append((pod_bundle, pod_metrics))
+                for pod_state in self.automatic_balance_states(owner, parent.path_edges, projected):
+                    pod_bundle = self.projection_bundle(owner, parent, state, pod_state, f"{parent.label}-pod")
+                    pod_metrics = self.bundle_metrics(owner, pod_bundle, selected, state, current_result)
+                    options.append((pod_bundle, pod_metrics))
+                    pod_options.append((pod_bundle, pod_metrics))
+                    if pod_metrics[3].cost <= self.resources:
+                        options.extend((bundle, self.bundle_metrics(owner, bundle, selected, state, current_result))
+                            for bundle in self.rebalance_variants(owner, pod_bundle, pod_metrics[3], state))
             upgrade_edge = self.best_counter_edge(parent.path_edges, result.congestion_by_edge)
-            upgrade_metrics = None
             if upgrade_edge != (-1, -1):
                 projected = self.replay_bundle_on_state(parent_state,
                     Bundle(owner, upgrades=(upgrade_edge,), path_edges=parent.path_edges))
                 upgrade_bundle = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-upgrade")
-                upgrade_metrics = self.bundle_metrics(owner, upgrade_bundle, selected, state, current_result)
-                options.append((upgrade_bundle, upgrade_metrics))
-            if pod_metrics and upgrade_metrics and pod_metrics[3].cost <= self.resources and upgrade_metrics[3].cost <= self.resources:
+                options.append((upgrade_bundle, self.bundle_metrics(owner, upgrade_bundle, selected, state, current_result)))
+            for pod_bundle, pod_metrics in pod_options:
+                if pod_metrics[3].cost > self.resources:
+                    continue
                 edge = self.best_counter_edge(parent.path_edges, self.cached_simulate(pod_metrics[3]).congestion_by_edge)
-                if edge != (-1, -1):
-                    projected = self.replay_bundle_on_state(pod_metrics[3], Bundle(owner, upgrades=(edge,), path_edges=parent.path_edges))
-                    combined = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod-upgrade")
-                    options.append((combined, self.bundle_metrics(owner, combined, selected, state, current_result)))
+                if edge == (-1, -1):
+                    continue
+                upgrade_cost = tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * (parent_state.tubes[edge] + 1)
+                if parent_state.cost + upgrade_cost > self.resources:
+                    continue
+                projected = self.replay_bundle_on_state(pod_metrics[3], Bundle(owner, upgrades=(edge,), path_edges=parent.path_edges))
+                combined = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod-upgrade")
+                combined_metrics = self.bundle_metrics(owner, combined, selected, state, current_result)
+                options.append((combined, combined_metrics))
+                if combined_metrics[3].cost <= self.resources:
+                    options.extend((bundle, self.bundle_metrics(owner, bundle, selected, state, current_result))
+                        for bundle in self.rebalance_variants(owner, combined, combined_metrics[3], state))
             bundles.extend(bundle for bundle, _ in options)
             affordable = [(metrics[2], metrics[0], -metrics[1], bundle, metrics[3]) for bundle, metrics in options
                 if metrics[3].cost <= self.resources]
@@ -482,6 +505,24 @@ class Planner:
             if efficiency <= parent_efficiency:
                 break
             parent, parent_state, parent_efficiency = next_parent, next_state, efficiency
+        return bundles
+
+    def automatic_balance_states(self, owner: PoolOwner, path_edges: tuple[Pair, ...], state: PlanState) -> list[PlanState]:
+        """Applies every free dynamic-only balance variant for owner and path_edges to state and returns the resulting states."""
+        options = self.balance_spec_options(path_edges, state, True)
+        return [self.replay_bundle_on_state(state, Bundle(owner, pod_specs=tuple(specs), path_edges=path_edges)) for specs in options] or [state]
+
+    def rebalance_variants(self, owner: PoolOwner, parent: Bundle, projected: PlanState, state: PlanState) -> list[Bundle]:
+        """Builds paid balance variants for owner on top of parent and projected relative to state, marking their debug relationship."""
+        bundles = []
+        for specs in self.balance_spec_options(parent.path_edges, projected):
+            balanced = self.replay_bundle_on_state(projected, Bundle(owner, pod_specs=tuple(specs), path_edges=parent.path_edges))
+            bundle = self.projection_bundle(owner, parent, state, balanced, f"{parent.label}-rebalance")
+            if bundle.fingerprint == parent.fingerprint:
+                continue
+            bundle.debug_parent = parent.fingerprint
+            bundle.debug_suffix = "r" if not bundles else f"r{len(bundles) + 1}"
+            bundles.append(bundle)
         return bundles
 
     def bundle_metrics(self, owner: PoolOwner, bundle: Bundle, selected: list[Bundle], state: PlanState,
@@ -599,8 +640,11 @@ class Planner:
         actions = []
         for edge in sorted(before.planned_tubes - after.planned_tubes):
             actions.append(f"DROP TUBE {edge[0]} {edge[1]}")
-        for edge in sorted(after.planned_tubes - before.planned_tubes):
+        new_edges = sorted(after.planned_tubes - before.planned_tubes)
+        for edge in new_edges:
             actions.append(f"TUBE {edge[0]} {edge[1]}")
+        for edge in new_edges:
+            actions.extend(f"UPGRADE {edge[0]} {edge[1]}" for _ in range(after.tubes[edge] - 1))
         for edge in sorted(set(before.tubes) & set(after.tubes)):
             for _ in range(after.tubes[edge] - before.tubes[edge]):
                 actions.append(f"UPGRADE {edge[0]} {edge[1]}")
@@ -649,26 +693,24 @@ class Planner:
         best = min(candidate[:2] for candidate in candidates)
         return sorted(candidate[2] for candidate in candidates if candidate[:2] == best)
 
-    def balance_spec_options(self, path_edges: tuple[Pair, ...], state: PlanState) -> list[list[PodSpec]]:
-        """Builds pod-spec variants that transfer overlapping path edges while keeping every service area connected."""
+    def balance_spec_options(self, path_edges: tuple[Pair, ...], state: PlanState, dynamic_only: bool = False) -> list[list[PodSpec]]:
+        """Builds connected overlap-transfer variants for path_edges and state, restricting participants when dynamic_only is true."""
         def scan(index: int, areas: dict[int, set[Pair]]) -> list[dict[int, set[Pair]]]:
             if index == len(path_edges):
                 return [areas]
             edge = path_edges[index]
-            serving = [pod_id for pod_id, area in areas.items() if edge in area]
+            serving = [pod_id for pod_id, area in areas.items() if edge in area and (not dynamic_only or state.pods[pod_id].dynamic)]
             if len(serving) < 2:
                 return scan(index + 1, areas)
             variants = []
             small_pods = self.balance_role_pods(serving, areas, state, False)
-            large_pods = self.balance_role_pods(serving, areas, state, True)
             for small_id in small_pods:
+                large_pods = self.balance_role_pods([pod_id for pod_id in serving if pod_id != small_id], areas, state, True)
                 for large_id in large_pods:
-                    if small_id == large_id:
-                        continue
                     for small, large in self.balance_transfer_options(edge, areas[small_id], areas[large_id]):
                         changed = {pod_id: set(area) for pod_id, area in areas.items()}
                         changed[small_id], changed[large_id] = small, large
-                        variants.extend(scan(index + 1, changed))
+                        variants.extend(scan(index, changed))
             return variants or scan(index + 1, areas)
         initial = {pod_id: set(area) for pod_id, area in state.service_areas.items()}
         options = []
@@ -1070,32 +1112,40 @@ class Planner:
             tuple[Counter[DirectedPair], dict[DirectedPair, int]]:
         """Counts demand and resolves overlapping current batches into low, normal, or high priorities using diversity."""
         demand = Counter()
+        ambiguous = False
+        for building_id, passengers in queues.items():
+            counts = Counter(passenger.kind for passenger in passengers)
+            for kind, count in counts.items():
+                moves = wanted_edges[building_id, kind]
+                ambiguous |= len(moves) > 1
+                for move in moves:
+                    demand[move] += count
+        priorities = {move: 1 for move in demand}
+        if not ambiguous:
+            return demand, priorities
         batches = {}
-        active = {}
+        active = set()
+        inbound = Counter(module_arrivals)
+        counted = set()
         for building_id in sorted(queues):
             for passenger in sorted(queues[building_id], key=lambda item: item.id):
-                active[passenger.id] = building_id, passenger
+                active.add(passenger.id)
+                modules = nearest_modules[building_id, passenger.kind]
+                if reservations.get(passenger.id) in modules:
+                    inbound[reservations[passenger.id]] += 1
+                    counted.add(passenger.id)
+                elif len(modules) == 1:
+                    reservations[passenger.id] = modules[0]
+                    inbound[modules[0]] += 1
+                    counted.add(passenger.id)
+                else:
+                    reservations.pop(passenger.id, None)
                 for move in wanted_edges[building_id, passenger.kind]:
-                    demand[move] += 1
                     batch = batches.setdefault(move, [])
                     if len(batch) < POD_CAPACITY:
                         batch.append(passenger)
-        for passenger_id in set(reservations) - set(active):
+        for passenger_id in set(reservations) - active:
             del reservations[passenger_id]
-        inbound = Counter(module_arrivals)
-        counted = set()
-        for passenger_id, (building_id, passenger) in active.items():
-            modules = nearest_modules[building_id, passenger.kind]
-            if reservations.get(passenger_id) in modules:
-                inbound[reservations[passenger_id]] += 1
-                counted.add(passenger_id)
-            elif len(modules) == 1:
-                reservations[passenger_id] = modules[0]
-                inbound[modules[0]] += 1
-                counted.add(passenger_id)
-            else:
-                reservations.pop(passenger_id, None)
-        priorities = {move: 1 for move in demand}
         for building_id in sorted(queues):
             remaining = {move for move in demand if move[0] == building_id}
             batch_ids = {move: {passenger.id for passenger in batches[move]} for move in remaining}

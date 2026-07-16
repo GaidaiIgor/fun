@@ -224,8 +224,9 @@ class Planner:
             total_text = self.state_action_text(current_state)
             score_gain = current_result.score - before_score
             efficiency = score_gain / max(1, current_state.cost)
-            text = f"selected={best.pair}, bundle {best.number}; bundle={total_text}; gain={score_gain}; cost={current_state.cost}; "
-            print(f"{text}efficiency={efficiency:.3f}; "
+            path_text = ", ".join(map(str, best.bundle.path))
+            text = f"selected: pair={best.pair}, path=[{path_text}], bundle={best.number}, actions={total_text}, gain={score_gain}, "
+            print(f"{text}cost={current_state.cost}, efficiency={efficiency:.3f}, "
                 f"resources left={self.resources - current_state.cost}", file=sys.stderr)
             print("\n" + self.status_debug(current_result), file=sys.stderr)
         final_state = self.replay_bundle_sequence(selected)
@@ -373,13 +374,17 @@ class Planner:
             if action_text == "WAIT":
                 continue
             plans.append((bundle, state, action_text, state.cost - current_state.cost))
-        bundle_number = 0
-        bundle_numbers = {}
         path = ()
         for bundle, state, action_text, cost in plans:
             if bundle.label.startswith("short-") and any(other.label.startswith("short-") and other.destination == bundle.destination and
                     other.path_length < bundle.path_length and other_cost <= cost for other, _, _, other_cost in plans):
                 continue
+            if bundle.path != path:
+                path = bundle.path
+                bundle_number = 0
+                bundle_numbers = {}
+                path_text = ", ".join(map(str, path))
+                print(f"    Considering path=[{path_text}]:", file=sys.stderr)
             if bundle.debug_parent:
                 if bundle.debug_parent in bundle_numbers:
                     bundle_id = f"{bundle_numbers[bundle.debug_parent]}{bundle.debug_suffix}"
@@ -392,10 +397,6 @@ class Planner:
                 bundle_number += 1
                 bundle_id = str(bundle_number)
                 bundle_numbers[bundle.fingerprint] = bundle_id
-            if bundle.path != path:
-                path = bundle.path
-                path_text = ", ".join(map(str, path))
-                print(f"    Considering path=[{path_text}]:", file=sys.stderr)
             text = f"      {bundle_id}: action={action_text}, "
             if state.cost > self.resources:
                 print(f"{text}gain=-, cost={cost}, efficiency=-", file=sys.stderr)

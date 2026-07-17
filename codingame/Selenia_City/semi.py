@@ -70,7 +70,7 @@ class PodSpec:
 
 @dataclass(slots=True)
 class Bundle:
-    """Describes one selectable action bundle whose destination, path_length, and path identify its transport route."""
+    """Describes one selectable bundle; destination, path_length, and path identify its route, while debug_id and debug_chosen describe round output."""
     pool: PoolOwner
     rank_cost: int = 0
     tubes: tuple[Pair, ...] = ()
@@ -82,8 +82,8 @@ class Bundle:
     destination: int = -1
     path_length: int = 0
     path: tuple[int, ...] = ()
-    debug_parent: tuple = ()
-    debug_suffix: str = ""
+    debug_id: str = ""
+    debug_chosen: str = ""
 
     @property
     def fingerprint(self) -> tuple:
@@ -353,10 +353,9 @@ class Planner:
 
     def next_candidate(self, owner: PoolOwner, pair: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState,
             current_result: SimulationResult, bundles: list[Bundle]) -> Candidate:
-        """Returns the most efficient candidate in bundles for owner paired with pair and group after selected."""
+        """Returns the best candidate in bundles for owner paired with pair and group, using selected, current_state, and current_result."""
         best = None
         seen = set()
-        seen_states = set()
         current_pool_score = current_result.speed_by_pool[owner] if isinstance(owner, tuple) else current_result.diversity_by_module[owner]
         plans = []
         for bundle in bundles:
@@ -364,7 +363,7 @@ class Planner:
                 continue
             if bundle.path_edges and current_result.delivery_times.get(group, INF) == bundle.path_length:
                 continue
-            fingerprint = bundle.path, bundle.fingerprint
+            fingerprint = bundle.path, bundle.debug_id, bundle.fingerprint
             if fingerprint in seen:
                 continue
             seen.add(fingerprint)
@@ -372,10 +371,6 @@ class Planner:
                 state = self.replay_bundle_sequence([*selected, bundle])
             except ValueError:
                 continue
-            state_fingerprint = bundle.path, state.cost, self.simulation_cache_key(state, False)
-            if state_fingerprint in seen_states:
-                continue
-            seen_states.add(state_fingerprint)
             action_text = self.state_delta_text(current_state, state)
             if action_text == "WAIT":
                 continue
@@ -384,25 +379,13 @@ class Planner:
         for bundle, state, action_text, cost in plans:
             if bundle.path != path:
                 path = bundle.path
-                bundle_number = 0
-                bundle_numbers = {}
                 path_text = ", ".join(map(str, path))
                 print(f"    Considering path=[{path_text}]:", file=sys.stderr)
-            if bundle.debug_parent:
-                if bundle.debug_parent in bundle_numbers:
-                    bundle_id = f"{bundle_numbers[bundle.debug_parent]}{bundle.debug_suffix}"
-                else:
-                    bundle_number += 1
-                    bundle_id = str(bundle_number)
-                    bundle_numbers[bundle.debug_parent] = bundle_id
-                    bundle_numbers[bundle.fingerprint] = bundle_id
-            else:
-                bundle_number += 1
-                bundle_id = str(bundle_number)
-                bundle_numbers[bundle.fingerprint] = bundle_id
-            text = f"      {bundle_id}: action={action_text}, "
+            text = f"      {bundle.debug_id}: action={action_text}, "
             if state.cost > self.resources:
                 print(f"{text}gain=-, cost={cost}, efficiency=-", file=sys.stderr)
+                if bundle.debug_chosen:
+                    print(f"      chosen {bundle.debug_chosen}", file=sys.stderr)
                 continue
             result = self.score_state(state)
             pool_score = result.speed_by_pool[owner] if isinstance(owner, tuple) else result.diversity_by_module[owner]
@@ -410,10 +393,12 @@ class Planner:
             efficiency = points_gain / cost if cost > 0 else inf
             print(f"{text}gain={points_gain}, cost={cost}, efficiency={efficiency:.3f}", file=sys.stderr)
             if points_gain > 0:
-                candidate = Candidate(bundle, pair, bundle_id, points_gain, cost)
+                candidate = Candidate(bundle, pair, bundle.debug_id, points_gain, cost)
                 if best is None or (candidate.efficiency, candidate.points_gain, -candidate.cost) > \
                         (best.efficiency, best.points_gain, -best.cost):
                     best = candidate
+            if bundle.debug_chosen:
+                print(f"      chosen {bundle.debug_chosen}", file=sys.stderr)
         return best
 
     def generate_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], selected: list[Bundle], state: PlanState,
@@ -440,56 +425,76 @@ class Planner:
 
     def path_bundle_stack(self, owner: PoolOwner, group: Pool, base: Bundle, selected: list[Bundle], state: PlanState,
             current_result: SimulationResult) -> list[Bundle]:
-        """Builds minimal, balanced, and iterative throughput bundles for owner and group from base, selected, state, and current_result."""
-        bundles = [base]
-        try:
-            base_state = self.replay_bundle_sequence([*selected, base])
-        except ValueError:
-            return bundles
-        if base_state.cost > self.resources:
-            return bundles
-        balanced = []
-        for specs in self.balance_spec_options(base.path_edges, base_state):
-            projected = self.replay_bundle_on_state(base_state, Bundle(owner, pod_specs=tuple(specs), path_edges=base.path_edges))
-            bundle = self.projection_bundle(owner, base, state, projected, f"{base.label}-balance")
-            if bundle.fingerprint != base.fingerprint:
-                bundle.debug_parent = base.fingerprint
-                bundle.debug_suffix = "r" if not balanced else f"r{len(balanced) + 1}"
+        """Builds round-zero and iterative bundles for owner and group from base, selected, state, and current_result."""
+        if base.tubes:
+            base.debug_id = "0"
+            bundles = [base]
+            base_metrics = self.bundle_metrics(owner, base, selected, state, current_result)
+            if base_metrics[3].cost > self.resources:
+                return bundles
+            options = [(base, base_metrics)]
+            for bundle in self.rebalance_variants(owner, base, base_metrics[3], state):
+                metrics = self.bundle_metrics(owner, bundle, selected, state, current_result)
+                if self.simulation_cache_key(metrics[3], False) == self.simulation_cache_key(base_metrics[3], False):
+                    continue
+                options.append((bundle, metrics))
                 bundles.append(bundle)
-                balanced.append(bundle)
-        for parent in balanced or [base]:
-            bundles.extend(self.throughput_bundles(owner, group, parent, selected, state, current_result))
-        return bundles
+            affordable = [(metrics[2], metrics[0], -metrics[1], bundle, metrics[3]) for bundle, metrics in options
+                if metrics[3].cost <= self.resources]
+            if not affordable:
+                return bundles
+            efficiency, _, _, parent, parent_state = max(affordable, key=lambda item: item[:3])
+            bundles[-1].debug_chosen = parent.debug_id
+            bundles.extend(self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, current_result, 1))
+            return bundles
+        parent = Bundle(owner, label=base.label, path_edges=base.path_edges, destination=base.destination,
+            path_length=base.path_length, path=base.path)
+        _, _, efficiency, parent_state = self.bundle_metrics(owner, parent, selected, state, current_result)
+        pod_seed = base if base.fingerprint != Bundle(owner).fingerprint else None
+        return self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, current_result, 1, pod_seed)
 
-    def throughput_bundles(self, owner: PoolOwner, group: Pool, parent: Bundle, selected: list[Bundle], state: PlanState,
-            current_result: SimulationResult) -> list[Bundle]:
-        """Builds improving pod, upgrade, and combined rounds for owner and group after parent using selected, state, and current_result."""
+    def throughput_bundles(self, owner: PoolOwner, group: Pool, parent: Bundle, parent_state: PlanState, parent_efficiency: float,
+            selected: list[Bundle], state: PlanState, current_result: SimulationResult, round_number: int, pod_seed: Bundle = None) -> list[Bundle]:
+        """Builds rounds for owner and group from parent and parent_state, comparing parent_efficiency within selected, state, and current_result.
+
+        round_number names the first round, while pod_seed supplies required initial service work.
+        """
         bundles = []
-        _, _, parent_efficiency, parent_state = self.bundle_metrics(owner, parent, selected, state, current_result)
         while parent_state.cost <= self.resources:
             result = self.cached_simulate(parent_state)
             if result.delivery_times.get(group, INF) == parent.path_length:
                 break
             options = []
             pod_options = []
-            pod_edge = self.best_pod_edge(parent.path_edges, result)
-            if pod_edge != (-1, -1):
+            if pod_seed:
+                projected = self.replay_bundle_sequence([*selected, pod_seed])
+            else:
+                pod_edge = self.best_pod_edge(parent.path_edges, result)
                 projected = self.replay_bundle_on_state(parent_state,
                     Bundle(owner, pod_specs=(PodSpec(0, frozenset({pod_edge})),), path_edges=parent.path_edges))
-                for pod_state in self.automatic_balance_states(owner, parent.path_edges, projected):
-                    pod_bundle = self.projection_bundle(owner, parent, state, pod_state, f"{parent.label}-pod")
-                    pod_metrics = self.bundle_metrics(owner, pod_bundle, selected, state, current_result)
-                    options.append((pod_bundle, pod_metrics))
-                    pod_options.append((pod_bundle, pod_metrics))
-                    if pod_metrics[3].cost <= self.resources:
-                        options.extend((bundle, self.bundle_metrics(owner, bundle, selected, state, current_result))
-                            for bundle in self.rebalance_variants(owner, pod_bundle, pod_metrics[3], state))
+            pod_index = 0
+            for pod_state in self.automatic_balance_states(owner, parent.path_edges, projected):
+                pod_bundle = self.projection_bundle(owner, parent, state, pod_state, f"{parent.label}-pod")
+                pod_index += 1
+                pod_bundle.debug_id = f"{round_number}p" if pod_index == 1 else f"{round_number}p{pod_index}"
+                pod_metrics = self.bundle_metrics(owner, pod_bundle, selected, state, current_result)
+                options.append((pod_bundle, pod_metrics))
+                pod_options.append((pod_bundle, pod_metrics))
+                if pod_metrics[3].cost <= self.resources:
+                    pod_key = self.simulation_cache_key(pod_metrics[3], False)
+                    for bundle in self.rebalance_variants(owner, pod_bundle, pod_metrics[3], state):
+                        metrics = self.bundle_metrics(owner, bundle, selected, state, current_result)
+                        if self.simulation_cache_key(metrics[3], False) != pod_key:
+                            options.append((bundle, metrics))
             upgrade_edge = self.best_counter_edge(parent.path_edges, result.congestion_by_edge)
             if upgrade_edge != (-1, -1):
                 projected = self.replay_bundle_on_state(parent_state,
                     Bundle(owner, upgrades=(upgrade_edge,), path_edges=parent.path_edges))
                 upgrade_bundle = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-upgrade")
+                upgrade_bundle.debug_id = f"{round_number}u"
                 options.append((upgrade_bundle, self.bundle_metrics(owner, upgrade_bundle, selected, state, current_result)))
+            combined_options = []
+            combined_index = 0
             for pod_bundle, pod_metrics in pod_options:
                 if pod_metrics[3].cost > self.resources:
                     continue
@@ -501,20 +506,30 @@ class Planner:
                     continue
                 projected = self.replay_bundle_on_state(pod_metrics[3], Bundle(owner, upgrades=(edge,), path_edges=parent.path_edges))
                 combined = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod-upgrade")
+                combined_index += 1
+                combined.debug_id = f"{round_number}b" if combined_index == 1 else f"{round_number}b{combined_index}"
                 combined_metrics = self.bundle_metrics(owner, combined, selected, state, current_result)
                 options.append((combined, combined_metrics))
+                combined_options.append((combined, combined_metrics))
                 if combined_metrics[3].cost <= self.resources:
-                    options.extend((bundle, self.bundle_metrics(owner, bundle, selected, state, current_result))
-                        for bundle in self.rebalance_variants(owner, combined, combined_metrics[3], state))
+                    combined_key = self.simulation_cache_key(combined_metrics[3], False)
+                    for bundle in self.rebalance_variants(owner, combined, combined_metrics[3], state):
+                        metrics = self.bundle_metrics(owner, bundle, selected, state, current_result)
+                        if self.simulation_cache_key(metrics[3], False) != combined_key:
+                            options.append((bundle, metrics))
             bundles.extend(bundle for bundle, _ in options)
             affordable = [(metrics[2], metrics[0], -metrics[1], bundle, metrics[3]) for bundle, metrics in options
                 if metrics[3].cost <= self.resources]
             if not affordable:
                 break
             efficiency, _, _, next_parent, next_state = max(affordable, key=lambda item: item[:3])
-            if efficiency <= parent_efficiency:
+            combined_affordable = any(metrics[3].cost <= self.resources for _, metrics in combined_options)
+            if efficiency <= parent_efficiency or not combined_affordable:
                 break
+            bundles[-1].debug_chosen = next_parent.debug_id
             parent, parent_state, parent_efficiency = next_parent, next_state, efficiency
+            round_number += 1
+            pod_seed = None
         return bundles
 
     def automatic_balance_states(self, owner: PoolOwner, path_edges: tuple[Pair, ...], state: PlanState) -> list[PlanState]:
@@ -523,15 +538,14 @@ class Planner:
         return [self.replay_bundle_on_state(state, Bundle(owner, pod_specs=tuple(specs), path_edges=path_edges)) for specs in options] or [state]
 
     def rebalance_variants(self, owner: PoolOwner, parent: Bundle, projected: PlanState, state: PlanState) -> list[Bundle]:
-        """Builds paid balance variants for owner on top of parent and projected relative to state, marking their debug relationship."""
+        """Builds paid balance variants for owner on top of parent and projected relative to state, extending parent debug ids."""
         bundles = []
         for specs in self.balance_spec_options(parent.path_edges, projected):
             balanced = self.replay_bundle_on_state(projected, Bundle(owner, pod_specs=tuple(specs), path_edges=parent.path_edges))
             bundle = self.projection_bundle(owner, parent, state, balanced, f"{parent.label}-rebalance")
             if bundle.fingerprint == parent.fingerprint:
                 continue
-            bundle.debug_parent = parent.fingerprint
-            bundle.debug_suffix = "r" if not bundles else f"r{len(bundles) + 1}"
+            bundle.debug_id = f"{parent.debug_id}r" if not bundles else f"{parent.debug_id}r{len(bundles) + 1}"
             bundles.append(bundle)
         return bundles
 
@@ -621,9 +635,12 @@ class Planner:
         used = self.teleport_used_buildings(state.teleports)
         if pad_id in used:
             return []
-        return [Bundle(owner, TELEPORT_COST, teleport=(pad_id, module_id), label=f"teleport-{module_id}", destination=module_id,
+        bundles = [Bundle(owner, TELEPORT_COST, teleport=(pad_id, module_id), label=f"teleport-{module_id}", destination=module_id,
             path=(pad_id, module_id)) for module_id in sorted(modules, key=lambda item: tube_cost(self.buildings[pad_id], self.buildings[item]))
             if module_id not in used]
+        for index, bundle in enumerate(bundles, 1):
+            bundle.debug_id = "0t" if index == 1 else f"0t{index}"
+        return bundles
 
     def path_bundles(self, owner: PoolOwner, label: str, path: list[int], state: PlanState) -> list[Bundle]:
         """Builds owner tube-bundle variants named label along path using state."""

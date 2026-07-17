@@ -356,6 +356,7 @@ class Planner:
         """Returns the most efficient candidate in bundles for owner paired with pair and group after selected."""
         best = None
         seen = set()
+        seen_states = set()
         current_pool_score = current_result.speed_by_pool[owner] if isinstance(owner, tuple) else current_result.diversity_by_module[owner]
         plans = []
         for bundle in bundles:
@@ -363,22 +364,24 @@ class Planner:
                 continue
             if bundle.path_edges and current_result.delivery_times.get(group, INF) == bundle.path_length:
                 continue
-            if bundle.fingerprint in seen:
+            fingerprint = bundle.path, bundle.fingerprint
+            if fingerprint in seen:
                 continue
-            seen.add(bundle.fingerprint)
+            seen.add(fingerprint)
             try:
                 state = self.replay_bundle_sequence([*selected, bundle])
             except ValueError:
                 continue
+            state_fingerprint = bundle.path, state.cost, self.simulation_cache_key(state, False)
+            if state_fingerprint in seen_states:
+                continue
+            seen_states.add(state_fingerprint)
             action_text = self.state_delta_text(current_state, state)
             if action_text == "WAIT":
                 continue
             plans.append((bundle, state, action_text, state.cost - current_state.cost))
         path = ()
         for bundle, state, action_text, cost in plans:
-            if bundle.label.startswith("short-") and any(other.label.startswith("short-") and other.destination == bundle.destination and
-                    other.path_length < bundle.path_length and other_cost <= cost for other, _, _, other_cost in plans):
-                continue
             if bundle.path != path:
                 path = bundle.path
                 bundle_number = 0

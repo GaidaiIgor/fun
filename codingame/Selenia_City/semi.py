@@ -128,18 +128,18 @@ class SimulationResult:
 
 @dataclass(slots=True)
 class Candidate:
-    """Stores a possible greedy replacement whose pair, number, local_gain, global_gain, and cost describe its debug ranking."""
+    """Stores a possible replacement whose pair, number, local_gain, global_gain, and global_cost describe its debug ranking."""
     bundle: Bundle
     pair: PoolOwner
     number: str
     local_gain: int
     global_gain: int
-    cost: int
+    global_cost: int
 
     @property
     def efficiency(self) -> float:
-        """Returns global_gain per marginal cost."""
-        return self.global_gain / self.cost if self.cost > 0 else inf
+        """Returns global_gain per global cost."""
+        return self.global_gain / self.global_cost if self.global_cost > 0 else inf
 
 
 class Planner:
@@ -350,8 +350,8 @@ class Planner:
                 print(f"  Considering {pair}:", file=sys.stderr)
                 candidate = self.next_candidate(owner, pair, group, selected, current_state, current_result, before_score,
                     self.generate_bundles(owner, group, module_ids, selected, current_state, current_result, before_score))
-                if candidate and (best is None or (candidate.efficiency, candidate.global_gain, -candidate.cost) >
-                        (best.efficiency, best.global_gain, -best.cost)):
+                if candidate and (best is None or (candidate.efficiency, candidate.global_gain, -candidate.global_cost) >
+                        (best.efficiency, best.global_gain, -best.global_cost)):
                     best = candidate
             if best:
                 return best
@@ -404,7 +404,7 @@ class Planner:
             action_text = self.state_delta_text(current_state, state)
             if action_text == "WAIT":
                 continue
-            plans.append((bundle, state, action_text, state.cost - current_state.cost))
+            plans.append((bundle, state, action_text, state.cost))
         path = ()
         for bundle, state, action_text, cost in plans:
             if bundle.path != path:
@@ -424,8 +424,8 @@ class Planner:
             print(f"{text}local gain={local_gain}, global gain={global_gain}, cost={cost}, efficiency={efficiency:.3f}", file=sys.stderr)
             if global_gain > 0 and result.score > current_result.score:
                 candidate = Candidate(bundle, pair, bundle.debug_id, local_gain, global_gain, cost)
-                if best is None or (candidate.efficiency, candidate.global_gain, -candidate.cost) > \
-                        (best.efficiency, best.global_gain, -best.cost):
+                if best is None or (candidate.efficiency, candidate.global_gain, -candidate.global_cost) > \
+                        (best.efficiency, best.global_gain, -best.global_cost):
                     best = candidate
         return best
 
@@ -474,12 +474,12 @@ class Planner:
         if base.tubes:
             base.debug_id = "0"
             bundles = [base]
-            base_metrics = self.bundle_metrics(base, selected, state, before_score)
+            base_metrics = self.bundle_metrics(base, selected, before_score)
             if base_metrics[3].cost > self.resources:
                 return bundles
             options = [(base, base_metrics)]
             for bundle in self.rebalance_variants(owner, base, base_metrics[3], state):
-                metrics = self.bundle_metrics(bundle, selected, state, before_score)
+                metrics = self.bundle_metrics(bundle, selected, before_score)
                 if self.simulation_cache_key(metrics[3], False) == self.simulation_cache_key(base_metrics[3], False):
                     continue
                 options.append((bundle, metrics))
@@ -494,7 +494,7 @@ class Planner:
             return bundles
         parent = Bundle(owner, label=base.label, path_edges=base.path_edges, destination=base.destination,
             path_length=base.path_length, path=base.path)
-        _, _, efficiency, parent_state = self.bundle_metrics(parent, selected, state, before_score)
+        _, _, efficiency, parent_state = self.bundle_metrics(parent, selected, before_score)
         pod_seed = base if base.fingerprint != Bundle(owner).fingerprint else None
         return self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, before_score, 1, pod_seed)
 
@@ -521,13 +521,13 @@ class Planner:
                 pod_bundle = self.projection_bundle(owner, parent, state, pod_state, f"{parent.label}-pod")
                 pod_index += 1
                 pod_bundle.debug_id = f"{round_number}p" if pod_index == 1 else f"{round_number}p{pod_index}"
-                pod_metrics = self.bundle_metrics(pod_bundle, selected, state, before_score)
+                pod_metrics = self.bundle_metrics(pod_bundle, selected, before_score)
                 options.append((pod_bundle, pod_metrics))
                 pod_options.append((pod_bundle, pod_metrics))
                 if pod_metrics[3].cost <= self.resources:
                     pod_key = self.simulation_cache_key(pod_metrics[3], False)
                     for bundle in self.rebalance_variants(owner, pod_bundle, pod_metrics[3], state):
-                        metrics = self.bundle_metrics(bundle, selected, state, before_score)
+                        metrics = self.bundle_metrics(bundle, selected, before_score)
                         if self.simulation_cache_key(metrics[3], False) != pod_key:
                             options.append((bundle, metrics))
                             pod_options.append((bundle, metrics))
@@ -537,7 +537,7 @@ class Planner:
                     Bundle(owner, upgrades=(upgrade_edge,), path_edges=parent.path_edges))
                 upgrade_bundle = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-upgrade")
                 upgrade_bundle.debug_id = f"{round_number}u"
-                options.append((upgrade_bundle, self.bundle_metrics(upgrade_bundle, selected, state, before_score)))
+                options.append((upgrade_bundle, self.bundle_metrics(upgrade_bundle, selected, before_score)))
             combined_options = []
             affordable_pods = [(bundle, metrics) for bundle, metrics in pod_options if metrics[3].cost <= self.resources]
             if affordable_pods:
@@ -549,7 +549,7 @@ class Planner:
                         projected = self.replay_bundle_on_state(pod_metrics[3], Bundle(owner, upgrades=(edge,), path_edges=parent.path_edges))
                         combined = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod-upgrade")
                         combined.debug_id = f"{round_number}b"
-                        combined_metrics = self.bundle_metrics(combined, selected, state, before_score)
+                        combined_metrics = self.bundle_metrics(combined, selected, before_score)
                         options.append((combined, combined_metrics))
                         combined_options.append((combined, combined_metrics))
             bundles.extend(bundle for bundle, _ in options)
@@ -584,11 +584,10 @@ class Planner:
             bundles.append(bundle)
         return bundles
 
-    def bundle_metrics(self, bundle: Bundle, selected: list[Bundle], state: PlanState,
-            before_score: int) -> tuple[int, int, float, PlanState]:
-        """Calculates global gain, marginal cost, efficiency, and projected state for bundle after selected and state from before_score."""
+    def bundle_metrics(self, bundle: Bundle, selected: list[Bundle], before_score: int) -> tuple[int, int, float, PlanState]:
+        """Calculates global gain, global cost, efficiency, and projected state for bundle after selected from before_score."""
         projected = self.replay_bundle_sequence([*selected, bundle])
-        cost = projected.cost - state.cost
+        cost = projected.cost
         if projected.cost > self.resources:
             return 0, cost, -inf, projected
         result = self.score_state(projected)

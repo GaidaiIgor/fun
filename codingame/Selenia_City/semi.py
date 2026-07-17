@@ -693,13 +693,14 @@ class Planner:
             return [[]]
         path_edges = [route_key(a, b) for a, b in zip(path, path[1:])]
         service_counts = self.service_counts(state)
-        if all(service_counts[edge] for edge in path_edges):
+        area = {edge for edge in path_edges if not service_counts[edge]}
+        if not area:
             return [[]]
-        area = set(path_edges)
         pod_ids = self.best_adjacent_pods(area, state)
         if pod_ids:
             return [[PodSpec(pod_id, frozenset(state.service_areas[pod_id] | area))] for pod_id in pod_ids]
-        return [[PodSpec(0, frozenset(area))]]
+        components = sorted(service_area_components(area), key=lambda item: tuple(sorted(item)))
+        return [[PodSpec(0, frozenset(component)) for component in components]]
 
     def best_adjacent_pods(self, edges: set[Pair], state: PlanState) -> list[int]:
         """Finds all equally preferred service pods adjacent to edges in state."""
@@ -707,7 +708,7 @@ class Planner:
         candidates = []
         for pod_id, area in state.service_areas.items():
             nodes = {node for area_edge in area for node in area_edge}
-            if edge_nodes & nodes:
+            if edge_nodes & nodes and service_area_connected(area | edges):
                 candidates.append((pod_id not in state.planned_pods, len(area), pod_id))
         if not candidates:
             return []

@@ -381,11 +381,10 @@ class Planner:
                 path = bundle.path
                 path_text = ", ".join(map(str, path))
                 print(f"    Considering path=[{path_text}]:", file=sys.stderr)
-            text = f"      {bundle.debug_id}: action={action_text}, "
+            prefix = "-> " if bundle.debug_chosen else ""
+            text = f"      {prefix}{bundle.debug_id}: action={action_text}, "
             if state.cost > self.resources:
                 print(f"{text}gain=-, cost={cost}, efficiency=-", file=sys.stderr)
-                if bundle.debug_chosen:
-                    print(f"      chosen {bundle.debug_chosen}", file=sys.stderr)
                 continue
             result = self.score_state(state)
             pool_score = result.speed_by_pool[owner] if isinstance(owner, tuple) else result.diversity_by_module[owner]
@@ -397,8 +396,6 @@ class Planner:
                 if best is None or (candidate.efficiency, candidate.points_gain, -candidate.cost) > \
                         (best.efficiency, best.points_gain, -best.cost):
                     best = candidate
-            if bundle.debug_chosen:
-                print(f"      chosen {bundle.debug_chosen}", file=sys.stderr)
         return best
 
     def generate_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], selected: list[Bundle], state: PlanState,
@@ -444,7 +441,7 @@ class Planner:
             if not affordable:
                 return bundles
             efficiency, _, _, parent, parent_state = max(affordable, key=lambda item: item[:3])
-            bundles[-1].debug_chosen = parent.debug_id
+            parent.debug_chosen = parent.debug_id
             bundles.extend(self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, current_result, 1))
             return bundles
         parent = Bundle(owner, label=base.label, path_edges=base.path_edges, destination=base.destination,
@@ -526,7 +523,7 @@ class Planner:
             combined_affordable = any(metrics[3].cost <= self.resources for _, metrics in combined_options)
             if efficiency <= parent_efficiency or not combined_affordable:
                 break
-            bundles[-1].debug_chosen = next_parent.debug_id
+            next_parent.debug_chosen = next_parent.debug_id
             parent, parent_state, parent_efficiency = next_parent, next_state, efficiency
             round_number += 1
             pod_seed = None

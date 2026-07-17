@@ -420,8 +420,10 @@ class Planner:
             pool_score = result.speed_by_pool[owner] if isinstance(owner, tuple) else result.diversity_by_module[owner]
             local_gain = pool_score - current_pool_score
             global_gain = result.score - before_score
+            checkpoint_delta = result.score - current_result.score
             efficiency = global_gain / cost if cost > 0 else inf
-            print(f"{text}local gain={local_gain}, global gain={global_gain}, cost={cost}, efficiency={efficiency:.3f}", file=sys.stderr)
+            print(f"{text}local gain={local_gain}, global gain={global_gain}({checkpoint_delta:+d}), cost={cost}, "
+                f"efficiency={efficiency:.3f}", file=sys.stderr)
             if global_gain > 0 and result.score > current_result.score:
                 candidate = Candidate(bundle, pair, bundle.debug_id, local_gain, global_gain, cost)
                 if best is None or (candidate.efficiency, candidate.global_gain, -candidate.global_cost) > \

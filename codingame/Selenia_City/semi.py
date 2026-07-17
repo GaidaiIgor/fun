@@ -128,17 +128,18 @@ class SimulationResult:
 
 @dataclass(slots=True)
 class Candidate:
-    """Stores a possible greedy replacement whose pair and number identify its debug listing."""
+    """Stores a possible greedy replacement whose pair, number, local_gain, global_gain, and cost describe its debug ranking."""
     bundle: Bundle
     pair: PoolOwner
     number: str
-    points_gain: int
+    local_gain: int
+    global_gain: int
     cost: int
 
     @property
     def efficiency(self) -> float:
-        """Returns marginal pool points_gain per marginal cost."""
-        return self.points_gain / self.cost if self.cost > 0 else inf
+        """Returns global_gain per marginal cost."""
+        return self.global_gain / self.cost if self.cost > 0 else inf
 
 
 class Planner:
@@ -216,7 +217,7 @@ class Planner:
         before_score = current_result.score
         print("\n" + self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
         while True:
-            best = self.best_candidate(selected, current_state, current_result)
+            best = self.best_candidate(selected, current_state, current_result, before_score)
             if best is None:
                 break
             selected.append(best.bundle)
@@ -320,8 +321,9 @@ class Planner:
         state.pods[pod_id] = PodPlan(pod_id, path, area, False)
         state.actions.append(action)
 
-    def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult) -> Candidate:
-        """Finds the best candidate from selected, current_state, and current_result by missing points."""
+    def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
+            before_score: int) -> Candidate:
+        """Finds the best candidate from selected using current_state, current_result, and turn-start before_score."""
         pools = []
         distances, _ = self.distances_to_targets(current_state)
         for pool in self.speed_pools():
@@ -346,10 +348,10 @@ class Planner:
             best = None
             for pair, group, module_ids in pairs:
                 print(f"  Considering {pair}:", file=sys.stderr)
-                candidate = self.next_candidate(owner, pair, group, selected, current_state, current_result,
-                    self.generate_bundles(owner, group, module_ids, selected, current_state, current_result))
-                if candidate and (best is None or (candidate.efficiency, candidate.points_gain, -candidate.cost) >
-                        (best.efficiency, best.points_gain, -best.cost)):
+                candidate = self.next_candidate(owner, pair, group, selected, current_state, current_result, before_score,
+                    self.generate_bundles(owner, group, module_ids, selected, current_state, current_result, before_score))
+                if candidate and (best is None or (candidate.efficiency, candidate.global_gain, -candidate.cost) >
+                        (best.efficiency, best.global_gain, -best.cost)):
                     best = candidate
             if best:
                 return best
@@ -380,8 +382,8 @@ class Planner:
             bool(hop_limit and self.cheapest_path_with_hop_limit(group[0], [module_id], hop_limit, state))
 
     def next_candidate(self, owner: PoolOwner, pair: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState,
-            current_result: SimulationResult, bundles: list[Bundle]) -> Candidate:
-        """Returns the best candidate in bundles for owner paired with pair and group, using selected, current_state, and current_result."""
+            current_result: SimulationResult, before_score: int, bundles: list[Bundle]) -> Candidate:
+        """Returns the best candidate in bundles for owner, pair, and group using selected, current_state, current_result, and before_score."""
         best = None
         seen = set()
         current_pool_score = current_result.speed_by_pool[owner] if isinstance(owner, tuple) else current_result.diversity_by_module[owner]
@@ -412,23 +414,24 @@ class Planner:
             prefix = "-> " if bundle.debug_chosen else ""
             text = f"      {prefix}{bundle.debug_id}: action={action_text}, "
             if state.cost > self.resources:
-                print(f"{text}gain=-, cost={cost}, efficiency=-", file=sys.stderr)
+                print(f"{text}local gain=-, global gain=-, cost={cost}, efficiency=-", file=sys.stderr)
                 continue
             result = self.score_state(state)
             pool_score = result.speed_by_pool[owner] if isinstance(owner, tuple) else result.diversity_by_module[owner]
-            points_gain = pool_score - current_pool_score
-            efficiency = points_gain / cost if cost > 0 else inf
-            print(f"{text}gain={points_gain}, cost={cost}, efficiency={efficiency:.3f}", file=sys.stderr)
-            if points_gain > 0:
-                candidate = Candidate(bundle, pair, bundle.debug_id, points_gain, cost)
-                if best is None or (candidate.efficiency, candidate.points_gain, -candidate.cost) > \
-                        (best.efficiency, best.points_gain, -best.cost):
+            local_gain = pool_score - current_pool_score
+            global_gain = result.score - before_score
+            efficiency = global_gain / cost if cost > 0 else inf
+            print(f"{text}local gain={local_gain}, global gain={global_gain}, cost={cost}, efficiency={efficiency:.3f}", file=sys.stderr)
+            if global_gain > 0 and result.score > current_result.score:
+                candidate = Candidate(bundle, pair, bundle.debug_id, local_gain, global_gain, cost)
+                if best is None or (candidate.efficiency, candidate.global_gain, -candidate.cost) > \
+                        (best.efficiency, best.global_gain, -best.cost):
                     best = candidate
         return best
 
     def generate_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], selected: list[Bundle], state: PlanState,
-            current_result: SimulationResult) -> list[Bundle]:
-        """Builds per-path bundle stacks for owner and group toward module_ids using selected, state, and current_result."""
+            current_result: SimulationResult, before_score: int) -> list[Bundle]:
+        """Builds path stacks for owner and group toward module_ids using selected, state, current_result, and before_score."""
         bases = []
         pad_id = group[0]
         current_length = INF
@@ -457,7 +460,7 @@ class Planner:
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
         bundles = []
         for base in bases:
-            bundles.extend(self.path_bundle_stack(owner, group, base, selected, state, current_result))
+            bundles.extend(self.path_bundle_stack(owner, group, base, selected, state, before_score))
         teleports = self.teleport_bundles(owner, group, module_ids, state)
         if isinstance(owner, int):
             teleports = [bundle for bundle in teleports
@@ -466,17 +469,17 @@ class Planner:
         return bundles
 
     def path_bundle_stack(self, owner: PoolOwner, group: Pool, base: Bundle, selected: list[Bundle], state: PlanState,
-            current_result: SimulationResult) -> list[Bundle]:
-        """Builds round-zero and iterative bundles for owner and group from base, selected, state, and current_result."""
+            before_score: int) -> list[Bundle]:
+        """Builds round-zero and iterative bundles for owner and group from base, selected, state, and before_score."""
         if base.tubes:
             base.debug_id = "0"
             bundles = [base]
-            base_metrics = self.bundle_metrics(owner, base, selected, state, current_result)
+            base_metrics = self.bundle_metrics(base, selected, state, before_score)
             if base_metrics[3].cost > self.resources:
                 return bundles
             options = [(base, base_metrics)]
             for bundle in self.rebalance_variants(owner, base, base_metrics[3], state):
-                metrics = self.bundle_metrics(owner, bundle, selected, state, current_result)
+                metrics = self.bundle_metrics(bundle, selected, state, before_score)
                 if self.simulation_cache_key(metrics[3], False) == self.simulation_cache_key(base_metrics[3], False):
                     continue
                 options.append((bundle, metrics))
@@ -487,17 +490,17 @@ class Planner:
                 return bundles
             efficiency, _, _, parent, parent_state = max(affordable, key=lambda item: item[:3])
             parent.debug_chosen = parent.debug_id
-            bundles.extend(self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, current_result, 1))
+            bundles.extend(self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, before_score, 1))
             return bundles
         parent = Bundle(owner, label=base.label, path_edges=base.path_edges, destination=base.destination,
             path_length=base.path_length, path=base.path)
-        _, _, efficiency, parent_state = self.bundle_metrics(owner, parent, selected, state, current_result)
+        _, _, efficiency, parent_state = self.bundle_metrics(parent, selected, state, before_score)
         pod_seed = base if base.fingerprint != Bundle(owner).fingerprint else None
-        return self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, current_result, 1, pod_seed)
+        return self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, before_score, 1, pod_seed)
 
     def throughput_bundles(self, owner: PoolOwner, group: Pool, parent: Bundle, parent_state: PlanState, parent_efficiency: float,
-            selected: list[Bundle], state: PlanState, current_result: SimulationResult, round_number: int, pod_seed: Bundle = None) -> list[Bundle]:
-        """Builds rounds for owner and group from parent and parent_state, comparing parent_efficiency within selected, state, and current_result.
+            selected: list[Bundle], state: PlanState, before_score: int, round_number: int, pod_seed: Bundle = None) -> list[Bundle]:
+        """Builds rounds for owner and group from parent and parent_state, comparing parent_efficiency within selected, state, and before_score.
 
         round_number names the first round, while pod_seed supplies required initial service work."""
         bundles = []
@@ -518,13 +521,13 @@ class Planner:
                 pod_bundle = self.projection_bundle(owner, parent, state, pod_state, f"{parent.label}-pod")
                 pod_index += 1
                 pod_bundle.debug_id = f"{round_number}p" if pod_index == 1 else f"{round_number}p{pod_index}"
-                pod_metrics = self.bundle_metrics(owner, pod_bundle, selected, state, current_result)
+                pod_metrics = self.bundle_metrics(pod_bundle, selected, state, before_score)
                 options.append((pod_bundle, pod_metrics))
                 pod_options.append((pod_bundle, pod_metrics))
                 if pod_metrics[3].cost <= self.resources:
                     pod_key = self.simulation_cache_key(pod_metrics[3], False)
                     for bundle in self.rebalance_variants(owner, pod_bundle, pod_metrics[3], state):
-                        metrics = self.bundle_metrics(owner, bundle, selected, state, current_result)
+                        metrics = self.bundle_metrics(bundle, selected, state, before_score)
                         if self.simulation_cache_key(metrics[3], False) != pod_key:
                             options.append((bundle, metrics))
                             pod_options.append((bundle, metrics))
@@ -534,7 +537,7 @@ class Planner:
                     Bundle(owner, upgrades=(upgrade_edge,), path_edges=parent.path_edges))
                 upgrade_bundle = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-upgrade")
                 upgrade_bundle.debug_id = f"{round_number}u"
-                options.append((upgrade_bundle, self.bundle_metrics(owner, upgrade_bundle, selected, state, current_result)))
+                options.append((upgrade_bundle, self.bundle_metrics(upgrade_bundle, selected, state, before_score)))
             combined_options = []
             affordable_pods = [(bundle, metrics) for bundle, metrics in pod_options if metrics[3].cost <= self.resources]
             if affordable_pods:
@@ -546,7 +549,7 @@ class Planner:
                         projected = self.replay_bundle_on_state(pod_metrics[3], Bundle(owner, upgrades=(edge,), path_edges=parent.path_edges))
                         combined = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod-upgrade")
                         combined.debug_id = f"{round_number}b"
-                        combined_metrics = self.bundle_metrics(owner, combined, selected, state, current_result)
+                        combined_metrics = self.bundle_metrics(combined, selected, state, before_score)
                         options.append((combined, combined_metrics))
                         combined_options.append((combined, combined_metrics))
             bundles.extend(bundle for bundle, _ in options)
@@ -581,17 +584,15 @@ class Planner:
             bundles.append(bundle)
         return bundles
 
-    def bundle_metrics(self, owner: PoolOwner, bundle: Bundle, selected: list[Bundle], state: PlanState,
-            current_result: SimulationResult) -> tuple[int, int, float, PlanState]:
-        """Calculates pool gain, marginal cost, efficiency, and projected state for bundle after selected and state."""
+    def bundle_metrics(self, bundle: Bundle, selected: list[Bundle], state: PlanState,
+            before_score: int) -> tuple[int, int, float, PlanState]:
+        """Calculates global gain, marginal cost, efficiency, and projected state for bundle after selected and state from before_score."""
         projected = self.replay_bundle_sequence([*selected, bundle])
         cost = projected.cost - state.cost
         if projected.cost > self.resources:
             return 0, cost, -inf, projected
         result = self.score_state(projected)
-        before = current_result.speed_by_pool[owner] if isinstance(owner, tuple) else current_result.diversity_by_module[owner]
-        after = result.speed_by_pool[owner] if isinstance(owner, tuple) else result.diversity_by_module[owner]
-        gain = after - before
+        gain = result.score - before_score
         return gain, cost, gain / cost if cost > 0 else inf if gain > 0 else 0, projected
 
     def projection_bundle(self, owner: PoolOwner, template: Bundle, before: PlanState, after: PlanState, label: str) -> Bundle:
@@ -852,9 +853,11 @@ class Planner:
         pods = {pod_id: PodPlan(pod_id, pod.path[:], set(self.service_areas[pod_id]), False) for pod_id, pod in self.pods.items()}
         service_areas = {pod_id: set(area) for pod_id, area in self.service_areas.items()}
         state = PlanState(dict(self.tubes), dict(self.teleports), pods, service_areas)
+        applied = []
         for bundle in selected:
             self.apply_bundle(state, bundle)
-        self.prune_uncommitted_infrastructure(state, selected)
+            applied.append(bundle)
+            self.prune_uncommitted_infrastructure(state, applied)
         return state
 
     def prune_uncommitted_infrastructure(self, state: PlanState, selected: list[Bundle]):

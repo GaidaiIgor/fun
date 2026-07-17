@@ -454,8 +454,7 @@ class Planner:
             selected: list[Bundle], state: PlanState, current_result: SimulationResult, round_number: int, pod_seed: Bundle = None) -> list[Bundle]:
         """Builds rounds for owner and group from parent and parent_state, comparing parent_efficiency within selected, state, and current_result.
 
-        round_number names the first round, while pod_seed supplies required initial service work.
-        """
+        round_number names the first round, while pod_seed supplies required initial service work."""
         bundles = []
         while parent_state.cost <= self.resources:
             result = self.cached_simulate(parent_state)
@@ -483,6 +482,7 @@ class Planner:
                         metrics = self.bundle_metrics(owner, bundle, selected, state, current_result)
                         if self.simulation_cache_key(metrics[3], False) != pod_key:
                             options.append((bundle, metrics))
+                            pod_options.append((bundle, metrics))
             upgrade_edge = self.best_counter_edge(parent.path_edges, result.congestion_by_edge)
             if upgrade_edge != (-1, -1):
                 projected = self.replay_bundle_on_state(parent_state,
@@ -491,29 +491,19 @@ class Planner:
                 upgrade_bundle.debug_id = f"{round_number}u"
                 options.append((upgrade_bundle, self.bundle_metrics(owner, upgrade_bundle, selected, state, current_result)))
             combined_options = []
-            combined_index = 0
-            for pod_bundle, pod_metrics in pod_options:
-                if pod_metrics[3].cost > self.resources:
-                    continue
+            affordable_pods = [(bundle, metrics) for bundle, metrics in pod_options if metrics[3].cost <= self.resources]
+            if affordable_pods:
+                pod_bundle, pod_metrics = max(affordable_pods, key=lambda item: (item[1][2], item[1][0], -item[1][1]))
                 edge = self.best_counter_edge(parent.path_edges, self.cached_simulate(pod_metrics[3]).congestion_by_edge)
-                if edge == (-1, -1):
-                    continue
-                upgrade_cost = tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * (parent_state.tubes[edge] + 1)
-                if parent_state.cost + upgrade_cost > self.resources:
-                    continue
-                projected = self.replay_bundle_on_state(pod_metrics[3], Bundle(owner, upgrades=(edge,), path_edges=parent.path_edges))
-                combined = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod-upgrade")
-                combined_index += 1
-                combined.debug_id = f"{round_number}b" if combined_index == 1 else f"{round_number}b{combined_index}"
-                combined_metrics = self.bundle_metrics(owner, combined, selected, state, current_result)
-                options.append((combined, combined_metrics))
-                combined_options.append((combined, combined_metrics))
-                if combined_metrics[3].cost <= self.resources:
-                    combined_key = self.simulation_cache_key(combined_metrics[3], False)
-                    for bundle in self.rebalance_variants(owner, combined, combined_metrics[3], state):
-                        metrics = self.bundle_metrics(owner, bundle, selected, state, current_result)
-                        if self.simulation_cache_key(metrics[3], False) != combined_key:
-                            options.append((bundle, metrics))
+                if edge != (-1, -1):
+                    upgrade_cost = tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * (parent_state.tubes[edge] + 1)
+                    if parent_state.cost + upgrade_cost <= self.resources:
+                        projected = self.replay_bundle_on_state(pod_metrics[3], Bundle(owner, upgrades=(edge,), path_edges=parent.path_edges))
+                        combined = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod-upgrade")
+                        combined.debug_id = f"{round_number}b"
+                        combined_metrics = self.bundle_metrics(owner, combined, selected, state, current_result)
+                        options.append((combined, combined_metrics))
+                        combined_options.append((combined, combined_metrics))
             bundles.extend(bundle for bundle, _ in options)
             affordable = [(metrics[2], metrics[0], -metrics[1], bundle, metrics[3]) for bundle, metrics in options
                 if metrics[3].cost <= self.resources]

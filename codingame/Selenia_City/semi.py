@@ -369,9 +369,14 @@ class Planner:
 
     def diversity_group_eligible(self, group: Pool, module_id: int, state: PlanState, result: SimulationResult,
             distances: dict[int, dict[int, int]]) -> bool:
-        """Returns whether group avoids module_id in result and can construct a path no longer than its current path in state according to distances."""
-        hop_limit = min(distances[group[1]][group[0]], MAX_TUBE_HOPS)
-        return not result.delivered_by_pool_module[group, module_id] and \
+        """Returns whether group avoids module_id in result and has an eligible constructible path according to state and distances."""
+        if result.delivered_by_pool_module[group, module_id]:
+            return False
+        current_length = distances[group[1]][group[0]]
+        if current_length <= MAX_TUBE_HOPS and self.cheapest_hop_path(group[0], [module_id], current_length, state):
+            return True
+        hop_limit = min(max(0, current_length - 1), MAX_TUBE_HOPS)
+        return self.speed_destination_eligible(group, module_id, result) and \
             bool(hop_limit and self.cheapest_path_with_hop_limit(group[0], [module_id], hop_limit, state))
 
     def next_candidate(self, owner: PoolOwner, pair: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState,
@@ -426,6 +431,12 @@ class Planner:
         """Builds per-path bundle stacks for owner and group toward module_ids using selected, state, and current_result."""
         bases = []
         pad_id = group[0]
+        current_length = INF
+        allow_shorter = True
+        if isinstance(owner, int):
+            distances, _ = self.distances_to_targets(state)
+            current_length = distances[group[1]][pad_id]
+            allow_shorter = self.speed_destination_eligible(group, module_ids[0], current_result)
         existing_path = self.shortest_existing_tube_path(pad_id, module_ids, state.tubes)
         if not existing_path:
             connections = self.connection_bundles(owner, group, module_ids, state)
@@ -437,10 +448,21 @@ class Planner:
             route_length = len(existing_path) - 1
             bases.extend(self.path_bundles(owner, "existing", existing_path, state))
         bases.extend(self.shortest_route_bundles(owner, group, module_ids, route_length, state))
+        if isinstance(owner, int) and current_length <= MAX_TUBE_HOPS:
+            equal_path = self.cheapest_hop_path(pad_id, module_ids, current_length, state)
+            if equal_path and tuple(equal_path) not in {bundle.path for bundle in bases}:
+                bases.extend(self.path_bundles(owner, f"equal-{current_length}", equal_path, state))
+        if isinstance(owner, int):
+            bases = [bundle for bundle in bases
+                if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
         bundles = []
         for base in bases:
             bundles.extend(self.path_bundle_stack(owner, group, base, selected, state, current_result))
-        bundles.extend(self.teleport_bundles(owner, group, module_ids, state))
+        teleports = self.teleport_bundles(owner, group, module_ids, state)
+        if isinstance(owner, int):
+            teleports = [bundle for bundle in teleports
+                if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
+        bundles.extend(teleports)
         return bundles
 
     def path_bundle_stack(self, owner: PoolOwner, group: Pool, base: Bundle, selected: list[Bundle], state: PlanState,

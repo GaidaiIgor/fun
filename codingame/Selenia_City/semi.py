@@ -335,7 +335,7 @@ class Planner:
         for module in sorted(self.buildings.values(), key=lambda item: item.id):
             if module.kind <= 0:
                 continue
-            missing = self.max_diversity(module.kind) - current_result.diversity_by_module[module.id]
+            missing = self.perfect_diversity(module.kind) - current_result.diversity_by_module[module.id]
             if missing <= 0:
                 continue
             groups = [pool for pool in self.speed_pools()
@@ -1656,9 +1656,17 @@ class Planner:
             max_diversity = self.max_diversity(building.kind)
             if not max_diversity:
                 continue
-            line = f"diversity pool {building.id}: {result.diversity_by_module[building.id]}/{max_diversity}, "
+            perfect_diversity = self.perfect_diversity(building.kind)
+            line = f"diversity pool {building.id}: {result.diversity_by_module[building.id]}/{perfect_diversity}/{max_diversity}, "
             lines.append(f"{line}delivered {result.delivered_by_module[building.id]}")
         return "\n".join(lines)
+
+    def perfect_diversity(self, kind: int) -> int:
+        """Returns the diversity score for a perfectly balanced population of kind."""
+        demand = sum(pad.demand[kind] for pad in self.landing_pads())
+        module_count = sum(building.kind == kind for building in self.buildings.values())
+        balanced_population = (demand + module_count - 1) // module_count
+        return sum(max(0, 50 - index) for index in range(balanced_population))
 
     def max_diversity(self, kind: int) -> int:
         """Returns the maximum diversity score for module kind."""

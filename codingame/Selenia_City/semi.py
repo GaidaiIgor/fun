@@ -337,7 +337,7 @@ class Planner:
             if missing <= 0:
                 continue
             groups = [pool for pool in self.speed_pools()
-                if pool[1] == module.kind and self.diversity_group_eligible(pool, module.id, current_state, distances)]
+                if pool[1] == module.kind and self.diversity_group_eligible(pool, module.id, current_state, current_result, distances)]
             if groups:
                 pools.append((missing, (1, module.id), module.id, [(group, group, [module.id]) for group in groups]))
         pools.sort(key=lambda item: (-item[0], item[1]))
@@ -367,10 +367,12 @@ class Planner:
         after = sum(sum(max(0, 50 - index) for index in range(populations[module.id])) for module in modules)
         return after >= before
 
-    def diversity_group_eligible(self, group: Pool, module_id: int, state: PlanState, distances: dict[int, dict[int, int]]) -> bool:
-        """Returns whether group has a constructible path to module_id no longer than its current path in state according to distances."""
+    def diversity_group_eligible(self, group: Pool, module_id: int, state: PlanState, result: SimulationResult,
+            distances: dict[int, dict[int, int]]) -> bool:
+        """Returns whether group avoids module_id in result and can construct a path no longer than its current path in state according to distances."""
         hop_limit = min(distances[group[1]][group[0]], MAX_TUBE_HOPS)
-        return bool(hop_limit and self.cheapest_path_with_hop_limit(group[0], [module_id], hop_limit, state))
+        return not result.delivered_by_pool_module[group, module_id] and \
+            bool(hop_limit and self.cheapest_path_with_hop_limit(group[0], [module_id], hop_limit, state))
 
     def next_candidate(self, owner: PoolOwner, pair: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState,
             current_result: SimulationResult, bundles: list[Bundle]) -> Candidate:

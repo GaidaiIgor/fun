@@ -833,9 +833,12 @@ class Planner:
         for pod_id in list(state.planned_pods):
             if pod_id in self.pods:
                 original = self.service_areas[pod_id]
-                selected = state.planned_pod_edges[pod_id]
-                required = original | (selected & active_edges) if original <= selected else selected & active_edges
-                state.service_areas[pod_id] = connected_service_subset(selected, required)
+                selected_area = state.planned_pod_edges[pod_id]
+                if (original - selected_area) & active_edges:
+                    state.service_areas[pod_id] = selected_area
+                else:
+                    required = original | (selected_area & active_edges) if original <= selected_area else selected_area & active_edges
+                    state.service_areas[pod_id] = connected_service_subset(selected_area, required)
                 if state.service_areas[pod_id] == original:
                     self.remove_planned_pod(state, pod_id)
                     continue

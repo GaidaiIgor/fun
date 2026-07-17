@@ -109,7 +109,7 @@ class PlanState:
 
 @dataclass(slots=True)
 class SimulationResult:
-    """Stores monthly score details and congestion diagnostics."""
+    """Stores monthly score details, including delivered_by_pool_module destination counts, and congestion diagnostics."""
     score: int = 0
     speed: int = 0
     diversity: int = 0
@@ -119,6 +119,7 @@ class SimulationResult:
     delivery_times: dict[Pool, int] = field(default_factory=dict)
     diversity_by_module: Counter[int] = field(default_factory=Counter)
     delivered_by_module: Counter[int] = field(default_factory=Counter)
+    delivered_by_pool_module: Counter[tuple[Pool, int]] = field(default_factory=Counter)
     wait_by_edge: Counter[Pair] = field(default_factory=Counter)
     preventable_wait_by_edge: Counter[Pair] = field(default_factory=Counter)
     congestion_by_edge: Counter[Pair] = field(default_factory=Counter)
@@ -326,7 +327,8 @@ class Planner:
         for pool in self.speed_pools():
             missing = self.buildings[pool[0]].demand[pool[1]] * 50 - current_result.speed_by_pool[pool]
             if missing > 0:
-                modules = sorted(building.id for building in self.buildings.values() if building.kind == pool[1])
+                modules = sorted(building.id for building in self.buildings.values()
+                    if building.kind == pool[1] and self.speed_destination_eligible(pool, building.id, current_result))
                 pools.append((missing, (0, pool[0], pool[1]), pool, [(module_id, pool, [module_id]) for module_id in modules]))
         for module in sorted(self.buildings.values(), key=lambda item: item.id):
             if module.kind <= 0:
@@ -352,6 +354,18 @@ class Planner:
             if best:
                 return best
         return None
+
+    def speed_destination_eligible(self, pool: Pool, module_id: int, result: SimulationResult) -> bool:
+        """Returns whether rerouting all of pool to module_id preserves the current diversity points in result."""
+        modules = [building for building in self.buildings.values() if building.kind == pool[1]]
+        before = sum(result.diversity_by_module[module.id] for module in modules)
+        populations = Counter({module.id: result.delivered_by_module[module.id] for module in modules})
+        for (delivered_pool, delivered_module_id), count in result.delivered_by_pool_module.items():
+            if delivered_pool == pool:
+                populations[delivered_module_id] -= count
+        populations[module_id] += self.buildings[pool[0]].demand[pool[1]]
+        after = sum(sum(max(0, 50 - index) for index in range(populations[module.id])) for module in modules)
+        return after >= before
 
     def diversity_group_eligible(self, group: Pool, module_id: int, state: PlanState, distances: dict[int, dict[int, int]]) -> bool:
         """Returns whether group has a constructible path to module_id no longer than its current path in state according to distances."""
@@ -978,6 +992,7 @@ class Planner:
         copy.delivery_times = dict(result.delivery_times)
         copy.diversity_by_module = Counter(result.diversity_by_module)
         copy.delivered_by_module = Counter(result.delivered_by_module)
+        copy.delivered_by_pool_module = Counter(result.delivered_by_pool_module)
         copy.wait_by_edge = Counter(result.wait_by_edge)
         copy.preventable_wait_by_edge = Counter(result.preventable_wait_by_edge)
         copy.congestion_by_edge = Counter(result.congestion_by_edge)
@@ -1124,6 +1139,7 @@ class Planner:
                 result.delivered_by_pool[pool] += 1
                 result.diversity_by_module[building_id] += diversity
                 result.delivered_by_module[building_id] += 1
+                result.delivered_by_pool_module[pool, building_id] += 1
                 if result.delivered_by_pool[pool] == self.buildings[passenger.pad_id].demand[passenger.kind]:
                     result.delivery_times[pool] = day
                 module_arrivals[building_id] += 1

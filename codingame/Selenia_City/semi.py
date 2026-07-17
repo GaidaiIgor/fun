@@ -1057,11 +1057,12 @@ class Planner:
         for day in range(MONTH_DAYS):
             self.teleport_phase(queues, distances, state.teleports)
             self.settle(day, queues, module_arrivals, result)
-            demand, priorities = self.prioritized_demand(queues, wanted_edges, nearest_modules, module_arrivals, reservations)
+            demand, priorities, remaining_paths = self.prioritized_demand(queues, distances, wanted_edges, nearest_modules, module_arrivals,
+                reservations)
             if not demand:
                 break
-            requests = self.pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, demand, priorities, graph, service_counts,
-                service_graphs)
+            requests = self.pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, demand, priorities, remaining_paths, graph,
+                service_counts, service_graphs)
             moves = self.allocate_tube_capacity(requests, state, demand, priorities, result, service_counts)
             self.board_and_launch(queues, distances, wanted_edges, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
             self.settle(day + 1, queues, module_arrivals, result)
@@ -1176,11 +1177,13 @@ class Planner:
             else:
                 del queues[building_id]
 
-    def prioritized_demand(self, queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
-            nearest_modules: dict[tuple[int, int], tuple[int, ...]], module_arrivals: Counter[int], reservations: dict[int, int]) -> \
-            tuple[Counter[DirectedPair], dict[DirectedPair, int]]:
-        """Counts demand and resolves overlapping current batches into low, normal, or high priorities using diversity."""
+    def prioritized_demand(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], nearest_modules: dict[tuple[int, int], tuple[int, ...]],
+            module_arrivals: Counter[int], reservations: dict[int, int]) -> \
+            tuple[Counter[DirectedPair], dict[DirectedPair, int], dict[DirectedPair, float]]:
+        """Counts demand, average remaining_paths, and priorities from queues, distances, wanted_edges, nearest_modules, module_arrivals, and reservations."""
         demand = Counter()
+        path_batches = {}
         ambiguous = False
         for building_id, passengers in queues.items():
             counts = Counter(passenger.kind for passenger in passengers)
@@ -1189,9 +1192,15 @@ class Planner:
                 ambiguous |= len(moves) > 1
                 for move in moves:
                     demand[move] += count
+            for passenger in sorted(passengers, key=lambda item: item.id):
+                for move in wanted_edges[building_id, passenger.kind]:
+                    batch = path_batches.setdefault(move, [])
+                    if len(batch) < POD_CAPACITY:
+                        batch.append(distances[passenger.kind][move[1]])
+        remaining_paths = {move: sum(batch) / len(batch) for move, batch in path_batches.items()}
         priorities = {move: 1 for move in demand}
         if not ambiguous:
-            return demand, priorities
+            return demand, priorities, remaining_paths
         batches = {}
         active = set()
         inbound = Counter(module_arrivals)
@@ -1245,7 +1254,7 @@ class Planner:
                 reservations.update(assignments)
                 inbound.update(assignments.values())
                 counted.update(assignments)
-        return demand, priorities
+        return demand, priorities, remaining_paths
 
     def diversity_assignments(self, move: DirectedPair, passengers: list[Passenger], inbound: Counter[int],
             nearest_modules: dict[tuple[int, int], tuple[int, ...]]) -> tuple[int, dict[int, int]]:
@@ -1262,9 +1271,11 @@ class Planner:
         return gain, assignments
 
     def pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
-            dynamic_current: dict[int, int], demand: Counter[DirectedPair], priorities: dict[DirectedPair, int], graph: dict[int, list[int]],
-            service_counts: Counter[Pair], service_graphs: dict[int, dict[int, list[int]]]) -> dict[int, DirectedPair]:
-        """Returns daily pod move requests, with dynamic pods choosing requests after fixed pods."""
+            dynamic_current: dict[int, int], demand: Counter[DirectedPair], priorities: dict[DirectedPair, int],
+            remaining_paths: dict[DirectedPair, float], graph: dict[int, list[int]], service_counts: Counter[Pair],
+            service_graphs: dict[int, dict[int, list[int]]]) -> dict[int, DirectedPair]:
+        """Builds requests for fixed_pods and dynamic_pods from pod_positions, dynamic_current, demand, priorities, and remaining_paths.
+        Returns daily moves using graph, service_counts, and service_graphs, with dynamic pods choosing after fixed pods."""
         requests = {}
         for pod_id, pod in fixed_pods:
             index = pod_positions[pod_id]
@@ -1273,14 +1284,16 @@ class Planner:
                 continue
             requests[pod_id] = (pod.path[index], pod.path[next_index])
         for pod_id, pod in dynamic_pods:
-            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, priorities, service_counts, graph, service_graphs[pod_id])
+            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, priorities, remaining_paths, service_counts, graph,
+                service_graphs[pod_id])
             if move != (-1, -1):
                 requests[pod_id] = move
         return requests
 
     def dynamic_move(self, pod: PodPlan, current_id: int, demand: Counter[DirectedPair], priorities: dict[DirectedPair, int],
-            service_counts: Counter[Pair], full_graph: dict[int, list[int]], graph: dict[int, list[int]]) -> DirectedPair:
-        """Chooses one dynamic pod move according to service_area and demand."""
+            remaining_paths: dict[DirectedPair, float], service_counts: Counter[Pair], full_graph: dict[int, list[int]],
+            graph: dict[int, list[int]]) -> DirectedPair:
+        """Chooses a move for pod at current_id from demand and priorities using remaining_paths, service_counts, full_graph, and graph."""
         area_nodes = set(graph)
         loads = {edge: count for edge, count in demand.items() if route_key(*edge) in pod.service_area}
         active_graph = graph
@@ -1296,12 +1309,14 @@ class Planner:
         if current is not None and current not in area_nodes:
             active_graph = full_graph
         best_edge = (-1, -1)
-        best_key = (INF, INF, INF, INF, INF)
+        best_key = (INF, INF, INF, INF, INF, INF)
         for source_id, target_id in loads:
             distance = 0 if current is None else graph_distance(active_graph, current, source_id)
             if distance == INF:
                 continue
-            key = (-min(loads[source_id, target_id], POD_CAPACITY), distance, service_counts[route_key(source_id, target_id)], source_id, target_id)
+            remaining_path = remaining_paths[source_id, target_id] if loads[source_id, target_id] >= POD_CAPACITY else INF
+            key = (-min(loads[source_id, target_id], POD_CAPACITY), distance, remaining_path,
+                service_counts[route_key(source_id, target_id)], source_id, target_id)
             if key < best_key:
                 best_key = key
                 best_edge = source_id, target_id

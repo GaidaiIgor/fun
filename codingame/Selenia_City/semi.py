@@ -16,7 +16,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 2 0 2 3 2 3 2 0 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 4 1 4 3 4 1 4 3 2"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO(0-2, 2-3, 2-5);POD 2 AUTO(1-4, 3-4)"
    # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO(0-2, 2-3, 2-5);POD 2 AUTO(1-4, 3-4)"
 
 Pair = tuple[int, int]
@@ -1211,7 +1211,8 @@ class Planner:
         moves = {}
         by_tube = {}
         remaining_demand = Counter(demand)
-        arbitrary_fallback_pods = set()
+        forced_fallback = set()
+        game_winners = {}
         for pod_id, move in requests.items():
             by_tube.setdefault(route_key(*move), []).append((pod_id, move))
         for edge, pods in by_tube.items():
@@ -1225,16 +1226,31 @@ class Planner:
             selected = self.prioritized_capacity_moves(pods, capacity, state, remaining_demand)
             selected_ids = {pod_id for pod_id, _ in selected}
             id_winners = {pod_id for pod_id, _ in sorted(pods)[:capacity]}
-            arbitrary_fallback_pods.update(pod_id for pod_id, _ in pods if pod_id in id_winners - selected_ids and state.pods[pod_id].dynamic)
+            game_winners[edge] = id_winners
+            forced_fallback.update(pod_id for pod_id in id_winners - selected_ids if state.pods[pod_id].dynamic)
             for pod_id, move in selected:
                 moves[pod_id] = move
                 remaining_demand[move] = max(0, remaining_demand[move] - POD_CAPACITY)
         used = Counter(route_key(*move) for move in moves.values())
-        for pod_id in sorted(set(requests) - set(moves)):
+        pending = set(requests) - set(moves)
+        while pending:
+            pod_id = min(pending)
+            pending.remove(pod_id)
             if not state.pods[pod_id].dynamic:
                 continue
             move = self.capacity_fallback_move(pod_id, requests[pod_id], remaining_demand, priorities, state, used, service_counts,
-                pod_id in arbitrary_fallback_pods)
+                pod_id in forced_fallback)
+            if move == (-1, -1) and pod_id in forced_fallback:
+                edge = route_key(*requests[pod_id])
+                displaced_id = max(item for item, selected_move in moves.items()
+                    if route_key(*selected_move) == edge and item not in game_winners[edge])
+                displaced_move = moves.pop(displaced_id)
+                remaining_demand[displaced_move] = min(demand[displaced_move], remaining_demand[displaced_move] + POD_CAPACITY)
+                moves[pod_id] = requests[pod_id]
+                remaining_demand[requests[pod_id]] = max(0, remaining_demand[requests[pod_id]] - POD_CAPACITY)
+                if state.pods[displaced_id].dynamic:
+                    pending.add(displaced_id)
+                continue
             if move != (-1, -1):
                 moves[pod_id] = move
                 used[route_key(*move)] += 1

@@ -15,8 +15,9 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 2 0 2 3 2 0 2 3 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 4 1 4 3 4 1 4 3 4"
+OVERRIDE_MONTH = -1
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 2 0 2 3 2 3 2 0 2;" \
+    "POD 2 4 1 4 1 4 1 4 1 4 1 4 3 4 1 4 3 4 1 4 3 2"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -990,12 +991,10 @@ class Planner:
         dynamic_current = {pod_id: -1 for pod_id, _ in dynamic_pods}
         dynamic_paths = {pod_id: [] for pod_id, _ in dynamic_pods}
         module_arrivals = Counter()
-        reservations = {}
         for day in range(MONTH_DAYS):
             self.teleport_phase(queues, distances, state.teleports)
             self.settle(day, queues, module_arrivals, result)
-            demand, priorities, remaining_paths = self.prioritized_demand(queues, distances, wanted_edges, nearest_modules, module_arrivals,
-                reservations)
+            demand, priorities, remaining_paths = self.prioritized_demand(queues, distances, wanted_edges, nearest_modules, module_arrivals)
             if not demand:
                 break
             requests = self.pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, demand, priorities, remaining_paths, graph,
@@ -1110,94 +1109,45 @@ class Planner:
 
     def prioritized_demand(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], nearest_modules: dict[tuple[int, int], tuple[int, ...]],
-            module_arrivals: Counter[int], reservations: dict[int, int]) -> \
+            module_arrivals: Counter[int]) -> \
             tuple[Counter[DirectedPair], dict[DirectedPair, int], dict[DirectedPair, float]]:
         demand = Counter()
         path_batches = {}
-        ambiguous = False
+        groups = {}
+        inbound = Counter(module_arrivals)
         for building_id, passengers in queues.items():
-            counts = Counter(passenger.kind for passenger in passengers)
-            for kind, count in counts.items():
-                moves = wanted_edges[building_id, kind]
-                ambiguous |= len(moves) > 1
-                for move in moves:
-                    demand[move] += count
             for passenger in sorted(passengers, key=lambda item: item.id):
                 for move in wanted_edges[building_id, passenger.kind]:
+                    demand[move] += 1
                     batch = path_batches.setdefault(move, [])
                     if len(batch) < POD_CAPACITY:
                         batch.append(distances[passenger.kind][move[1]])
+                modules = nearest_modules[building_id, passenger.kind]
+                if len(modules) == 1:
+                    inbound[modules[0]] += 1
+                elif len(modules) > 1:
+                    groups.setdefault((building_id, passenger.pad_id, passenger.kind), []).append(passenger)
         remaining_paths = {move: sum(batch) / len(batch) for move, batch in path_batches.items()}
         priorities = {move: 1 for move in demand}
-        if not ambiguous:
-            return demand, priorities, remaining_paths
-        batches = {}
-        active = set()
-        inbound = Counter(module_arrivals)
-        counted = set()
-        for building_id in sorted(queues):
-            for passenger in sorted(queues[building_id], key=lambda item: item.id):
-                active.add(passenger.id)
-                modules = nearest_modules[building_id, passenger.kind]
-                if reservations.get(passenger.id) in modules:
-                    inbound[reservations[passenger.id]] += 1
-                    counted.add(passenger.id)
-                elif len(modules) == 1:
-                    reservations[passenger.id] = modules[0]
-                    inbound[modules[0]] += 1
-                    counted.add(passenger.id)
-                else:
-                    reservations.pop(passenger.id, None)
-                for move in wanted_edges[building_id, passenger.kind]:
-                    batch = batches.setdefault(move, [])
-                    if len(batch) < POD_CAPACITY:
-                        batch.append(passenger)
-        for passenger_id in set(reservations) - active:
-            del reservations[passenger_id]
-        for building_id in sorted(queues):
-            remaining = {move for move in demand if move[0] == building_id}
-            batch_ids = {move: {passenger.id for passenger in batches[move]} for move in remaining}
-            while remaining:
-                component = {min(remaining)}
-                passenger_ids = set(batch_ids[next(iter(component))])
-                while True:
-                    added = {move for move in remaining - component if passenger_ids & batch_ids[move]}
-                    if not added:
-                        break
-                    component.update(added)
-                    passenger_ids.update(*(batch_ids[move] for move in added))
-                remaining -= component
-                if len(component) == 1:
-                    continue
-                for passenger_id in passenger_ids:
-                    if passenger_id in counted:
-                        inbound[reservations[passenger_id]] -= 1
-                        counted.remove(passenger_id)
-                    reservations.pop(passenger_id, None)
-                scored = []
-                for move in sorted(component):
-                    gain, assignments = self.diversity_assignments(move, batches[move], inbound, nearest_modules)
-                    scored.append((gain, -move[1], move, assignments))
-                _, _, preferred, assignments = max(scored)
-                for move in component:
-                    priorities[move] = 2 if move == preferred else 0
-                reservations.update(assignments)
-                inbound.update(assignments.values())
-                counted.update(assignments)
+        high = set()
+        low = set()
+        for (building_id, _, kind), passengers in sorted(groups.items()):
+            modules = nearest_modules[building_id, kind]
+            scored = [(sum(max(0, 50 - inbound[module_id] - index) for index in range(len(passengers))), module_id)
+                for module_id in modules]
+            best_gain = max(gain for gain, _ in scored)
+            preferred = [module_id for gain, module_id in scored if gain == best_gain]
+            if len(preferred) != 1:
+                continue
+            moves = set(wanted_edges[building_id, kind])
+            preferred_moves = {move for move in moves if preferred[0] in nearest_modules[move[1], kind]}
+            high.update(preferred_moves)
+            low.update(moves - preferred_moves)
+        for move in low - high:
+            priorities[move] = 0
+        for move in high:
+            priorities[move] = 2
         return demand, priorities, remaining_paths
-
-    def diversity_assignments(self, move: DirectedPair, passengers: list[Passenger], inbound: Counter[int],
-            nearest_modules: dict[tuple[int, int], tuple[int, ...]]) -> tuple[int, dict[int, int]]:
-        projected = Counter(inbound)
-        assignments = {}
-        gain = 0
-        for passenger in passengers:
-            modules = nearest_modules[move[1], passenger.kind]
-            module_id = min(modules, key=lambda item: (-max(0, 50 - projected[item]), item))
-            gain += max(0, 50 - projected[module_id])
-            projected[module_id] += 1
-            assignments[passenger.id] = module_id
-        return gain, assignments
 
     def pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
             dynamic_current: dict[int, int], demand: Counter[DirectedPair], priorities: dict[DirectedPair, int],

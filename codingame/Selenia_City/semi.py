@@ -812,12 +812,18 @@ class Planner:
 
     def prune_uncommitted_infrastructure(self, state: PlanState, selected: list[Bundle]):
         active_edges = set()
-        active_by_pool = {}
+        speed_routes = {}
+        diversity_routes = {}
         for bundle in selected:
             if bundle.path_edges or bundle.teleport != (-1, -1):
-                key = (bundle.pool,) if isinstance(bundle.pool, tuple) else (bundle.pool, bundle.path[0])
-                active_by_pool[key] = set(bundle.path_edges)
-        for edges in active_by_pool.values():
+                edges = set(bundle.path_edges)
+                if isinstance(bundle.pool, tuple):
+                    speed_routes[bundle.pool] = edges
+                    diversity_routes.pop((bundle.pool, bundle.destination), None)
+                else:
+                    group = bundle.path[0], self.buildings[bundle.pool].kind
+                    diversity_routes[group, bundle.destination] = edges
+        for edges in (*speed_routes.values(), *diversity_routes.values()):
             active_edges.update(edges)
         for pod_id in list(state.planned_pods):
             if pod_id in self.pods:

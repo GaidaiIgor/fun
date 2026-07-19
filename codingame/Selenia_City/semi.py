@@ -17,7 +17,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 1 AUTO(0-2, 2-3, 2-7, 3-5);POD 3 AUTO(4-8);POD 4 AUTO(3-4)"
+OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;DESTROY 1;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 2 7 2 7 2 7 2 0 2;POD 3 8 4 8 4 8 4 8 4 8 4 3 5 3 2 3 2 7 2 3 2 3;POD 4 3 5 3 4 3 4 3 4 3 4 3 5 3 2 3 5 3 4 3 4 3"
    # "TUBE 2 7;TUBE 4 8;POD 1 AUTO(0-2, 2-3, 2-7, 3-5);POD 3 AUTO(4-8);POD 4 AUTO(3-4)"
 
 Pair = tuple[int, int]
@@ -974,7 +974,7 @@ class Planner:
         for index, pod_id in state.placeholders:
             path = dynamic_paths[pod_id]
             assert len(path) >= 2, f"dynamic pod {pod_id} produced an empty route"
-            state.actions[index] = "POD {} {}".format(pod_id, " ".join(map(str, normalize_month_path(path))))
+            state.actions[index] = "POD {} {}".format(pod_id, " ".join(map(str, path)))
 
     def score_state(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         if not any(pod.dynamic for pod in state.pods.values()):
@@ -1014,7 +1014,7 @@ class Planner:
     def fixed_dynamic_state(self, state: PlanState, dynamic_paths: dict[int, list[int]]) -> PlanState:
         pods = {}
         for pod_id, pod in state.pods.items():
-            path = normalize_month_path(dynamic_paths[pod_id]) if pod.dynamic else pod.path[:]
+            path = dynamic_paths[pod_id][:] if pod.dynamic else pod.path[:]
             pods[pod_id] = PodPlan(pod.id, path, set(pod.service_area), False)
         return PlanState(dict(state.tubes), dict(state.teleports), pods, {pod_id: set(area) for pod_id, area in state.service_areas.items()},
             list(state.actions), list(state.placeholders), set(state.planned_pods),
@@ -1034,8 +1034,10 @@ class Planner:
         service_graphs = {pod_id: tube_graph({edge: 1 for edge in pod.service_area}) for pod_id, pod in dynamic_pods}
         pod_positions = {pod_id: 0 for pod_id, _ in fixed_pods}
         dynamic_current = {pod_id: -1 for pod_id, _ in dynamic_pods}
+        dynamic_pending = {pod_id: (-1, -1) for pod_id, _ in dynamic_pods}
         dynamic_paths = {pod_id: [] for pod_id, _ in dynamic_pods}
         module_arrivals = Counter()
+        demand_exhausted = False
         for day in range(MONTH_DAYS):
             self.teleport_phase(queues, distances, state.teleports)
             self.settle(day, queues, module_arrivals, result)
@@ -1043,15 +1045,25 @@ class Planner:
                 passengers.sort(key=lambda item: item.id)
             demand, priorities, remaining_paths = self.prioritized_demand(queues, distances, wanted_edges, nearest_modules, module_arrivals)
             if not demand:
+                demand_exhausted = True
                 break
-            requests = self.pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, demand, priorities, remaining_paths, graph,
-                service_counts, node_service_counts, service_graphs)
+            requests = self.pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending, demand, priorities,
+                remaining_paths, graph, service_counts, node_service_counts, service_graphs)
             moves = self.allocate_tube_capacity(requests, state, demand, priorities, remaining_paths, result, service_counts,
-                node_service_counts, graph, service_graphs, dynamic_current)
-            self.board_and_launch(queues, distances, wanted_edges, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
+                node_service_counts, graph, service_graphs, dynamic_current, dynamic_pending)
+            for pod_id, _ in dynamic_pods:
+                if dynamic_pending[pod_id] != (-1, -1) or pod_id not in requests:
+                    continue
+                dynamic_pending[pod_id] = requests[pod_id]
+                if dynamic_current[pod_id] == -1:
+                    dynamic_current[pod_id] = requests[pod_id][0]
+                    dynamic_paths[pod_id].append(requests[pod_id][0])
+                dynamic_paths[pod_id].append(requests[pod_id][1])
+            self.board_and_launch(queues, distances, wanted_edges, state, moves, pod_positions, dynamic_current, dynamic_pending, result)
             self.settle(day + 1, queues, module_arrivals, result)
+        demand_exhausted |= not queues
         if keep_dynamic_paths:
-            result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
+            result.dynamic_paths = {pod_id: normalize_month_path(path) if demand_exhausted else path[:] for pod_id, path in dynamic_paths.items()}
         return result
 
     def distances_to_targets(self, state: PlanState) -> tuple[dict[int, dict[int, int]], dict[int, dict[int, int]]]:
@@ -1212,9 +1224,10 @@ class Planner:
         return demand, priorities, remaining_paths
 
     def pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
-            dynamic_current: dict[int, int], demand: Counter[DirectedPair], priorities: dict[DirectedPair, int],
-            remaining_paths: dict[DirectedPair, float], graph: dict[int, list[int]], service_counts: Counter[Pair],
-            node_service_counts: Counter[int], service_graphs: dict[int, dict[int, list[int]]]) -> dict[int, DirectedPair]:
+            dynamic_current: dict[int, int], dynamic_pending: dict[int, DirectedPair], demand: Counter[DirectedPair],
+            priorities: dict[DirectedPair, int], remaining_paths: dict[DirectedPair, float], graph: dict[int, list[int]],
+            service_counts: Counter[Pair], node_service_counts: Counter[int],
+            service_graphs: dict[int, dict[int, list[int]]]) -> dict[int, DirectedPair]:
         requests = {}
         for pod_id, pod in fixed_pods:
             index = pod_positions[pod_id]
@@ -1223,6 +1236,9 @@ class Planner:
                 continue
             requests[pod_id] = (pod.path[index], pod.path[next_index])
         for pod_id, pod in dynamic_pods:
+            if dynamic_pending[pod_id] != (-1, -1):
+                requests[pod_id] = dynamic_pending[pod_id]
+                continue
             move = self.dynamic_move(pod, dynamic_current[pod_id], demand, priorities, remaining_paths, service_counts, node_service_counts, graph,
                 service_graphs[pod_id])
             if move != (-1, -1):
@@ -1272,7 +1288,8 @@ class Planner:
     def allocate_tube_capacity(self, requests: dict[int, DirectedPair], state: PlanState, demand: Counter[DirectedPair],
             priorities: dict[DirectedPair, int], remaining_paths: dict[DirectedPair, float], result: SimulationResult,
             service_counts: Counter[Pair], node_service_counts: Counter[int], graph: dict[int, list[int]],
-            service_graphs: dict[int, dict[int, list[int]]], dynamic_current: dict[int, int]) -> dict[int, DirectedPair]:
+            service_graphs: dict[int, dict[int, list[int]]], dynamic_current: dict[int, int],
+            dynamic_pending: dict[int, DirectedPair]) -> dict[int, DirectedPair]:
         moves = {}
         by_tube = {}
         remaining_demand = Counter(demand)
@@ -1303,17 +1320,23 @@ class Planner:
             pending.remove(pod_id)
             if not state.pods[pod_id].dynamic:
                 continue
-            if dynamic_current[pod_id] == -1:
+            if dynamic_pending[pod_id] != (-1, -1):
+                move = (-1, -1)
+            else:
                 available = Counter()
+                current_id = dynamic_current[pod_id]
                 for candidate, count in remaining_demand.items():
-                    edge = route_key(*candidate)
+                    active_graph = service_graphs[pod_id] if route_key(*candidate) in state.pods[pod_id].service_area and \
+                        (current_id == -1 or current_id in service_graphs[pod_id]) else graph
+                    immediate = candidate if current_id == -1 or current_id == candidate[0] else \
+                        (current_id, next_step(active_graph, current_id, candidate[0]))
+                    edge = route_key(*immediate)
                     if count and used[edge] < state.tubes[edge]:
                         available[candidate] = count
-                move = self.dynamic_move(state.pods[pod_id], -1, available, priorities, remaining_paths, service_counts,
+                move = self.dynamic_move(state.pods[pod_id], current_id, available, priorities, remaining_paths, service_counts,
                     node_service_counts, graph, service_graphs[pod_id])
-            else:
-                move = self.capacity_fallback_move(pod_id, requests[pod_id], remaining_demand, priorities, state, used, service_counts,
-                    pod_id in forced_fallback)
+                if move == (-1, -1) and pod_id in forced_fallback and current_id != -1:
+                    move = self.arbitrary_capacity_move(pod_id, current_id, state, used)
             if move == (-1, -1) and pod_id in forced_fallback:
                 edge = route_key(*requests[pod_id])
                 displaced_id = max(item for item, selected_move in moves.items()
@@ -1326,6 +1349,7 @@ class Planner:
                     pending.add(displaced_id)
                 continue
             if move != (-1, -1):
+                requests[pod_id] = move
                 moves[pod_id] = move
                 used[route_key(*move)] += 1
                 remaining_demand[move] = max(0, remaining_demand[move] - POD_CAPACITY)
@@ -1347,21 +1371,6 @@ class Planner:
             waiting.remove(best)
         return selected
 
-    def capacity_fallback_move(self, pod_id: int, blocked_move: DirectedPair, demand: Counter[DirectedPair], priorities: dict[DirectedPair, int],
-            state: PlanState, used: Counter[Pair], service_counts: Counter[Pair], allow_arbitrary: bool) -> DirectedPair:
-        source_id = blocked_move[0]
-        candidates = []
-        for move, count in demand.items():
-            edge = route_key(*move)
-            if count and move[0] == source_id and move != blocked_move and edge in state.tubes and used[edge] < state.tubes[edge]:
-                candidates.append((-priorities[move], -min(count, POD_CAPACITY), service_counts[edge], move))
-        in_service = [candidate for candidate in candidates if route_key(*candidate[3]) in state.pods[pod_id].service_area]
-        if in_service:
-            candidates = in_service
-        if candidates:
-            return min(candidates)[3]
-        return self.arbitrary_capacity_move(pod_id, source_id, state, used) if allow_arbitrary else (-1, -1)
-
     def arbitrary_capacity_move(self, pod_id: int, source_id: int, state: PlanState, used: Counter[Pair]) -> DirectedPair:
         for target_id in sorted({node for edge in state.pods[pod_id].service_area if source_id in edge for node in edge if node != source_id}):
             edge = route_key(source_id, target_id)
@@ -1375,7 +1384,7 @@ class Planner:
 
     def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], state: PlanState, moves: dict[int, DirectedPair],
-            pod_positions: dict[int, int], dynamic_current: dict[int, int], dynamic_paths: dict[int, list[int]], result: SimulationResult):
+            pod_positions: dict[int, int], dynamic_current: dict[int, int], dynamic_pending: dict[int, DirectedPair], result: SimulationResult):
         by_start = {}
         for pod_id, (source_id, target_id) in moves.items():
             by_start.setdefault(source_id, []).append((pod_id, target_id))
@@ -1412,11 +1421,8 @@ class Planner:
             if pod_id in pod_positions:
                 pod_positions[pod_id] = fixed_next_index(state.pods[pod_id].path, pod_positions[pod_id])
             else:
-                source_id = moves[pod_id][0]
-                if not dynamic_paths[pod_id]:
-                    dynamic_paths[pod_id].append(source_id)
-                dynamic_paths[pod_id].append(target_id)
                 dynamic_current[pod_id] = target_id
+                dynamic_pending[pod_id] = (-1, -1)
             if onboard.get(pod_id):
                 queues.setdefault(target_id, []).extend(onboard[pod_id])
 

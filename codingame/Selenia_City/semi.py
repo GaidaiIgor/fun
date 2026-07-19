@@ -962,14 +962,16 @@ class Planner:
         dynamic_result = self.cached_simulate(state, True)
         fixed_result = self.cached_simulate(self.fixed_dynamic_state(state, dynamic_result.dynamic_paths))
         if keep_dynamic_paths:
+            fixed_result = self.copy_simulation_result(fixed_result)
             fixed_result.dynamic_paths = dynamic_result.dynamic_paths
         return fixed_result
 
     def cached_simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
+        keep_dynamic_paths = any(pod.dynamic for pod in state.pods.values())
         key = self.simulation_cache_key(state, keep_dynamic_paths)
         if key not in self.simulation_cache:
             self.simulation_cache[key] = self.simulate(state, keep_dynamic_paths)
-        return self.copy_simulation_result(self.simulation_cache[key])
+        return self.simulation_cache[key]
 
     def simulation_cache_key(self, state: PlanState, keep_dynamic_paths: bool) -> tuple:
         pods = tuple(sorted((pod_id, tuple(pod.path), pod.dynamic, tuple(sorted(pod.service_area))) for pod_id, pod in state.pods.items()))
@@ -1017,6 +1019,8 @@ class Planner:
         for day in range(MONTH_DAYS):
             self.teleport_phase(queues, distances, state.teleports)
             self.settle(day, queues, module_arrivals, result)
+            for passengers in queues.values():
+                passengers.sort(key=lambda item: item.id)
             demand, priorities, remaining_paths = self.prioritized_demand(queues, distances, wanted_edges, nearest_modules, module_arrivals)
             if not demand:
                 break
@@ -1139,25 +1143,39 @@ class Planner:
         groups = {}
         inbound = Counter(module_arrivals)
         for building_id, passengers in queues.items():
-            for passenger in sorted(passengers, key=lambda item: item.id):
-                for move in wanted_edges[building_id, passenger.kind]:
-                    demand[move] += 1
-                    batch = path_batches.setdefault(move, [])
-                    if len(batch) < POD_CAPACITY:
-                        batch.append(distances[passenger.kind][move[1]])
-                modules = nearest_modules[building_id, passenger.kind]
+            group_counts = Counter((passenger.pad_id, passenger.kind) for passenger in passengers)
+            kind_counts = Counter()
+            for (pad_id, kind), count in group_counts.items():
+                kind_counts[kind] += count
+                modules = nearest_modules[building_id, kind]
                 if len(modules) == 1:
-                    inbound[modules[0]] += 1
+                    inbound[modules[0]] += count
                 elif len(modules) > 1:
-                    groups.setdefault((building_id, passenger.pad_id, passenger.kind), []).append(passenger)
+                    groups[building_id, pad_id, kind] = count
+            targets = {}
+            for kind, count in kind_counts.items():
+                for move in wanted_edges[building_id, kind]:
+                    demand[move] += count
+                    targets[move] = min(POD_CAPACITY, demand[move])
+                    path_batches.setdefault(move, [])
+            remaining = sum(targets.values())
+            for passenger in passengers:
+                for move in wanted_edges[building_id, passenger.kind]:
+                    if len(path_batches[move]) < targets[move]:
+                        path_batches[move].append(distances[passenger.kind][move[1]])
+                        remaining -= 1
+                if not remaining:
+                    break
         remaining_paths = {move: sum(batch) / len(batch) for move, batch in path_batches.items()}
         priorities = {move: 1 for move in demand}
         high = set()
         low = set()
-        for (building_id, _, kind), passengers in sorted(groups.items()):
+        for (building_id, _, kind), passenger_count in sorted(groups.items()):
             modules = nearest_modules[building_id, kind]
-            scored = [(sum(max(0, 50 - inbound[module_id] - index) for index in range(len(passengers))), module_id)
-                for module_id in modules]
+            scored = []
+            for module_id in modules:
+                count = min(passenger_count, max(0, 50 - inbound[module_id]))
+                scored.append((count * (101 - 2 * inbound[module_id] - count) // 2, module_id))
             best_gain = max(gain for gain, _ in scored)
             preferred = [module_id for gain, module_id in scored if gain == best_gain]
             if len(preferred) != 1:
@@ -1337,7 +1355,7 @@ class Planner:
         for building_id in sorted(list(queues)):
             candidates = by_start.get(building_id, [])
             remaining = []
-            for passenger in sorted(queues[building_id], key=lambda item: item.id):
+            for passenger in queues[building_id]:
                 chosen_pod = 0
                 for pod_id, target_id in candidates:
                     if seats[pod_id] and distances[passenger.kind][target_id] < distances[passenger.kind][building_id]:

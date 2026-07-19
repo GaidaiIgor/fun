@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from dataclasses import dataclass, field, replace
+from itertools import product
 from math import inf, isqrt
 import sys
 
@@ -709,11 +710,24 @@ class Planner:
         area = {edge for edge in path_edges if not service_counts[edge]}
         if not area:
             return [[]]
-        pod_ids = self.best_adjacent_pods(area, state)
-        if pod_ids:
-            return [[PodSpec(pod_id, frozenset(state.service_areas[pod_id] | area))] for pod_id in pod_ids]
         components = sorted(service_area_components(area), key=lambda item: tuple(sorted(item)))
-        return [[PodSpec(0, frozenset(component)) for component in components]]
+        choices = []
+        for component in components:
+            pod_ids = self.best_adjacent_pods(component, state)
+            choices.append([(pod_id, component) for pod_id in pod_ids] or [(0, component)])
+        options = []
+        for selected in product(*choices):
+            areas = {}
+            new_areas = []
+            for pod_id, component in selected:
+                if pod_id:
+                    areas.setdefault(pod_id, set(state.service_areas[pod_id])).update(component)
+                else:
+                    new_areas.append(component)
+            specs = [PodSpec(pod_id, frozenset(area)) for pod_id, area in sorted(areas.items())]
+            specs.extend(PodSpec(0, frozenset(component)) for component in new_areas)
+            options.append(specs)
+        return options
 
     def best_adjacent_pods(self, edges: set[Pair], state: PlanState) -> list[int]:
         edge_nodes = {node for edge in edges for node in edge}

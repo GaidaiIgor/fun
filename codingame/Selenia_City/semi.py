@@ -15,8 +15,8 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 AUTO(0-2, 2-3, 3-5);POD 2 AUTO(1-4, 3-4, 3-6)"
+OVERRIDE_MONTH = -1
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 5 3 5 3 5 3 5 3 5;POD 2 3 6 3 6 3 4 1 4 1 4 1 4 1 4 1 4 3 6 3 4 1"
    # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 AUTO(0-2, 2-3, 3-5);POD 2 AUTO(1-4, 3-4, 3-6)"
 
 Pair = tuple[int, int]
@@ -815,7 +815,8 @@ class Planner:
         active_by_pool = {}
         for bundle in selected:
             if bundle.path_edges or bundle.teleport != (-1, -1):
-                active_by_pool[bundle.pool] = set(bundle.path_edges)
+                key = (bundle.pool,) if isinstance(bundle.pool, tuple) else (bundle.pool, bundle.path[0])
+                active_by_pool[key] = set(bundle.path_edges)
         for edges in active_by_pool.values():
             active_edges.update(edges)
         for pod_id in list(state.planned_pods):

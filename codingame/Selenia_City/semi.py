@@ -854,6 +854,12 @@ class Planner:
                     diversity_routes[group, bundle.destination] = edges
         for edges in (*speed_routes.values(), *diversity_routes.values()):
             active_edges.update(edges)
+        original_owners = {}
+        for pod_id, area in self.service_areas.items():
+            for edge in area:
+                original_owners.setdefault(edge, []).append(pod_id)
+        active_edges.update(edge for edge, pod_ids in original_owners.items()
+            if not any(edge in state.service_areas[pod_id] for pod_id in pod_ids))
         for pod_id in list(state.planned_pods):
             if pod_id in self.pods:
                 original = self.service_areas[pod_id]

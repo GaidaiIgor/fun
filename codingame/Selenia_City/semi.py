@@ -1008,6 +1008,7 @@ class Planner:
         fixed_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if not pod.dynamic]
         dynamic_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if pod.dynamic]
         service_counts = self.service_counts(state)
+        node_service_counts = Counter(node for area in state.service_areas.values() for node in {item for edge in area for item in edge})
         service_graphs = {pod_id: tube_graph({edge: 1 for edge in pod.service_area}) for pod_id, pod in dynamic_pods}
         pod_positions = {pod_id: 0 for pod_id, _ in fixed_pods}
         dynamic_current = {pod_id: -1 for pod_id, _ in dynamic_pods}
@@ -1020,7 +1021,7 @@ class Planner:
             if not demand:
                 break
             requests = self.pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, demand, priorities, remaining_paths, graph,
-                service_counts, service_graphs)
+                service_counts, node_service_counts, service_graphs)
             moves = self.allocate_tube_capacity(requests, state, demand, priorities, result, service_counts)
             self.board_and_launch(queues, distances, wanted_edges, state, moves, pod_positions, dynamic_current, dynamic_paths, result)
             self.settle(day + 1, queues, module_arrivals, result)
@@ -1174,7 +1175,7 @@ class Planner:
     def pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
             dynamic_current: dict[int, int], demand: Counter[DirectedPair], priorities: dict[DirectedPair, int],
             remaining_paths: dict[DirectedPair, float], graph: dict[int, list[int]], service_counts: Counter[Pair],
-            service_graphs: dict[int, dict[int, list[int]]]) -> dict[int, DirectedPair]:
+            node_service_counts: Counter[int], service_graphs: dict[int, dict[int, list[int]]]) -> dict[int, DirectedPair]:
         requests = {}
         for pod_id, pod in fixed_pods:
             index = pod_positions[pod_id]
@@ -1183,15 +1184,15 @@ class Planner:
                 continue
             requests[pod_id] = (pod.path[index], pod.path[next_index])
         for pod_id, pod in dynamic_pods:
-            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, priorities, remaining_paths, service_counts, graph,
+            move = self.dynamic_move(pod, dynamic_current[pod_id], demand, priorities, remaining_paths, service_counts, node_service_counts, graph,
                 service_graphs[pod_id])
             if move != (-1, -1):
                 requests[pod_id] = move
         return requests
 
     def dynamic_move(self, pod: PodPlan, current_id: int, demand: Counter[DirectedPair], priorities: dict[DirectedPair, int],
-            remaining_paths: dict[DirectedPair, float], service_counts: Counter[Pair], full_graph: dict[int, list[int]],
-            graph: dict[int, list[int]]) -> DirectedPair:
+            remaining_paths: dict[DirectedPair, float], service_counts: Counter[Pair], node_service_counts: Counter[int],
+            full_graph: dict[int, list[int]], graph: dict[int, list[int]]) -> DirectedPair:
         area_nodes = set(graph)
         loads = {edge: count for edge, count in demand.items() if route_key(*edge) in pod.service_area}
         active_graph = graph
@@ -1207,13 +1208,14 @@ class Planner:
         if current is not None and current not in area_nodes:
             active_graph = full_graph
         best_edge = (-1, -1)
-        best_key = (INF, INF, INF, INF, INF, INF)
+        best_key = (INF, INF, INF, INF, INF, INF, INF)
         for source_id, target_id in loads:
             distance = 0 if current is None else graph_distance(active_graph, current, source_id)
             if distance == INF:
                 continue
             remaining_path = remaining_paths[source_id, target_id] if loads[source_id, target_id] >= POD_CAPACITY else INF
-            key = (-min(loads[source_id, target_id], POD_CAPACITY), distance, remaining_path,
+            source_services = node_service_counts[source_id] if loads[source_id, target_id] >= POD_CAPACITY else INF
+            key = (-min(loads[source_id, target_id], POD_CAPACITY), distance, remaining_path, source_services,
                 service_counts[route_key(source_id, target_id)], source_id, target_id)
             if key < best_key:
                 best_key = key

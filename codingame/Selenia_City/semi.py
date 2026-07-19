@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import inf, isqrt
 import sys
 
@@ -435,6 +435,21 @@ class Planner:
         if isinstance(owner, int):
             bases = [bundle for bundle in bases
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
+        refreshed = []
+        seen = set()
+        for base in bases:
+            key = base.label, base.path, base.tubes, base.teleport, base.upgrades
+            if base.label == "connect-pod":
+                refreshed.append(base)
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            projected = self.replay_bundle_sequence([*selected, replace(base, pod_specs=())])
+            for specs in self.coverage_spec_options(list(base.path), projected):
+                cost = self.nominal_cost(base.tubes, specs, base.upgrades, state)
+                refreshed.append(replace(base, rank_cost=cost, pod_specs=tuple(specs)))
+        bases = refreshed
         bundles = []
         for base in bases:
             bundles.extend(self.path_bundle_stack(owner, group, base, selected, state, before_score))

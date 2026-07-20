@@ -17,8 +17,8 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;DESTROY 1;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 2 7 2 7 2 7 2 0 2;POD 3 8 4 8 4 8 4 8 4 8 4 3 5 3 2 3 2 7 2 3 2 3;POD 4 3 5 3 4 3 4 3 4 3 4 3 5 3 2 3 5 3 4 3 4 3"
-   # "TUBE 2 7;TUBE 4 8;POD 1 AUTO(0-2, 2-3, 2-7, 3-5);POD 3 AUTO(4-8);POD 4 AUTO(3-4)"
+OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;DESTROY 1;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 5 3 5 3 5 3 4 3 2;DESTROY 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 6 3 6 3 4 8 4 8 4"
+   # "TUBE 2 7;TUBE 4 8;POD 1 AUTO(0-2, 2-3, 2-7, 3-5);POD 2 AUTO(1-4, 3-4, 3-6, 4-8)"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -1328,8 +1328,12 @@ class Planner:
                 for candidate, count in remaining_demand.items():
                     active_graph = service_graphs[pod_id] if route_key(*candidate) in state.pods[pod_id].service_area and \
                         (current_id == -1 or current_id in service_graphs[pod_id]) else graph
-                    immediate = candidate if current_id == -1 or current_id == candidate[0] else \
-                        (current_id, next_step(active_graph, current_id, candidate[0]))
+                    if current_id == -1 or current_id == candidate[0]:
+                        immediate = candidate
+                    elif graph_distance(active_graph, current_id, candidate[0]) < INF:
+                        immediate = current_id, next_step(active_graph, current_id, candidate[0])
+                    else:
+                        continue
                     edge = route_key(*immediate)
                     if count and used[edge] < state.tubes[edge]:
                         available[candidate] = count

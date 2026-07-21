@@ -17,8 +17,8 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 0 3;POD 1 AUTO;POD 2 AUTO"
-   # "TUBE 2 7;TUBE 4 8;POD 1 AUTO(0-2, 2-3, 2-7, 3-5);POD 2 AUTO(1-4, 3-4, 3-6, 4-8)"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 0 3;POD 1 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3;POD 2 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2"
+   # "TUBE 0 2;TUBE 1 4;TUBE 0 3;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -887,6 +887,7 @@ class Planner:
     def simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         distances, module_distances = self.distances_to_targets(state)
         graph = tube_graph(state.tubes)
+        components = tube_components(graph)
         wanted_edges = self.wanted_edges(distances, graph)
         path_demands = self.path_demands(state, distances, module_distances)
         queues = self.initial_queues(distances)
@@ -916,7 +917,8 @@ class Planner:
                     del assignments[pod_id]
             for pod_id, _ in dynamic_pods:
                 if pod_id not in assignments and dynamic_pending[pod_id] == (-1, -1):
-                    self.assign_dynamic_path(pod_id, day, active, assignments, path_orders, dynamic_current, fixed_pods, result, state, graph)
+                    self.assign_dynamic_path(pod_id, day, active, assignments, path_orders, dynamic_current, fixed_pods, result, state,
+                        graph, components)
             requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending, assignments,
                 path_orders, directions, graph)
             demand = self.edge_demand(queues, wanted_edges)
@@ -1005,18 +1007,22 @@ class Planner:
 
     def assign_dynamic_path(self, pod_id: int, day: int, active: dict[PathKey, PathDemand], assignments: dict[int, PathKey],
             path_orders: dict[PathKey, list[int]], current: dict[int, int], fixed_pods: list[tuple[int, PodPlan]],
-            result: SimulationResult, state: PlanState, graph: dict[int, list[int]]):
+            result: SimulationResult, state: PlanState, graph: dict[int, list[int]], components: dict[int, int]):
         fixed_paths = {path for _, pod in fixed_pods for path in pod.served_paths if path in active}
         serviced = fixed_paths | set(assignments.values())
         unserviced = [path for path in active.values() if path.nodes not in serviced]
-        preferred = [path for path in unserviced if path.priority]
         if day == 0:
-            candidates = preferred or unserviced
+            assigned_components = {components[path[0]] for path in serviced}
+            uncovered = {components[path.nodes[0]] for path in active.values()} - assigned_components
+            candidates = [path for path in unserviced if components[path.nodes[0]] in uncovered] or unserviced
+            preferred = [path for path in candidates if path.priority]
+            candidates = preferred or candidates
             if candidates:
                 chosen = min(candidates, key=lambda item: (self.path_delivery_time(item, assignments, fixed_pods, result, state), item.nodes))
             else:
                 chosen = max(active.values(), key=lambda item: (self.path_delivery_time(item, assignments, fixed_pods, result, state), item.nodes))
         else:
+            preferred = [path for path in unserviced if path.priority]
             candidates = preferred or unserviced
             if not candidates:
                 candidates = list(active.values())
@@ -1506,6 +1512,22 @@ def tube_graph(tubes: dict[Pair, int]) -> dict[int, list[int]]:
         graph.setdefault(a, []).append(b)
         graph.setdefault(b, []).append(a)
     return {node: sorted(neighbors) for node, neighbors in graph.items()}
+
+
+def tube_components(graph: dict[int, list[int]]) -> dict[int, int]:
+    components = {}
+    for origin_id in sorted(graph):
+        if origin_id in components:
+            continue
+        components[origin_id] = origin_id
+        queue = deque([origin_id])
+        while queue:
+            building_id = queue.popleft()
+            for neighbor_id in graph[building_id]:
+                if neighbor_id not in components:
+                    components[neighbor_id] = origin_id
+                    queue.append(neighbor_id)
+    return components
 
 
 def graph_distance(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int:

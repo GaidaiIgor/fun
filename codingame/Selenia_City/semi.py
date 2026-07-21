@@ -17,8 +17,8 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
-   # "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
+   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -1038,7 +1038,7 @@ class Planner:
         after = self.path_delivery_time(path, assignments, fixed_pods, result, state, 1)
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
         return before < INF, -(before - after) if before < INF else 0, -self.path_diversity_gain(path, result), \
-            -path.priority, distance, after, path.nodes
+            after, -path.priority, distance, path.nodes
 
     def path_diversity_gain(self, path: PathDemand, result: SimulationResult) -> int:
         count = min(POD_CAPACITY, self.path_remaining(path, result))

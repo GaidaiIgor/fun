@@ -17,7 +17,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 2 3 2 3 2 3 2 5 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 2 0 2 3 4 1 4 1 4"
    # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
@@ -1020,7 +1020,8 @@ class Planner:
             candidates = [path for path in candidates if graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
             if not candidates:
                 return
-        chosen = min(candidates, key=lambda path: self.path_assignment_key(path, pod_id, assignments, fixed_pods, current, result, state, graph))
+        chosen = min(candidates, key=lambda path: self.path_assignment_key(path, pod_id, assignments, fixed_pods, active, current, result,
+            state, graph))
         order = path_orders.setdefault(chosen.nodes, [])
         if current[pod_id] == -1:
             index = len(order)
@@ -1032,13 +1033,34 @@ class Planner:
         assignments[pod_id] = chosen.nodes
 
     def path_assignment_key(self, path: PathDemand, pod_id: int, assignments: dict[int, PathKey],
-            fixed_pods: list[tuple[int, PodPlan]], current: dict[int, int], result: SimulationResult, state: PlanState,
-            graph: dict[int, list[int]]) -> tuple:
+            fixed_pods: list[tuple[int, PodPlan]], active: dict[PathKey, PathDemand], current: dict[int, int],
+            result: SimulationResult, state: PlanState, graph: dict[int, list[int]]) -> tuple:
         before = self.path_delivery_time(path, assignments, fixed_pods, result, state)
         after = self.path_delivery_time(path, assignments, fixed_pods, result, state, 1)
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
-        return before < INF, -(before - after) if before < INF else after, -self.path_diversity_gain(path, result), \
+        return self.path_capacity_excess(path, assignments, fixed_pods, active, state), before < INF, \
+            -(before - after) if before < INF else after, -self.path_diversity_gain(path, result), \
             after, -path.priority, distance, path.nodes
+
+    def path_capacity_excess(self, candidate: PathDemand, assignments: dict[int, PathKey], fixed_pods: list[tuple[int, PodPlan]],
+            active: dict[PathKey, PathDemand], state: PlanState) -> bool:
+        def projected(extra: bool) -> Counter[Pair]:
+            workers = Counter(assignments.values())
+            if extra:
+                workers[candidate.nodes] += 1
+            loads = Counter()
+            for path, count in workers.items():
+                edges = [route_key(a, b) for a, b in zip(path, path[1:])]
+                if count <= len(edges):
+                    loads.update(edges)
+                else:
+                    loads.update(edges[min(len(edges) - 1, index * len(edges) // count)] for index in range(count))
+            for _, pod in fixed_pods:
+                edges = {route_key(a, b) for path in pod.served_paths & active.keys() for a, b in zip(path, path[1:])}
+                loads.update(edges)
+            return loads
+        before, after = projected(False), projected(True)
+        return any(load > state.tubes[edge] and load > before[edge] for edge, load in after.items())
 
     def path_diversity_gain(self, path: PathDemand, result: SimulationResult) -> int:
         count = min(POD_CAPACITY, self.path_remaining(path, result))

@@ -438,8 +438,14 @@ class Planner:
             bases = [bundle for bundle in bases
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
         bundles = []
+        connections = [base for base in bases if base.label in ("connect", "connect-pod")]
+        if connections:
+            bundles.extend(self.connection_bundle_stack(owner, group, connections, selected, state, before_score))
+        connection_ids = {id(base) for base in connections}
         seen = set()
         for base in bases:
+            if id(base) in connection_ids:
+                continue
             key = base.path, base.tubes, tuple(spec.pod_id for spec in base.pod_specs)
             if key in seen:
                 continue
@@ -450,6 +456,23 @@ class Planner:
             teleports = [bundle for bundle in teleports
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
         bundles.extend(teleports)
+        return bundles
+
+    def connection_bundle_stack(self, owner: PoolOwner, group: Pool, bases: list[Bundle], selected: list[Bundle], state: PlanState,
+            before_score: int) -> list[Bundle]:
+        bundles = []
+        options = []
+        for base in bases:
+            base.debug_id = "0c" if base.label == "connect-pod" else "0"
+            metrics = self.bundle_metrics(base, selected, before_score)
+            bundles.append(base)
+            if metrics[3].cost <= self.resources:
+                options.append((metrics[2], metrics[0], -metrics[1], base, metrics[3]))
+        if not options:
+            return bundles
+        efficiency, _, _, parent, parent_state = max(options, key=lambda item: item[:3])
+        parent.debug_chosen = parent.debug_id
+        bundles.extend(self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, before_score, 1))
         return bundles
 
     def path_bundle_stack(self, owner: PoolOwner, group: Pool, base: Bundle, selected: list[Bundle], state: PlanState,

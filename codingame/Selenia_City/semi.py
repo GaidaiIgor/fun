@@ -17,7 +17,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 2 3 2 3 2 3 2 5 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 2 0 2 3 4 1 4 1 4"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
    # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
@@ -908,7 +908,11 @@ class Planner:
             self.settle(day, queues, module_arrivals, result)
             for passengers in queues.values():
                 passengers.sort(key=lambda item: item.id)
-            active = {path.nodes: path for path in path_demands if self.path_remaining(path, result)}
+            active = {}
+            for path in path_demands:
+                path = self.active_path_demand(path, queues, wanted_edges, result)
+                if path:
+                    active[path.nodes] = path
             if not active:
                 break
             for pod_id in list(assignments):
@@ -938,6 +942,15 @@ class Planner:
         if keep_dynamic_paths:
             result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
         return result
+
+    def active_path_demand(self, path: PathDemand, queues: dict[int, list[Passenger]],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> PathDemand:
+        if not self.path_remaining(path, result):
+            return
+        for index, edge in enumerate(zip(path.nodes, path.nodes[1:])):
+            if any(passenger.pad_id == path.pool[0] and passenger.kind == path.pool[1] and
+                    edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], [])):
+                return PathDemand(path.pool, path.destination, path.nodes[index:], path.cap, path.priority)
 
     def path_demands(self, state: PlanState, distances: dict[int, dict[int, int]],
             module_distances: dict[int, dict[int, int]]) -> list[PathDemand]:

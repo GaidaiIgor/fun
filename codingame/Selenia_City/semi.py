@@ -17,8 +17,8 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 1 3;POD 1 AUTO;POD 2 AUTO"
-   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 1 3;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
+   # "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -920,7 +920,7 @@ class Planner:
                     self.assign_dynamic_path(pod_id, day, active, assignments, path_orders, dynamic_current, fixed_pods, result, state,
                         graph, components)
             requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending, assignments,
-                path_orders, directions, graph)
+                path_orders, directions, graph, queues, active, wanted_edges, result)
             demand = self.edge_demand(queues, wanted_edges)
             moves = self.allocate_tube_capacity(requests, state, demand, assignments, active, result)
             for pod_id, _ in dynamic_pods:
@@ -1054,7 +1054,9 @@ class Planner:
 
     def path_pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
             pod_positions: dict[int, int], current: dict[int, int], pending: dict[int, DirectedPair], assignments: dict[int, PathKey],
-            path_orders: dict[PathKey, list[int]], directions: dict[int, int], graph: dict[int, list[int]]) -> dict[int, DirectedPair]:
+            path_orders: dict[PathKey, list[int]], directions: dict[int, int], graph: dict[int, list[int]],
+            queues: dict[int, list[Passenger]], active: dict[PathKey, PathDemand],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> dict[int, DirectedPair]:
         requests = {}
         for pod_id, pod in fixed_pods:
             index = pod_positions[pod_id]
@@ -1093,8 +1095,21 @@ class Planner:
                 directions[pod_id] = -1
             elif position == 0:
                 directions[pod_id] = 1
-            requests[pod_id] = current[pod_id], segment[position + directions[pod_id]]
+            target_id = segment[position + directions[pod_id]]
+            if directions[pod_id] == 1 and not self.path_segment_ready(active[path], current[pod_id], target_id, queues, wanted_edges, result):
+                path_position = start + position
+                if path_position:
+                    directions[pod_id] = -1
+                    target_id = path[path_position - 1]
+            requests[pod_id] = current[pod_id], target_id
         return requests
+
+    def path_segment_ready(self, path: PathDemand, source_id: int, target_id: int, queues: dict[int, list[Passenger]],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> bool:
+        edge = source_id, target_id
+        eligible = sum(passenger.pad_id == path.pool[0] and passenger.kind == path.pool[1] and
+            edge in wanted_edges[source_id, passenger.kind] for passenger in queues.get(source_id, []))
+        return eligible >= min(POD_CAPACITY, self.path_remaining(path, result))
 
     def edge_demand(self, queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]]) -> Counter[DirectedPair]:
         demand = Counter()

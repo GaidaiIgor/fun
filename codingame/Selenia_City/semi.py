@@ -16,8 +16,8 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = -10
-OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;DESTROY 1;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 5 3 5 3 5 3 4 3 2;DESTROY 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 6 3 6 3 4 8 4 8 4"
+OVERRIDE_MONTH = 1
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 0 3;POD 1 AUTO;POD 2 AUTO"
    # "TUBE 2 7;TUBE 4 8;POD 1 AUTO(0-2, 2-3, 2-7, 3-5);POD 2 AUTO(1-4, 3-4, 3-6, 4-8)"
 
 Pair = tuple[int, int]
@@ -902,7 +902,6 @@ class Planner:
         directions = {pod_id: 1 for pod_id, _ in dynamic_pods}
         result.pod_served_paths = {pod_id: set(pod.served_paths) for pod_id, pod in state.pods.items()}
         module_arrivals = Counter()
-        demand_exhausted = False
         for day in range(MONTH_DAYS):
             self.teleport_phase(queues, distances, state.teleports)
             self.settle(day, queues, module_arrivals, result)
@@ -910,7 +909,6 @@ class Planner:
                 passengers.sort(key=lambda item: item.id)
             active = {path.nodes: path for path in path_demands if self.path_remaining(path, result)}
             if not active:
-                demand_exhausted = True
                 break
             for pod_id in list(assignments):
                 if assignments[pod_id] not in active and dynamic_pending[pod_id] == (-1, -1):
@@ -935,9 +933,8 @@ class Planner:
                     result.pod_served_paths[pod_id].add(assignments[pod_id])
             self.board_and_launch(queues, distances, state, moves, pod_positions, dynamic_current, dynamic_pending)
             self.settle(day + 1, queues, module_arrivals, result)
-        demand_exhausted |= not queues
         if keep_dynamic_paths:
-            result.dynamic_paths = {pod_id: normalize_month_path(path) if demand_exhausted else path[:] for pod_id, path in dynamic_paths.items()}
+            result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
         return result
 
     def path_demands(self, state: PlanState, distances: dict[int, dict[int, int]],

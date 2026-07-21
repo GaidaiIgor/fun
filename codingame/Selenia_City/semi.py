@@ -17,8 +17,8 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 0 3;POD 1 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3 0 3;POD 2 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2"
-   # "TUBE 0 2;TUBE 1 4;TUBE 0 3;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 1 3;POD 1 AUTO;POD 2 AUTO"
+   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 1 3;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -1010,28 +1010,17 @@ class Planner:
             result: SimulationResult, state: PlanState, graph: dict[int, list[int]], components: dict[int, int]):
         fixed_paths = {path for _, pod in fixed_pods for path in pod.served_paths if path in active}
         serviced = fixed_paths | set(assignments.values())
-        unserviced = [path for path in active.values() if path.nodes not in serviced]
+        candidates = list(active.values())
         if day == 0:
             assigned_components = {components[path[0]] for path in serviced}
             uncovered = {components[path.nodes[0]] for path in active.values()} - assigned_components
-            candidates = [path for path in unserviced if components[path.nodes[0]] in uncovered] or unserviced
-            preferred = [path for path in candidates if path.priority]
-            candidates = preferred or candidates
-            if candidates:
-                chosen = min(candidates, key=lambda item: (self.path_delivery_time(item, assignments, fixed_pods, result, state), item.nodes))
-            else:
-                chosen = max(active.values(), key=lambda item: (self.path_delivery_time(item, assignments, fixed_pods, result, state), item.nodes))
+            if uncovered:
+                candidates = [path for path in candidates if components[path.nodes[0]] in uncovered]
         else:
-            preferred = [path for path in unserviced if path.priority]
-            candidates = preferred or unserviced
+            candidates = [path for path in candidates if graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
             if not candidates:
-                candidates = list(active.values())
-            reachable = [(0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0]), path)
-                for path in candidates]
-            reachable = [item for item in reachable if item[0] < INF]
-            if not reachable:
                 return
-            chosen = min(reachable, key=lambda item: (item[0], item[1].nodes))[1]
+        chosen = min(candidates, key=lambda path: self.path_assignment_key(path, pod_id, assignments, fixed_pods, current, result, state, graph))
         order = path_orders.setdefault(chosen.nodes, [])
         if current[pod_id] == -1:
             index = len(order)
@@ -1042,11 +1031,20 @@ class Planner:
         order.insert(index, pod_id)
         assignments[pod_id] = chosen.nodes
 
+    def path_assignment_key(self, path: PathDemand, pod_id: int, assignments: dict[int, PathKey],
+            fixed_pods: list[tuple[int, PodPlan]], current: dict[int, int], result: SimulationResult, state: PlanState,
+            graph: dict[int, list[int]]) -> tuple:
+        before = self.path_delivery_time(path, assignments, fixed_pods, result, state)
+        after = self.path_delivery_time(path, assignments, fixed_pods, result, state, 1)
+        distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
+        return before < INF, -(before - after) if before < INF else 0, -path.priority, distance, after, path.nodes
+
     def path_delivery_time(self, path: PathDemand, assignments: dict[int, PathKey], fixed_pods: list[tuple[int, PodPlan]],
-            result: SimulationResult, state: PlanState) -> int:
+            result: SimulationResult, state: PlanState, extra_workers: int = 0) -> int:
         workers = sum(assigned == path.nodes for assigned in assignments.values()) + \
-            sum(path.nodes in pod.served_paths for _, pod in fixed_pods)
-        workers = max(1, workers)
+            sum(path.nodes in pod.served_paths for _, pod in fixed_pods) + extra_workers
+        if not workers:
+            return INF
         edges = len(path.nodes) - 1
         segments = min(workers, edges)
         lanes = min(state.tubes[route_key(a, b)] for a, b in zip(path.nodes, path.nodes[1:]))

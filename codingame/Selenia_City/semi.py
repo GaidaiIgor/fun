@@ -1037,7 +1037,13 @@ class Planner:
         before = self.path_delivery_time(path, assignments, fixed_pods, result, state)
         after = self.path_delivery_time(path, assignments, fixed_pods, result, state, 1)
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
-        return before < INF, -(before - after) if before < INF else 0, -path.priority, distance, after, path.nodes
+        return before < INF, -(before - after) if before < INF else 0, -self.path_diversity_gain(path, result), \
+            -path.priority, distance, after, path.nodes
+
+    def path_diversity_gain(self, path: PathDemand, result: SimulationResult) -> int:
+        count = min(POD_CAPACITY, self.path_remaining(path, result))
+        delivered = result.delivered_by_module[path.destination]
+        return sum(max(0, 50 - delivered - index) for index in range(count))
 
     def path_delivery_time(self, path: PathDemand, assignments: dict[int, PathKey], fixed_pods: list[tuple[int, PodPlan]],
             result: SimulationResult, state: PlanState, extra_workers: int = 0) -> int:

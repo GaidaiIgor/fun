@@ -897,7 +897,6 @@ class Planner:
         dynamic_current = {pod_id: -1 for pod_id, _ in dynamic_pods}
         dynamic_pending = {pod_id: (-1, -1) for pod_id, _ in dynamic_pods}
         dynamic_paths = {pod_id: [] for pod_id, _ in dynamic_pods}
-        directions = {pod_id: 1 for pod_id, _ in dynamic_pods}
         result.pod_served_paths = {pod_id: set(pod.served_paths) for pod_id, pod in state.pods.items()}
         module_arrivals = Counter()
         for day in range(MONTH_DAYS):
@@ -911,16 +910,15 @@ class Planner:
             if not active:
                 break
             demand = self.edge_demand(queues, wanted_edges)
-            assignments = {}
-            path_orders = {}
-            for pod_id, _ in dynamic_pods:
-                if dynamic_pending[pod_id] == (-1, -1):
-                    directions[pod_id] = 1
-                    self.assign_dynamic_path(pod_id, day, active, assignments, path_orders, dynamic_current, fixed_pods, result, state,
-                        graph, components, queues, wanted_edges, demand)
+            assignments, preferences = self.dispatch_dynamic_paths(day, active, dynamic_pods, dynamic_pending, dynamic_current, fixed_pods,
+                result, state, graph, components, queues, wanted_edges, demand)
+            path_orders = self.path_orders_for_assignments(assignments, dynamic_current, graph)
+            directions = {pod_id: 1 for pod_id, _ in dynamic_pods}
             requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending, assignments,
                 path_orders, directions, graph, queues, wanted_edges, result)
             moves = self.allocate_tube_capacity(requests, state, demand, result)
+            assignments, path_orders, requests, moves = self.resolve_dispatch_congestion(assignments, preferences, requests, moves,
+                fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending, graph, queues, wanted_edges, result, state, demand)
             for pod_id, _ in dynamic_pods:
                 if dynamic_pending[pod_id] != (-1, -1) or pod_id not in requests:
                     continue
@@ -1019,39 +1017,107 @@ class Planner:
         remaining_pool = self.buildings[path.pool[0]].demand[path.pool[1]] - result.delivered_by_pool[path.pool]
         return min(max(0, path.cap - result.delivered_by_pool_module[path.pool, path.destination]), remaining_pool)
 
-    def assign_dynamic_path(self, pod_id: int, day: int, active: list[PathDemand], assignments: dict[int, PathDemand],
-            path_orders: dict[PathDemand, list[int]], current: dict[int, int], fixed_pods: list[tuple[int, PodPlan]],
-            result: SimulationResult, state: PlanState, graph: dict[int, list[int]], components: dict[int, int],
-            queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], demand: Counter[DirectedPair]):
-        fixed_paths = {path.nodes for path in active for _, pod in fixed_pods if path.nodes in pod.served_paths}
-        serviced = fixed_paths | {path.nodes for path in assignments.values()}
-        candidates = active[:]
+    def dispatch_dynamic_paths(self, day: int, active: list[PathDemand], dynamic_pods: list[tuple[int, PodPlan]],
+            pending: dict[int, DirectedPair], current: dict[int, int], fixed_pods: list[tuple[int, PodPlan]], result: SimulationResult,
+            state: PlanState, graph: dict[int, list[int]], components: dict[int, int], queues: dict[int, list[Passenger]],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], demand: Counter[DirectedPair]) -> tuple:
+        """Builds and returns assignments and preferences for dynamic_pods without pending moves.
+        day controls component coverage; active supplies targets; current and fixed_pods describe pod work.
+        result and state provide progress and infrastructure; graph and components provide topology.
+        queues, wanted_edges, and demand describe current-day passengers."""
+        pod_ids = [pod_id for pod_id, _ in dynamic_pods if pending[pod_id] == (-1, -1)]
+        preferences = {}
+        for pod_id in pod_ids:
+            candidates = active if day == 0 else [path for path in active if graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
+            preferences[pod_id] = sorted(candidates, key=lambda path: self.path_assignment_key(path, pod_id, {}, fixed_pods, active,
+                current, result, state, graph, queues, wanted_edges, demand))
+        assignments = {}
+        used = {path for path in active for _, pod in fixed_pods if path.nodes in pod.served_paths}
         if day == 0:
-            assigned_components = {components[path[0]] for path in serviced}
-            uncovered = {components[path.nodes[0]] for path in active} - assigned_components
-            if uncovered:
-                candidates = [path for path in candidates if components[path.nodes[0]] in uncovered]
-        else:
-            candidates = [path for path in candidates if graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
-            if not candidates:
-                return
-        chosen = min(candidates, key=lambda path: self.path_assignment_key(path, pod_id, assignments, fixed_pods, active, current, result,
-            state, graph, queues, wanted_edges, demand))
-        order = path_orders.setdefault(chosen, [])
-        if current[pod_id] == -1:
-            index = len(order)
-        else:
-            edge_count = len(chosen.nodes) - 1
+            uncovered = {components[path.nodes[0]] for path in active} - {components[path.nodes[0]] for path in used}
+            for pod_id in pod_ids:
+                options = [path for path in preferences[pod_id] if path not in used and components[path.nodes[0]] in uncovered]
+                if options:
+                    assignments[pod_id] = options[0]
+                    used.add(options[0])
+                    uncovered.remove(components[options[0].nodes[0]])
+                if not uncovered:
+                    break
+        remaining = [pod_id for pod_id in pod_ids if pod_id not in assignments]
+        while remaining and len(used) < len(active):
+            proposals = {}
+            for pod_id in remaining:
+                options = [path for path in preferences[pod_id] if path not in used]
+                if options:
+                    proposals.setdefault(options[0], []).append(pod_id)
+            if not proposals:
+                break
+            for path, pod_options in proposals.items():
+                pod_id = min(pod_options, key=lambda item: (graph_distance(graph, current[item], path.nodes[0]), item))
+                assignments[pod_id] = path
+                used.add(path)
+                remaining.remove(pod_id)
+        for pod_id in remaining:
+            if preferences[pod_id]:
+                assignments[pod_id] = preferences[pod_id][0]
+        return assignments, preferences
+
+    def path_orders_for_assignments(self, assignments: dict[int, PathDemand], current: dict[int, int],
+            graph: dict[int, list[int]]) -> dict[PathDemand, list[int]]:
+        """Returns handoff orders for assignments using current pod positions and graph distances."""
+        orders = {}
+        for pod_id, path in sorted(assignments.items()):
+            order = orders.setdefault(path, [])
+            if current[pod_id] == -1:
+                order.append(pod_id)
+                continue
+            edge_count = len(path.nodes) - 1
             def insertion_key(item: int) -> tuple:
                 """Returns the repositioning-distance key for inserting pod_id at item in order."""
                 pod_order = order[:]
                 pod_order.insert(item, pod_id)
-                distances = [graph_distance(graph, current[worker_id], chosen.nodes[min(edge_count,
+                distances = [graph_distance(graph, current[worker_id], path.nodes[min(edge_count,
                     index * edge_count // len(pod_order))]) for index, worker_id in enumerate(pod_order)]
                 return max(distances), sum(distances), item
-            index = min(range(len(order) + 1), key=insertion_key)
-        order.insert(index, pod_id)
-        assignments[pod_id] = chosen
+            order.insert(min(range(len(order) + 1), key=insertion_key), pod_id)
+        return orders
+
+    def resolve_dispatch_congestion(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
+            requests: dict[int, DirectedPair], moves: dict[int, DirectedPair], fixed_pods: list[tuple[int, PodPlan]],
+            dynamic_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int], current: dict[int, int],
+            pending: dict[int, DirectedPair], graph: dict[int, list[int]], queues: dict[int, list[Passenger]],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult, state: PlanState,
+            demand: Counter[DirectedPair]) -> tuple:
+        """Reassigns assignments through preferences to reduce blocked requests and moves.
+        fixed_pods, dynamic_pods, pod_positions, current, pending, and graph locate pods; queues, wanted_edges, result, state, and demand
+        evaluate trials; returns assignments, orders, requests, and moves."""
+        dispatchable = set(preferences)
+        blocked = sum(pod_id in dispatchable and pod_id not in moves for pod_id in requests)
+        original = dict(assignments)
+        while blocked:
+            best = None
+            for pod_id, paths in preferences.items():
+                for path in paths:
+                    if assignments[pod_id] == path:
+                        continue
+                    trial = dict(assignments)
+                    trial[pod_id] = path
+                    orders = self.path_orders_for_assignments(trial, current, graph)
+                    directions = {dynamic_id: 1 for dynamic_id, _ in dynamic_pods}
+                    trial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, current, pending, trial, orders,
+                        directions, graph, queues, wanted_edges, result)
+                    trial_moves = self.allocate_tube_capacity(trial_requests, state, demand, result, False)
+                    trial_blocked = sum(dynamic_id in dispatchable and dynamic_id not in trial_moves for dynamic_id in trial_requests)
+                    loaded = sum(min(POD_CAPACITY, demand[move]) for dynamic_id, move in trial_moves.items() if dynamic_id in dispatchable)
+                    changes = sum(trial.get(dynamic_id) != original.get(dynamic_id) for dynamic_id in dispatchable)
+                    rank = sum(preferences[dynamic_id].index(trial[dynamic_id]) for dynamic_id in dispatchable if dynamic_id in trial)
+                    candidate = trial_blocked, -loaded, changes, rank, pod_id, trial, trial_requests, trial_moves
+                    if best is None or candidate[:5] < best[:5]:
+                        best = candidate
+            if best is None or best[0] >= blocked:
+                break
+            blocked, _, _, _, _, assignments, requests, moves = best
+        return assignments, self.path_orders_for_assignments(assignments, current, graph), requests, moves
 
     def path_assignment_key(self, path: PathDemand, pod_id: int, assignments: dict[int, PathDemand],
             fixed_pods: list[tuple[int, PodPlan]], active: list[PathDemand], current: dict[int, int],
@@ -1269,7 +1335,7 @@ class Planner:
                 del queues[building_id]
 
     def allocate_tube_capacity(self, requests: dict[int, DirectedPair], state: PlanState, demand: Counter[DirectedPair],
-            result: SimulationResult) -> dict[int, DirectedPair]:
+            result: SimulationResult, count_congestion: bool = True) -> dict[int, DirectedPair]:
         moves = {}
         by_tube = {}
         for pod_id, move in requests.items():
@@ -1280,7 +1346,7 @@ class Planner:
             dynamic = sorted(((pod_id, move) for pod_id, move in pods if state.pods[pod_id].dynamic),
                 key=lambda item: (-min(POD_CAPACITY, demand[item[1]]), item[0]))
             selected = [*fixed, *dynamic][:capacity]
-            if len(pods) > capacity:
+            if count_congestion and len(pods) > capacity:
                 result.congestion_by_edge[edge] += 1
             for pod_id, move in selected:
                 moves[pod_id] = move

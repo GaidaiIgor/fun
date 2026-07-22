@@ -17,7 +17,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 2 3 2 3 2 5 2 5 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 2 3 2 0 2 3 2 3 4"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
    # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
@@ -1042,8 +1042,14 @@ class Planner:
             index = len(order)
         else:
             edge_count = len(chosen.nodes) - 1
-            index = min(range(len(order) + 1), key=lambda item: (graph_distance(graph, current[pod_id],
-                chosen.nodes[min(edge_count, item * edge_count // (len(order) + 1))]), item))
+            def insertion_key(item: int) -> tuple:
+                """Returns the repositioning-distance key for inserting pod_id at item in order."""
+                pod_order = order[:]
+                pod_order.insert(item, pod_id)
+                distances = [graph_distance(graph, current[worker_id], chosen.nodes[min(edge_count,
+                    index * edge_count // len(pod_order))]) for index, worker_id in enumerate(pod_order)]
+                return max(distances), sum(distances), item
+            index = min(range(len(order) + 1), key=insertion_key)
         order.insert(index, pod_id)
         assignments[pod_id] = chosen
 
@@ -1053,7 +1059,8 @@ class Planner:
         before = self.path_delivery_time(path, assignments, fixed_pods, result, state)
         after = self.path_delivery_time(path, assignments, fixed_pods, result, state, 1)
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
-        return self.path_capacity_excess(path, assignments, fixed_pods, active, state), before < INF, \
+        return self.path_capacity_excess(path, assignments, fixed_pods, active, state), self.path_remaining(path, result) < POD_CAPACITY, \
+            before < INF, \
             -(before - after) if before < INF else after, -self.path_diversity_gain(path, result), \
             after, -path.priority, distance, path.nodes
 

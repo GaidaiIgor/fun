@@ -17,7 +17,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 3 4 1 4 1 4;POD 2 3 2 3 2 3 2 3 2 5 2 3 2 5 2 0 2 5 2 3 4 3"
    # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
@@ -1057,7 +1057,7 @@ class Planner:
             result: SimulationResult, state: PlanState, graph: dict[int, list[int]]) -> tuple:
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
         return self.path_capacity_excess(path, assignments, fixed_pods, active, state), self.path_remaining(path, result) < POD_CAPACITY, \
-            distance
+            distance, len(path.nodes) - 1
 
     def path_capacity_excess(self, candidate: PathDemand, assignments: dict[int, PathDemand], fixed_pods: list[tuple[int, PodPlan]],
             active: list[PathDemand], state: PlanState) -> bool:

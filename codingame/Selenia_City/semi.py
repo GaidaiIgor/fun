@@ -57,7 +57,6 @@ class PathDemand:
     destination: int
     nodes: PathKey
     cap: int
-    priority: int
 
 
 @dataclass(slots=True)
@@ -921,7 +920,7 @@ class Planner:
             requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending, assignments,
                 path_orders, directions, graph, queues, wanted_edges, result)
             demand = self.edge_demand(queues, wanted_edges)
-            moves = self.allocate_tube_capacity(requests, state, demand, assignments, result)
+            moves = self.allocate_tube_capacity(requests, state, demand, result)
             for pod_id, _ in dynamic_pods:
                 if dynamic_pending[pod_id] != (-1, -1) or pod_id not in requests:
                     continue
@@ -950,7 +949,7 @@ class Planner:
                 edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], []))
             count = min(count, remaining)
             if count:
-                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count, path.priority))
+                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count))
                 remaining -= count
         return demands
 
@@ -978,7 +977,7 @@ class Planner:
             for module_id, cap in caps.items():
                 path = self.concrete_path(pool[0], module_id, state)
                 for run in self.tube_path_runs(path, state.tubes):
-                    demands.append(PathDemand(pool, module_id, run, cap, int(len(options) > 1)))
+                    demands.append(PathDemand(pool, module_id, run, cap))
         return demands
 
     def concrete_path(self, start_id: int, finish_id: int, state: PlanState) -> PathKey:
@@ -1056,13 +1055,9 @@ class Planner:
     def path_assignment_key(self, path: PathDemand, pod_id: int, assignments: dict[int, PathDemand],
             fixed_pods: list[tuple[int, PodPlan]], active: list[PathDemand], current: dict[int, int],
             result: SimulationResult, state: PlanState, graph: dict[int, list[int]]) -> tuple:
-        before = self.path_delivery_time(path, assignments, fixed_pods, result, state)
-        after = self.path_delivery_time(path, assignments, fixed_pods, result, state, 1)
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
         return self.path_capacity_excess(path, assignments, fixed_pods, active, state), self.path_remaining(path, result) < POD_CAPACITY, \
-            before < INF, \
-            -(before - after) if before < INF else after, -self.path_diversity_gain(path, result), \
-            after, -path.priority, distance, path.nodes
+            distance
 
     def path_capacity_excess(self, candidate: PathDemand, assignments: dict[int, PathDemand], fixed_pods: list[tuple[int, PodPlan]],
             active: list[PathDemand], state: PlanState) -> bool:
@@ -1083,24 +1078,6 @@ class Planner:
             return loads
         before, after = projected(False), projected(True)
         return any(load > state.tubes[edge] and load > before[edge] for edge, load in after.items())
-
-    def path_diversity_gain(self, path: PathDemand, result: SimulationResult) -> int:
-        count = min(POD_CAPACITY, self.path_remaining(path, result))
-        delivered = result.delivered_by_module[path.destination]
-        return sum(max(0, 50 - delivered - index) for index in range(count))
-
-    def path_delivery_time(self, path: PathDemand, assignments: dict[int, PathDemand], fixed_pods: list[tuple[int, PodPlan]],
-            result: SimulationResult, state: PlanState, extra_workers: int = 0) -> int:
-        workers = sum(assigned == path for assigned in assignments.values()) + \
-            sum(path.nodes in pod.served_paths for _, pod in fixed_pods) + extra_workers
-        if not workers:
-            return INF
-        edges = len(path.nodes) - 1
-        segments = min(workers, edges)
-        lanes = min(state.tubes[route_key(a, b)] for a, b in zip(path.nodes, path.nodes[1:]))
-        parallel = max(1, min(lanes, workers // edges))
-        batches = (self.path_remaining(path, result) + POD_CAPACITY - 1) // POD_CAPACITY
-        return (batches + parallel - 1) // parallel * 2 * ((edges + segments - 1) // segments)
 
     def path_pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
             pod_positions: dict[int, int], current: dict[int, int], pending: dict[int, DirectedPair], assignments: dict[int, PathDemand],
@@ -1271,7 +1248,7 @@ class Planner:
                 del queues[building_id]
 
     def allocate_tube_capacity(self, requests: dict[int, DirectedPair], state: PlanState, demand: Counter[DirectedPair],
-            assignments: dict[int, PathDemand], result: SimulationResult) -> dict[int, DirectedPair]:
+            result: SimulationResult) -> dict[int, DirectedPair]:
         moves = {}
         by_tube = {}
         for pod_id, move in requests.items():
@@ -1280,8 +1257,7 @@ class Planner:
             capacity = state.tubes[edge]
             fixed = sorted((pod_id, move) for pod_id, move in pods if not state.pods[pod_id].dynamic)
             dynamic = sorted(((pod_id, move) for pod_id, move in pods if state.pods[pod_id].dynamic),
-                key=lambda item: (-(assignments[item[0]].priority if item[0] in assignments else 0),
-                    -min(POD_CAPACITY, demand[item[1]]), item[0]))
+                key=lambda item: (-min(POD_CAPACITY, demand[item[1]]), item[0]))
             selected = [*fixed, *dynamic][:capacity]
             if len(pods) > capacity:
                 result.congestion_by_edge[edge] += 1

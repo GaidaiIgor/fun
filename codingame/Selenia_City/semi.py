@@ -1111,7 +1111,7 @@ class Planner:
                     loaded = sum(min(POD_CAPACITY, demand[move]) for dynamic_id, move in trial_moves.items() if dynamic_id in dispatchable)
                     changes = sum(trial.get(dynamic_id) != original.get(dynamic_id) for dynamic_id in dispatchable)
                     rank = sum(preferences[dynamic_id].index(trial[dynamic_id]) for dynamic_id in dispatchable if dynamic_id in trial)
-                    candidate = trial_blocked, -loaded, changes, rank, pod_id, trial, trial_requests, trial_moves
+                    candidate = trial_blocked, changes, rank, -loaded, pod_id, trial, trial_requests, trial_moves
                     if best is None or candidate[:5] < best[:5]:
                         best = candidate
             if best is None or best[0] >= blocked:

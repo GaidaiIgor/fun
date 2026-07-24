@@ -17,8 +17,8 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 2 6;POD 1 2 0 2 0 2 0 2 3 4 1 4 1 4 1 4 1 4 1 4 1 4;POD 2 3 2 6 2 6 2 6 2 3 2 0 2 3 2 3 2 5 2 5 2 6"
-   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 2 6;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
+   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -57,6 +57,7 @@ class PathDemand:
     destination: int
     nodes: PathKey
     cap: int
+    ambiguous: bool = False
 
 
 @dataclass(slots=True)
@@ -947,7 +948,7 @@ class Planner:
                 edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], []))
             count = min(count, remaining)
             if count:
-                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count))
+                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count, path.ambiguous))
                 remaining -= count
         return demands
 
@@ -975,7 +976,7 @@ class Planner:
             for module_id, cap in caps.items():
                 path = self.concrete_path(pool[0], module_id, state)
                 for run in self.tube_path_runs(path, state.tubes):
-                    demands.append(PathDemand(pool, module_id, run, cap))
+                    demands.append(PathDemand(pool, module_id, run, cap, len(options) > 1))
         return demands
 
     def concrete_path(self, start_id: int, finish_id: int, state: PlanState) -> PathKey:
@@ -1145,7 +1146,7 @@ class Planner:
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
         blocked = self.path_capacity_excess(path, assignments, fixed_pods, active, state) or \
             self.path_blocks_loaded_pod(path, pod_id, current, graph, queues, wanted_edges, demand, result)
-        return blocked, self.path_remaining(path, result) < POD_CAPACITY, distance, len(path.nodes) - 1, \
+        return blocked, not path.ambiguous, self.path_remaining(path, result) < POD_CAPACITY, distance, len(path.nodes) - 1, \
             result.delivered_by_module[path.destination]
 
     def path_blocks_loaded_pod(self, path: PathDemand, pod_id: int, current: dict[int, int], graph: dict[int, list[int]],

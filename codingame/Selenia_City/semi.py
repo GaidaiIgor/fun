@@ -17,7 +17,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 2 6;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 2 6;POD 1 2 0 2 0 2 0 2 3 4 1 4 1 4 1 4 1 4 1 4 1 4;POD 2 3 2 6 2 6 2 6 2 3 2 0 2 3 2 3 2 5 2 5 2 6"
    # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 2 6;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
@@ -57,7 +57,6 @@ class PathDemand:
     destination: int
     nodes: PathKey
     cap: int
-    exclusive: bool = False
 
 
 @dataclass(slots=True)
@@ -948,7 +947,7 @@ class Planner:
                 edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], []))
             count = min(count, remaining)
             if count:
-                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count, path.exclusive))
+                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count))
                 remaining -= count
         return demands
 
@@ -1027,8 +1026,6 @@ class Planner:
         result and state provide progress and infrastructure; graph and components provide topology.
         queues, wanted_edges, and demand describe current-day passengers."""
         pod_ids = [pod_id for pod_id, _ in dynamic_pods if pending[pod_id] == (-1, -1)]
-        if pod_ids:
-            active = self.resolve_ambiguous_paths(active, pod_ids, current, fixed_pods, result, state, graph, queues, wanted_edges, demand)
         preferences = {}
         for pod_id in pod_ids:
             candidates = active if day == 0 else [path for path in active if graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
@@ -1039,7 +1036,8 @@ class Planner:
         if day == 0:
             uncovered = {components[path.nodes[0]] for path in active} - {components[path.nodes[0]] for path in used}
             for pod_id in pod_ids:
-                options = [path for path in preferences[pod_id] if path not in used and components[path.nodes[0]] in uncovered]
+                options = [path for path in preferences[pod_id] if path not in used and components[path.nodes[0]] in uncovered
+                    and not self.dispatch_supply_exceeded(assignments | {pod_id: path}, queues, result)]
                 if options:
                     assignments[pod_id] = options[0]
                     used.add(options[0])
@@ -1047,47 +1045,39 @@ class Planner:
                 if not uncovered:
                     break
         remaining = [pod_id for pod_id in pod_ids if pod_id not in assignments]
+        unavailable = set()
         while remaining and len(used) < len(active):
             proposals = {}
             for pod_id in remaining:
-                options = [path for path in preferences[pod_id] if path not in used]
+                options = [path for path in preferences[pod_id] if path not in used and path not in unavailable
+                    and not self.dispatch_supply_exceeded(assignments | {pod_id: path}, queues, result)]
                 if options:
                     proposals.setdefault(options[0], []).append(pod_id)
             if not proposals:
                 break
             for path, pod_options in proposals.items():
                 pod_id = min(pod_options, key=lambda item: (graph_distance(graph, current[item], path.nodes[0]), item))
+                if self.dispatch_supply_exceeded(assignments | {pod_id: path}, queues, result):
+                    unavailable.add(path)
+                    continue
                 assignments[pod_id] = path
                 used.add(path)
                 remaining.remove(pod_id)
         for pod_id in remaining:
-            options = [path for path in preferences[pod_id] if not path.exclusive or path not in assignments.values()]
+            options = [path for path in preferences[pod_id]
+                if not self.dispatch_supply_exceeded(assignments | {pod_id: path}, queues, result)]
             if options:
                 assignments[pod_id] = options[0]
         return assignments, preferences
 
-    def resolve_ambiguous_paths(self, active: list[PathDemand], pod_ids: list[int], current: dict[int, int],
-            fixed_pods: list[tuple[int, PodPlan]], result: SimulationResult, state: PlanState, graph: dict[int, list[int]],
-            queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
-            demand: Counter[DirectedPair]) -> list[PathDemand]:
-        """Selects and returns one outgoing direction per shared pool and origin in active.
-        pod_ids and current rank alternatives; fixed_pods, result, state, graph, queues, wanted_edges, and demand supply ranking context."""
-        groups = {}
-        for path in active:
-            groups.setdefault((path.pool, path.nodes[0]), []).append(path)
-        resolved = []
-        for paths in groups.values():
-            if len(paths) == 1:
-                resolved.extend(paths)
-                continue
-            path = min(paths, key=lambda item: min(self.path_assignment_key(item, pod_id, {}, fixed_pods, active, current, result,
-                state, graph, queues, wanted_edges, demand) for pod_id in pod_ids))
-            edge = path.nodes[:2]
-            count = sum(passenger.pad_id == path.pool[0] and passenger.kind == path.pool[1] and
-                edge in wanted_edges[edge[0], passenger.kind] for passenger in queues[edge[0]])
-            resolved.append(PathDemand(path.pool, path.destination, edge,
-                result.delivered_by_pool_module[path.pool, path.destination] + count, True))
-        return resolved
+    def dispatch_supply_exceeded(self, assignments: dict[int, PathDemand], queues: dict[int, list[Passenger]],
+            result: SimulationResult) -> bool:
+        """Returns whether assignments reserve more matching astronauts than queues contain at a source; result limits path demand."""
+        reserved = Counter()
+        for path in assignments.values():
+            reserved[path.pool, path.nodes[0]] += min(POD_CAPACITY, self.path_remaining(path, result))
+        return any(count > sum(passenger.pad_id == pool[0] and passenger.kind == pool[1]
+            for passenger in queues.get(source, [])) for (pool, source), count in reserved.items())
 
     def path_orders_for_assignments(self, assignments: dict[int, PathDemand], current: dict[int, int],
             graph: dict[int, list[int]]) -> dict[PathDemand, list[int]]:
@@ -1127,10 +1117,10 @@ class Planner:
                 for path in paths:
                     if assignments[pod_id] == path:
                         continue
-                    if path.exclusive and any(dynamic_id != pod_id and assigned == path for dynamic_id, assigned in assignments.items()):
-                        continue
                     trial = dict(assignments)
                     trial[pod_id] = path
+                    if self.dispatch_supply_exceeded(trial, queues, result):
+                        continue
                     orders = self.path_orders_for_assignments(trial, current, graph)
                     directions = {dynamic_id: 1 for dynamic_id, _ in dynamic_pods}
                     trial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, current, pending, trial, orders,

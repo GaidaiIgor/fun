@@ -1043,7 +1043,7 @@ class Planner:
             uncovered = {components[path.nodes[0]] for path in active} - {components[path.nodes[0]] for path in used}
             for pod_id in pod_ids:
                 options = [path for path in preferences[pod_id] if path not in used and components[path.nodes[0]] in uncovered
-                    and not self.dispatch_supply_exceeded(assignments | {pod_id: path}, queues, result)]
+                    and not self.dispatch_supply_exceeded(assignments | {pod_id: path}, current, queues, result)]
                 if options:
                     assignments[pod_id] = options[0]
                     used.add(options[0])
@@ -1056,14 +1056,14 @@ class Planner:
             proposals = {}
             for pod_id in remaining:
                 options = [path for path in preferences[pod_id] if path not in used and path not in unavailable
-                    and not self.dispatch_supply_exceeded(assignments | {pod_id: path}, queues, result)]
+                    and not self.dispatch_supply_exceeded(assignments | {pod_id: path}, current, queues, result)]
                 if options:
                     proposals.setdefault(options[0], []).append(pod_id)
             if not proposals:
                 break
             for path, pod_options in proposals.items():
                 pod_id = min(pod_options, key=lambda item: (graph_distance(graph, current[item], path.nodes[0]), item))
-                if self.dispatch_supply_exceeded(assignments | {pod_id: path}, queues, result):
+                if self.dispatch_supply_exceeded(assignments | {pod_id: path}, current, queues, result):
                     unavailable.add(path)
                     continue
                 assignments[pod_id] = path
@@ -1071,7 +1071,7 @@ class Planner:
                 remaining.remove(pod_id)
         for pod_id in remaining:
             options = [path for path in preferences[pod_id]
-                if not self.dispatch_supply_exceeded(assignments | {pod_id: path}, queues, result)]
+                if not self.dispatch_supply_exceeded(assignments | {pod_id: path}, current, queues, result)]
             if options:
                 assignments[pod_id] = options[0]
         return assignments, preferences
@@ -1096,12 +1096,13 @@ class Planner:
                 break
         return preferred >= nonpreferred
 
-    def dispatch_supply_exceeded(self, assignments: dict[int, PathDemand], queues: dict[int, list[Passenger]],
-            result: SimulationResult) -> bool:
-        """Returns whether assignments reserve more matching astronauts than queues contain at a source; result limits path demand."""
+    def dispatch_supply_exceeded(self, assignments: dict[int, PathDemand], current: dict[int, int],
+            queues: dict[int, list[Passenger]], result: SimulationResult) -> bool:
+        """Returns whether assignments at current source positions reserve more matching astronauts than queues contain; result limits demand."""
         reserved = Counter()
-        for path in assignments.values():
-            reserved[path.pool, path.nodes[0]] += min(POD_CAPACITY, self.path_remaining(path, result))
+        for pod_id, path in assignments.items():
+            if current[pod_id] in (-1, path.nodes[0]):
+                reserved[path.pool, path.nodes[0]] += min(POD_CAPACITY, self.path_remaining(path, result))
         return any(count > sum(passenger.pad_id == pool[0] and passenger.kind == pool[1]
             for passenger in queues.get(source, [])) for (pool, source), count in reserved.items())
 
@@ -1145,7 +1146,7 @@ class Planner:
                         continue
                     trial = dict(assignments)
                     trial[pod_id] = path
-                    if self.dispatch_supply_exceeded(trial, queues, result):
+                    if self.dispatch_supply_exceeded(trial, current, queues, result):
                         continue
                     orders = self.path_orders_for_assignments(trial, current, graph)
                     directions = {dynamic_id: 1 for dynamic_id, _ in dynamic_pods}

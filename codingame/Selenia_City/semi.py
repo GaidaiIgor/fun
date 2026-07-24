@@ -17,8 +17,8 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 2 0 2 0 2 5 2 5 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 2 3 2 3 2 0 2 3 2"
-   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 2 6;POD 1 AUTO;POD 2 AUTO"
+   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 2 6;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -57,6 +57,7 @@ class PathDemand:
     destination: int
     nodes: PathKey
     cap: int
+    exclusive: bool = False
 
 
 @dataclass(slots=True)
@@ -947,7 +948,7 @@ class Planner:
                 edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], []))
             count = min(count, remaining)
             if count:
-                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count))
+                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count, path.exclusive))
                 remaining -= count
         return demands
 
@@ -1026,6 +1027,8 @@ class Planner:
         result and state provide progress and infrastructure; graph and components provide topology.
         queues, wanted_edges, and demand describe current-day passengers."""
         pod_ids = [pod_id for pod_id, _ in dynamic_pods if pending[pod_id] == (-1, -1)]
+        if pod_ids:
+            active = self.resolve_ambiguous_paths(active, pod_ids, current, fixed_pods, result, state, graph, queues, wanted_edges, demand)
         preferences = {}
         for pod_id in pod_ids:
             candidates = active if day == 0 else [path for path in active if graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
@@ -1058,9 +1061,33 @@ class Planner:
                 used.add(path)
                 remaining.remove(pod_id)
         for pod_id in remaining:
-            if preferences[pod_id]:
-                assignments[pod_id] = preferences[pod_id][0]
+            options = [path for path in preferences[pod_id] if not path.exclusive or path not in assignments.values()]
+            if options:
+                assignments[pod_id] = options[0]
         return assignments, preferences
+
+    def resolve_ambiguous_paths(self, active: list[PathDemand], pod_ids: list[int], current: dict[int, int],
+            fixed_pods: list[tuple[int, PodPlan]], result: SimulationResult, state: PlanState, graph: dict[int, list[int]],
+            queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
+            demand: Counter[DirectedPair]) -> list[PathDemand]:
+        """Selects and returns one outgoing direction per shared pool and origin in active.
+        pod_ids and current rank alternatives; fixed_pods, result, state, graph, queues, wanted_edges, and demand supply ranking context."""
+        groups = {}
+        for path in active:
+            groups.setdefault((path.pool, path.nodes[0]), []).append(path)
+        resolved = []
+        for paths in groups.values():
+            if len(paths) == 1:
+                resolved.extend(paths)
+                continue
+            path = min(paths, key=lambda item: min(self.path_assignment_key(item, pod_id, {}, fixed_pods, active, current, result,
+                state, graph, queues, wanted_edges, demand) for pod_id in pod_ids))
+            edge = path.nodes[:2]
+            count = sum(passenger.pad_id == path.pool[0] and passenger.kind == path.pool[1] and
+                edge in wanted_edges[edge[0], passenger.kind] for passenger in queues[edge[0]])
+            resolved.append(PathDemand(path.pool, path.destination, edge,
+                result.delivered_by_pool_module[path.pool, path.destination] + count, True))
+        return resolved
 
     def path_orders_for_assignments(self, assignments: dict[int, PathDemand], current: dict[int, int],
             graph: dict[int, list[int]]) -> dict[PathDemand, list[int]]:
@@ -1099,6 +1126,8 @@ class Planner:
             for pod_id, paths in preferences.items():
                 for path in paths:
                     if assignments[pod_id] == path:
+                        continue
+                    if path.exclusive and any(dynamic_id != pod_id and assigned == path for dynamic_id, assigned in assignments.items()):
                         continue
                     trial = dict(assignments)
                     trial[pod_id] = path

@@ -1094,7 +1094,7 @@ class Planner:
             boarded += 1
             if boarded == POD_CAPACITY:
                 break
-        return not nonpreferred or preferred > nonpreferred
+        return preferred >= nonpreferred
 
     def dispatch_supply_exceeded(self, assignments: dict[int, PathDemand], queues: dict[int, list[Passenger]],
             result: SimulationResult) -> bool:

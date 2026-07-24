@@ -1027,9 +1027,14 @@ class Planner:
         result and state provide progress and infrastructure; graph and components provide topology.
         queues, wanted_edges, and demand describe current-day passengers."""
         pod_ids = [pod_id for pod_id, _ in dynamic_pods if pending[pod_id] == (-1, -1)]
+        preferred_targets = {}
+        for path in active:
+            if path.ambiguous:
+                preferred_targets.setdefault((path.pool, path.nodes[0]), set()).add(path.nodes[1])
         preferences = {}
         for pod_id in pod_ids:
             candidates = active if day == 0 else [path for path in active if graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
+            candidates = [path for path in candidates if self.path_batch_allowed(path, preferred_targets, queues, wanted_edges)]
             preferences[pod_id] = sorted(candidates, key=lambda path: self.path_assignment_key(path, pod_id, {}, fixed_pods, active,
                 current, result, state, graph, queues, wanted_edges, demand))
         assignments = {}
@@ -1070,6 +1075,26 @@ class Planner:
             if options:
                 assignments[pod_id] = options[0]
         return assignments, preferences
+
+    def path_batch_allowed(self, path: PathDemand, preferred_targets: dict[tuple[Pool, int], set[int]],
+            queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]]) -> bool:
+        """Returns whether the next path batch from queues favors its direction; preferred_targets marks ambiguous routing and
+        wanted_edges identifies boardable passengers."""
+        source_id, target_id = path.nodes[:2]
+        preferred = nonpreferred = boarded = 0
+        for passenger in queues.get(source_id, []):
+            if (source_id, target_id) not in wanted_edges[source_id, passenger.kind]:
+                continue
+            targets = preferred_targets.get(((passenger.pad_id, passenger.kind), source_id))
+            if targets:
+                if target_id in targets:
+                    preferred += 1
+                else:
+                    nonpreferred += 1
+            boarded += 1
+            if boarded == POD_CAPACITY:
+                break
+        return not nonpreferred or preferred > nonpreferred
 
     def dispatch_supply_exceeded(self, assignments: dict[int, PathDemand], queues: dict[int, list[Passenger]],
             result: SimulationResult) -> bool:

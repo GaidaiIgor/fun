@@ -948,7 +948,7 @@ class Planner:
                 edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], []))
             count = min(count, remaining)
             if count:
-                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count, path.ambiguous))
+                demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count, path.ambiguous and index == 0))
                 remaining -= count
         return demands
 
@@ -1251,6 +1251,10 @@ class Planner:
                 requests[pod_id] = current[pod_id], next_step(graph, current[pod_id], segment[0])
                 continue
             position = segment.index(current[pod_id])
+            if demand.ambiguous and position:
+                directions[pod_id] = -1
+                requests[pod_id] = current[pod_id], segment[position - 1]
+                continue
             if position == len(segment) - 1:
                 directions[pod_id] = -1
             elif position == 0:

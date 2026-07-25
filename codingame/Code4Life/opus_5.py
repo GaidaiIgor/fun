@@ -32,7 +32,7 @@ TURN_COST = cfg("C4L_TURN_COST", 2.0)          # health-equivalent value of one 
 EXP_VALUE = cfg("C4L_EXP_VALUE", 4.0)          # value of one point of molecule expertise
 PROJ_VALUE = cfg("C4L_PROJ_VALUE", 50.0)       # health awarded by a science project
 PREFETCH_TURNS = cfg("C4L_PREFETCH", 25)       # only pre-gather molecules while this much time is left
-RANKS = os.environ.get("C4L_RANKS", "111,111,111,331,333").split(",")  # rank per (expertise // 3, held)
+RANKS = os.environ.get("C4L_RANKS", "111,111,111,321,332").split(",")  # rank per (expertise // 3, held)
 FETCH_AT = cfg("C4L_FETCH_AT", 0)              # most samples in hand that still justifies a sample run
 RIDE = cfg("C4L_RIDE", 1)                      # leftovers worth less than this share of a molecule
                                                # round trip ride along with the next batch instead

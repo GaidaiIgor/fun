@@ -40,12 +40,16 @@ FETCH_AT = cfg("C4L_FETCH_AT", 0)              # most samples in hand that still
 RIDE = cfg("C4L_RIDE", 1)                      # leftovers worth less than this share of a molecule
                                                # round trip ride along with the next batch instead
 LAST_FETCH = cfg("C4L_LAST_FETCH", 15)         # stop collecting new samples below this many turns
-STALL = cfg("C4L_STALL", 10)                   # turns stuck at MOLECULES before giving up on a sample
-DRY = cfg("C4L_DRY", 25)                       # turns without producing before ditching blocked samples
+STALL = cfg("C4L_STALL", 3)                    # turns stuck at MOLECULES before giving up on a sample
+DRY = cfg("C4L_DRY", 12)                       # turns without producing before ditching blocked samples
 HOSTILE = cfg("C4L_HOSTILE", 30)               # turns without a rival medicine before writing off their molecules
+HOG = cfg("C4L_HOG", 0)                        # molecules per type we assume a rival never lets go of, so
+                                               # samples needing almost the whole stock count as unbuildable
 DENY = cfg("C4L_DENY", 1)                      # take scarce molecules the rival still needs
 DENY_LEFT = cfg("C4L_DENY_LEFT", 5)            # ... while at most this many of the type are on offer
 DENY_TURNS = cfg("C4L_DENY_TURNS", 10)         # ... and at least this many turns remain
+DENY_FROM = cfg("C4L_DENY_FROM", 200)          # ... and no more than this: carrying molecules we cannot
+                                               # use only costs us while there is still time to need them
 SPARE = cfg("C4L_SPARE", 0)                    # molecule slots kept free when denying
 DENY_CAP = cfg("C4L_DENY_CAP", 4)              # most molecules we will sit on that no sample of ours wants
 HARVEST = cfg("C4L_HARVEST", 90)               # below this many turns left, draw rank 3 for the health
@@ -55,6 +59,8 @@ END_RANK = cfg("C4L_END_RANK", 1)
 KEEP_GAP = cfg("C4L_KEEP_GAP", 2)              # expertise gap at which an unbuildable sample is ditched
 R3_MIN = cfg("C4L_R3_MIN", 1)                  # expertise in every type before rank 3 is worth drawing
 R3_FALL = cfg("C4L_R3_FALL", 2)                # rank drawn instead when rank 3 is not worth it yet
+CLAIM = cfg("C4L_CLAIM", 3)                    # per-type demand from samples in hand above which another
+                                               # rank 3 would stake everything on one contested type
 
 Plan = namedtuple("Plan", "seq short score")
 EMPTY = Plan((), (0, 0, 0, 0, 0), 0.0)
@@ -121,7 +127,8 @@ class Bot:
             self.my_score, self.my_moved = me.score, self.turn
         self.dry = self.turn - self.my_moved
         active = self.turn - self.opp_moved < HOSTILE
-        self.reach = [me.storage[t] + self.avail[t] + (opp.storage[t] if active else 0) for t in R]
+        self.reach = [me.storage[t] + self.avail[t]
+                      + (max(0, opp.storage[t] - HOG) if active else 0) for t in R]
         self.plan = self.best_plan(True)
         self.ideal = self.best_plan(False)
 
@@ -227,7 +234,9 @@ class Bot:
         rank = int(RANKS[min(len(RANKS) - 1, sum(self.me.expertise) // 3)][min(2, len(self.mine))])
         if rank < 3:
             return rank
-        return 3 if min(self.me.expertise) >= R3_MIN and self.r3_ready() else int(R3_FALL)
+        if not (min(self.me.expertise) >= R3_MIN and self.r3_ready()):
+            return int(R3_FALL)
+        return int(R3_FALL) if max(self.seq_req(self.diag), default=0) >= CLAIM else 3
 
     def r3_ready(self):
         """True when enough of the rank 3 samples seen this game are within our expertise.
@@ -291,7 +300,7 @@ class Bot:
         cost of our own carry space though: molecules no sample of ours wants can wedge the
         robot shut, unable to gather what it needs and unable to produce anything."""
         held = sum(self.me.storage)
-        if not DENY or held >= MAX_MOL or self.turns_left < DENY_TURNS:
+        if not DENY or held >= MAX_MOL or not DENY_TURNS <= self.turns_left <= DENY_FROM:
             return None
         req = self.seq_req(self.diag)
         owed = sum(max(0, req[t] - self.me.storage[t]) for t in R)

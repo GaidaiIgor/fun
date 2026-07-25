@@ -32,16 +32,21 @@ TURN_COST = cfg("C4L_TURN_COST", 2.0)          # health-equivalent value of one 
 EXP_VALUE = cfg("C4L_EXP_VALUE", 4.0)          # value of one point of molecule expertise
 PROJ_VALUE = cfg("C4L_PROJ_VALUE", 50.0)       # health awarded by a science project
 PREFETCH_TURNS = cfg("C4L_PREFETCH", 25)       # only pre-gather molecules while this much time is left
-RANKS = os.environ.get("C4L_RANKS", "111,311,311,331,333").split(",")  # rank per (expertise // 3, held)
+RANKS = os.environ.get("C4L_RANKS", "111,111,111,331,333").split(",")  # rank per (expertise // 3, held)
 FETCH_AT = cfg("C4L_FETCH_AT", 0)              # most samples in hand that still justifies a sample run
+RIDE = cfg("C4L_RIDE", 1)                      # leftovers worth less than this share of a molecule
+                                               # round trip ride along with the next batch instead
 LAST_FETCH = cfg("C4L_LAST_FETCH", 15)         # stop collecting new samples below this many turns
 STALL = cfg("C4L_STALL", 10)                   # turns stuck at MOLECULES before giving up on a sample
+DRY = cfg("C4L_DRY", 25)                       # turns without producing before ditching blocked samples
 HOSTILE = cfg("C4L_HOSTILE", 30)               # turns without a rival medicine before writing off their molecules
 DENY = cfg("C4L_DENY", 1)                      # take the last molecule of a type the rival needs
+HARVEST = cfg("C4L_HARVEST", 90)               # below this many turns left, draw rank 3 for the health
 END_TURNS = cfg("C4L_END_TURNS", 18)           # below this, request the cheapest samples
 END_RANK = cfg("C4L_END_RANK", 1)
 KEEP_GAP = cfg("C4L_KEEP_GAP", 2)              # expertise gap at which an unbuildable sample is ditched
 R3_MIN = cfg("C4L_R3_MIN", 1)                  # expertise in every type before rank 3 is worth drawing
+R3_FALL = cfg("C4L_R3_FALL", 2)                # rank drawn instead when rank 3 is not worth it yet
 
 Plan = namedtuple("Plan", "seq short score")
 EMPTY = Plan((), (0, 0, 0, 0, 0), 0.0)
@@ -81,6 +86,8 @@ class Bot:
         self.seen = {}
         self.opp_score = 0
         self.opp_moved = 0
+        self.my_score = 0
+        self.my_moved = 0
 
     # ------------------------------------------------------------------ state
     def update(self, me, opp, avail, samples):
@@ -102,6 +109,9 @@ class Bot:
         self.live = [p for p in self.projects if not all(opp.expertise[t] >= p[t] for t in R)]
         if opp.score > self.opp_score:
             self.opp_score, self.opp_moved = opp.score, self.turn
+        if me.score > self.my_score:
+            self.my_score, self.my_moved = me.score, self.turn
+        self.dry = self.turn - self.my_moved
         active = self.turn - self.opp_moved < HOSTILE
         self.reach = [me.storage[t] + self.avail[t] + (opp.storage[t] if active else 0) for t in R]
         self.plan = self.best_plan(True)
@@ -185,23 +195,36 @@ class Bot:
         return [x for x in out if x[0] > 0]
 
     def want_samples(self):
-        """True when a run to the samples module pays off: a full batch amortises the detour best,
-        so we only restock once the samples in hand are spent or unusable."""
+        """True when a run to the samples module pays off.
+
+        Finishing leftovers needs a dedicated molecule round trip, so cheap leftovers are better
+        carried along with the next batch than delivered on their own."""
         if len(self.mine) >= MAX_SAMP or self.turns_left < LAST_FETCH:
             return False
-        return len(self.mine) <= FETCH_AT or not self.plan.seq
+        if len(self.mine) <= FETCH_AT or not self.plan.seq:
+            return True
+        detour = DIST[LABORATORY][MOLECULES] + DIST[MOLECULES][LABORATORY]
+        return self.plan.score < RIDE * detour * self.turn_cost
 
     def pick_rank(self):
+        """Rank to request: expertise first while it still has time to pay off, then health.
+
+        Expertise only earns its keep through the samples it discounts later, so once too little
+        of the game is left for that, we switch to drawing the richest samples we can afford."""
         if self.turns_left < END_TURNS:
             return int(END_RANK)
+        if self.turns_left < HARVEST:
+            return 3
         rank = int(RANKS[min(len(RANKS) - 1, sum(self.me.expertise) // 3)][min(2, len(self.mine))])
-        return 2 if rank == 3 and min(self.me.expertise) < R3_MIN else rank
+        return int(R3_FALL) if rank == 3 and min(self.me.expertise) < R3_MIN else rank
 
     def gap(self, s):
-        """Expertise points still missing before this sample could be produced at all.
+        """Expertise points still missing before this sample could ever be produced.
 
         Costs run up to 7 of a single type while only 5 exist, so some samples are dead weight
-        until enough expertise of that type is banked - each point cuts the requirement by one."""
+        until enough expertise of that type is banked - each point cuts the requirement by one.
+        Measured against what we can actually reach, which also shrinks when a rival sits on
+        molecules and stops producing: that is what lets us ditch samples we can never finish."""
         req = [max(0, s.cost[t] - self.me.expertise[t]) for t in R]
         return max(sum(req) - MAX_MOL, max(req[t] - self.reach[t] for t in R), 0)
 
@@ -222,7 +245,7 @@ class Bot:
         good = self.cloud_good()
         if good and good[0][0] > self.net_val(worst) + 8:
             return worst
-        if self.blocked >= STALL and not self.plan.seq:
+        if (self.blocked >= STALL or self.dry >= DRY) and not self.plan.seq:
             stuck = max(self.diag, key=self.unreachable)
             return stuck if self.unreachable(stuck) else None
         return None
@@ -243,6 +266,7 @@ class Bot:
         return max(cand, key=lambda t: need[t]) if cand else None
 
     def pick_cloud(self):
+        """Diagnosed sample worth collecting from the cloud - a turn cheaper than a fresh draw."""
         if len(self.mine) >= MAX_SAMP or self.turns_left < 15:
             return None
         good = self.cloud_good()

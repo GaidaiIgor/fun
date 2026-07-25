@@ -21,7 +21,10 @@ DIST = {
 MAX_MOL = 10
 MAX_SAMP = 3
 MAX_TURNS = 200
+STOCK = 5
 R = range(5)
+PRIOR3 = [[0, 0, 4, 3, 0], [3, 0, 0, 4, 3], [0, 4, 4, 3, 3], [2, 3, 3, 0, 3],
+          [0, 0, 0, 7, 3], [5, 3, 0, 3, 3]]  # stand-in rank 3 costs until the game shows us real ones
 
 
 def cfg(key, default):
@@ -32,7 +35,7 @@ TURN_COST = cfg("C4L_TURN_COST", 2.0)          # health-equivalent value of one 
 EXP_VALUE = cfg("C4L_EXP_VALUE", 4.0)          # value of one point of molecule expertise
 PROJ_VALUE = cfg("C4L_PROJ_VALUE", 50.0)       # health awarded by a science project
 PREFETCH_TURNS = cfg("C4L_PREFETCH", 25)       # only pre-gather molecules while this much time is left
-RANKS = os.environ.get("C4L_RANKS", "111,111,111,321,332").split(",")  # rank per (expertise // 3, held)
+RANKS = os.environ.get("C4L_RANKS", "111,111,111,331,333").split(",")  # rank per (expertise // 3, held)
 FETCH_AT = cfg("C4L_FETCH_AT", 0)              # most samples in hand that still justifies a sample run
 RIDE = cfg("C4L_RIDE", 1)                      # leftovers worth less than this share of a molecule
                                                # round trip ride along with the next batch instead
@@ -40,8 +43,12 @@ LAST_FETCH = cfg("C4L_LAST_FETCH", 15)         # stop collecting new samples bel
 STALL = cfg("C4L_STALL", 10)                   # turns stuck at MOLECULES before giving up on a sample
 DRY = cfg("C4L_DRY", 25)                       # turns without producing before ditching blocked samples
 HOSTILE = cfg("C4L_HOSTILE", 30)               # turns without a rival medicine before writing off their molecules
-DENY = cfg("C4L_DENY", 1)                      # take the last molecule of a type the rival needs
+DENY = cfg("C4L_DENY", 1)                      # take scarce molecules the rival still needs
+DENY_LEFT = cfg("C4L_DENY_LEFT", 4)            # ... while at most this many of the type are on offer
+DENY_TURNS = cfg("C4L_DENY_TURNS", 10)         # ... and at least this many turns remain
+SPARE = cfg("C4L_SPARE", 1)                    # molecule slots kept free when denying
 HARVEST = cfg("C4L_HARVEST", 90)               # below this many turns left, draw rank 3 for the health
+READY = cfg("C4L_READY", 0)                    # share of seen rank 3 samples our expertise must cover
 END_TURNS = cfg("C4L_END_TURNS", 18)           # below this, request the cheapest samples
 END_RANK = cfg("C4L_END_RANK", 1)
 KEEP_GAP = cfg("C4L_KEEP_GAP", 2)              # expertise gap at which an unbuildable sample is ditched
@@ -210,13 +217,34 @@ class Bot:
         """Rank to request: expertise first while it still has time to pay off, then health.
 
         Expertise only earns its keep through the samples it discounts later, so once too little
-        of the game is left for that, we switch to drawing the richest samples we can afford."""
+        of the game is left for that, we switch to drawing the richest samples we can afford -
+        but only while our expertise can actually build them."""
         if self.turns_left < END_TURNS:
             return int(END_RANK)
         if self.turns_left < HARVEST:
-            return 3
+            return 3 if self.r3_ready() else int(R3_FALL)
         rank = int(RANKS[min(len(RANKS) - 1, sum(self.me.expertise) // 3)][min(2, len(self.mine))])
-        return int(R3_FALL) if rank == 3 and min(self.me.expertise) < R3_MIN else rank
+        if rank < 3:
+            return rank
+        return 3 if min(self.me.expertise) >= R3_MIN and self.r3_ready() else int(R3_FALL)
+
+    def r3_ready(self):
+        """True when enough of the rank 3 samples seen this game are within our expertise.
+
+        Rank 3 costs reach 7 of a single type against a stock of 5, so a draw is dead unless the
+        matching expertise is banked. Both robots' diagnosed samples are visible, which gives a
+        live sample of the deck to judge that against instead of guessing."""
+        if not READY:
+            return True
+        costs = [s.cost for s in self.seen.values() if s.rank == 3]
+        if len(costs) < 4:
+            costs = costs + PRIOR3
+        ok = sum(1 for c in costs if self.buildable(c))
+        return ok >= READY * len(costs)
+
+    def buildable(self, cost):
+        req = [max(0, cost[t] - self.me.expertise[t]) for t in R]
+        return sum(req) <= MAX_MOL and all(req[t] <= STOCK for t in R)
 
     def gap(self, s):
         """Expertise points still missing before this sample could ever be produced.
@@ -255,14 +283,18 @@ class Bot:
         return sum(max(0, s.cost[t] - self.me.expertise[t] - self.me.storage[t] - self.avail[t]) for t in R)
 
     def deny(self):
-        """Last molecule of a type the rival still needs, when we can afford to sit on it."""
-        if not DENY or sum(self.me.storage) > MAX_MOL - 3 or self.turns_left < 20:
+        """Scarce molecule the rival still needs, when we can afford to sit on it.
+
+        Points only decide a game through who has more of them, so starving a rival of a type
+        they are short of is worth a turn once our own batch is already covered."""
+        held = sum(self.me.storage)
+        if not DENY or held >= MAX_MOL or held > MAX_MOL - SPARE or self.turns_left < DENY_TURNS:
             return None
         need = [0] * 5
         for s in self.theirs:
             for t in R:
                 need[t] += max(0, s.cost[t] - self.opp.expertise[t])
-        cand = [t for t in R if self.avail[t] == 1 and need[t] > self.opp.storage[t]]
+        cand = [t for t in R if 0 < self.avail[t] <= DENY_LEFT and need[t] > self.opp.storage[t]]
         return max(cand, key=lambda t: need[t]) if cand else None
 
     def pick_cloud(self):

@@ -32,13 +32,16 @@ TURN_COST = cfg("C4L_TURN_COST", 2.0)          # health-equivalent value of one 
 EXP_VALUE = cfg("C4L_EXP_VALUE", 4.0)          # value of one point of molecule expertise
 PROJ_VALUE = cfg("C4L_PROJ_VALUE", 50.0)       # health awarded by a science project
 PREFETCH_TURNS = cfg("C4L_PREFETCH", 25)       # only pre-gather molecules while this much time is left
-RANKS = os.environ.get("C4L_RANKS", "112,222,222,333").split(",")  # rank per (expertise // 3, held)
+RANKS = os.environ.get("C4L_RANKS", "111,311,311,331,333").split(",")  # rank per (expertise // 3, held)
+FETCH_AT = cfg("C4L_FETCH_AT", 0)              # most samples in hand that still justifies a sample run
 LAST_FETCH = cfg("C4L_LAST_FETCH", 15)         # stop collecting new samples below this many turns
 STALL = cfg("C4L_STALL", 10)                   # turns stuck at MOLECULES before giving up on a sample
 HOSTILE = cfg("C4L_HOSTILE", 30)               # turns without a rival medicine before writing off their molecules
 DENY = cfg("C4L_DENY", 1)                      # take the last molecule of a type the rival needs
 END_TURNS = cfg("C4L_END_TURNS", 18)           # below this, request the cheapest samples
 END_RANK = cfg("C4L_END_RANK", 1)
+KEEP_GAP = cfg("C4L_KEEP_GAP", 2)              # expertise gap at which an unbuildable sample is ditched
+R3_MIN = cfg("C4L_R3_MIN", 1)                  # expertise in every type before rank 3 is worth drawing
 
 Plan = namedtuple("Plan", "seq short score")
 EMPTY = Plan((), (0, 0, 0, 0, 0), 0.0)
@@ -186,24 +189,32 @@ class Bot:
         so we only restock once the samples in hand are spent or unusable."""
         if len(self.mine) >= MAX_SAMP or self.turns_left < LAST_FETCH:
             return False
-        return not self.mine or not self.plan.seq
+        return len(self.mine) <= FETCH_AT or not self.plan.seq
 
     def pick_rank(self):
         if self.turns_left < END_TURNS:
             return int(END_RANK)
-        return int(RANKS[min(len(RANKS) - 1, sum(self.me.expertise) // 3)][min(2, len(self.mine))])
+        rank = int(RANKS[min(len(RANKS) - 1, sum(self.me.expertise) // 3)][min(2, len(self.mine))])
+        return 2 if rank == 3 and min(self.me.expertise) < R3_MIN else rank
+
+    def gap(self, s):
+        """Expertise points still missing before this sample could be produced at all.
+
+        Costs run up to 7 of a single type while only 5 exist, so some samples are dead weight
+        until enough expertise of that type is banked - each point cuts the requirement by one."""
+        req = [max(0, s.cost[t] - self.me.expertise[t]) for t in R]
+        return max(sum(req) - MAX_MOL, max(req[t] - self.reach[t] for t in R), 0)
 
     def hopeless(self, s):
-        """True when a sample cannot be produced on its own with the molecules we can still reach."""
-        req = [max(0, s.cost[t] - self.me.expertise[t]) for t in R]
-        return sum(req) > MAX_MOL or any(req[t] > self.reach[t] for t in R)
+        return self.gap(s) > 0
 
     def pick_dump(self):
         """Diagnosed sample worth pushing back to the cloud, if any."""
         if self.turns_left < 22 or not self.diag:
             return None
         for s in self.diag:
-            if self.hopeless(s) and (s.health <= 30 or self.turns_left < 60):
+            gap = self.gap(s)
+            if gap >= KEEP_GAP or (gap and (s.health <= 30 or self.turns_left < 60)):
                 return s
         if len(self.mine) < MAX_SAMP:
             return None
@@ -351,9 +362,13 @@ class Bot:
         return "GOTO " + SAMPLES
 
     def dbg(self, cmd):
-        return "T%d %s st%s ex%s av%s hold%s plan%s short%s -> %s" % (
-            self.turn, self.pos[:4], "".join(str(x) for x in self.me.storage),
-            "".join(str(x) for x in self.me.expertise), "".join(str(x) for x in self.avail),
+        head = ""
+        if self.turn == 1:
+            head = "PROJECTS %s\n" % " ".join("".join(str(x) for x in p) for p in self.projects)
+        return "%sT%d %s st%s ex%s rx%s av%s %d-%d hold%s plan%s short%s -> %s" % (
+            head, self.turn, self.pos[:4], "".join(str(x) for x in self.me.storage),
+            "".join(str(x) for x in self.me.expertise), "".join(str(x) for x in self.opp.expertise),
+            "".join(str(x) for x in self.avail), self.me.score, self.opp.score,
             self.mine, [s.id for s in self.plan.seq], "".join(str(x) for x in self.plan.short), cmd)
 
 

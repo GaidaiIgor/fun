@@ -44,9 +44,10 @@ STALL = cfg("C4L_STALL", 10)                   # turns stuck at MOLECULES before
 DRY = cfg("C4L_DRY", 25)                       # turns without producing before ditching blocked samples
 HOSTILE = cfg("C4L_HOSTILE", 30)               # turns without a rival medicine before writing off their molecules
 DENY = cfg("C4L_DENY", 1)                      # take scarce molecules the rival still needs
-DENY_LEFT = cfg("C4L_DENY_LEFT", 4)            # ... while at most this many of the type are on offer
+DENY_LEFT = cfg("C4L_DENY_LEFT", 5)            # ... while at most this many of the type are on offer
 DENY_TURNS = cfg("C4L_DENY_TURNS", 10)         # ... and at least this many turns remain
-SPARE = cfg("C4L_SPARE", 1)                    # molecule slots kept free when denying
+SPARE = cfg("C4L_SPARE", 0)                    # molecule slots kept free when denying
+DENY_CAP = cfg("C4L_DENY_CAP", 4)              # most molecules we will sit on that no sample of ours wants
 HARVEST = cfg("C4L_HARVEST", 90)               # below this many turns left, draw rank 3 for the health
 READY = cfg("C4L_READY", 0)                    # share of seen rank 3 samples our expertise must cover
 END_TURNS = cfg("C4L_END_TURNS", 18)           # below this, request the cheapest samples
@@ -286,9 +287,16 @@ class Bot:
         """Scarce molecule the rival still needs, when we can afford to sit on it.
 
         Points only decide a game through who has more of them, so starving a rival of a type
-        they are short of is worth a turn once our own batch is already covered."""
+        they are short of is worth a turn once our own batch is already covered. Never at the
+        cost of our own carry space though: molecules no sample of ours wants can wedge the
+        robot shut, unable to gather what it needs and unable to produce anything."""
         held = sum(self.me.storage)
-        if not DENY or held >= MAX_MOL or held > MAX_MOL - SPARE or self.turns_left < DENY_TURNS:
+        if not DENY or held >= MAX_MOL or self.turns_left < DENY_TURNS:
+            return None
+        req = self.seq_req(self.diag)
+        owed = sum(max(0, req[t] - self.me.storage[t]) for t in R)
+        idle_stock = sum(max(0, self.me.storage[t] - req[t]) for t in R)
+        if held + owed + SPARE > MAX_MOL or idle_stock >= DENY_CAP:
             return None
         need = [0] * 5
         for s in self.theirs:

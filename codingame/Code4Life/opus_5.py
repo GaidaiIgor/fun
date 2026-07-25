@@ -35,23 +35,23 @@ TURN_COST = cfg("C4L_TURN_COST", 2.0)          # health-equivalent value of one 
 EXP_VALUE = cfg("C4L_EXP_VALUE", 4.0)          # value of one point of molecule expertise
 PROJ_VALUE = cfg("C4L_PROJ_VALUE", 50.0)       # health awarded by a science project
 PREFETCH_TURNS = cfg("C4L_PREFETCH", 25)       # only pre-gather molecules while this much time is left
-RANKS = os.environ.get("C4L_RANKS", "111,111,111,331,333").split(",")  # rank per (expertise // 3, held)
+RANKS = os.environ.get("C4L_RANKS", "111,112,331,333,333").split(",")  # rank per (expertise // 3, held)
 FETCH_AT = cfg("C4L_FETCH_AT", 0)              # most samples in hand that still justifies a sample run
 RIDE = cfg("C4L_RIDE", 1)                      # leftovers worth less than this share of a molecule
                                                # round trip ride along with the next batch instead
 LAST_FETCH = cfg("C4L_LAST_FETCH", 15)         # stop collecting new samples below this many turns
-STALL = cfg("C4L_STALL", 3)                    # turns stuck at MOLECULES before giving up on a sample
-DRY = cfg("C4L_DRY", 12)                       # turns without producing before ditching blocked samples
+STALL = cfg("C4L_STALL", 10)                   # turns stuck at MOLECULES before giving up on a sample
+DRY = cfg("C4L_DRY", 25)                       # turns without producing before ditching blocked samples
 HOSTILE = cfg("C4L_HOSTILE", 30)               # turns without a rival medicine before writing off their molecules
 HOG = cfg("C4L_HOG", 0)                        # molecules per type we assume a rival never lets go of, so
                                                # samples needing almost the whole stock count as unbuildable
 DENY = cfg("C4L_DENY", 1)                      # take scarce molecules the rival still needs
-DENY_LEFT = cfg("C4L_DENY_LEFT", 5)            # ... while at most this many of the type are on offer
+DENY_LEFT = cfg("C4L_DENY_LEFT", 4)            # ... while at most this many of the type are on offer
 DENY_TURNS = cfg("C4L_DENY_TURNS", 10)         # ... and at least this many turns remain
 DENY_FROM = cfg("C4L_DENY_FROM", 200)          # ... and no more than this: carrying molecules we cannot
                                                # use only costs us while there is still time to need them
-SPARE = cfg("C4L_SPARE", 0)                    # molecule slots kept free when denying
-DENY_CAP = cfg("C4L_DENY_CAP", 4)              # most molecules we will sit on that no sample of ours wants
+SPARE = cfg("C4L_SPARE", 1)                    # molecule slots kept free when denying
+DENY_CAP = cfg("C4L_DENY_CAP", 99)             # most molecules we will sit on that no sample of ours wants
 HARVEST = cfg("C4L_HARVEST", 90)               # below this many turns left, draw rank 3 for the health
 READY = cfg("C4L_READY", 0)                    # share of seen rank 3 samples our expertise must cover
 END_TURNS = cfg("C4L_END_TURNS", 18)           # below this, request the cheapest samples
@@ -59,7 +59,7 @@ END_RANK = cfg("C4L_END_RANK", 1)
 KEEP_GAP = cfg("C4L_KEEP_GAP", 2)              # expertise gap at which an unbuildable sample is ditched
 R3_MIN = cfg("C4L_R3_MIN", 1)                  # expertise in every type before rank 3 is worth drawing
 R3_FALL = cfg("C4L_R3_FALL", 2)                # rank drawn instead when rank 3 is not worth it yet
-CLAIM = cfg("C4L_CLAIM", 3)                    # per-type demand from samples in hand above which another
+CLAIM = cfg("C4L_CLAIM", 99)                   # per-type demand from samples in hand above which another
                                                # rank 3 would stake everything on one contested type
 
 Plan = namedtuple("Plan", "seq short score")

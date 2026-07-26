@@ -43,6 +43,8 @@ LAST_FETCH = cfg("C4L_LAST_FETCH", 15)         # stop collecting new samples bel
 CLOUD_MIN = cfg("C4L_CLOUD_MIN", 6)            # value a cloud sample must carry to be worth a pickup
 STALL = cfg("C4L_STALL", 10)                   # turns stuck at MOLECULES before giving up on a sample
 DRY = cfg("C4L_DRY", 25)                       # turns without producing before ditching blocked samples
+SWITCH = cfg("C4L_SWITCH", 18)                 # dry turns after which we fall back to cheap samples
+PARTIAL = cfg("C4L_PARTIAL", 1)                # gather toward samples we cannot yet complete
 FREEZE = cfg("C4L_FREEZE", 12)                 # consecutive idle turns after which we move regardless,
                                                # above STALL so the ordinary escapes get first refusal
 HOSTILE = cfg("C4L_HOSTILE", 30)               # turns without a rival medicine before writing off their molecules
@@ -232,9 +234,13 @@ class Bot:
 
         Expertise only earns its keep through the samples it discounts later, so once too little
         of the game is left for that, we switch to drawing the richest samples we can afford -
-        but only while our expertise can actually build them."""
+        but only while our expertise can actually build them. A long spell without producing
+        anything means the rich ones are out of reach, and cheap samples that do get built beat
+        expensive ones that never do: they still bank expertise, which is what pays for projects."""
         if self.turns_left < END_TURNS:
             return int(END_RANK)
+        if SWITCH and self.dry >= SWITCH:
+            return 1                       # nothing is converting: draw what we can actually build
         if self.turns_left < HARVEST:
             return 3 if self.r3_ready() else int(R3_FALL)
         rank = int(RANKS[min(len(RANKS) - 1, sum(self.me.expertise) // 3)][min(2, len(self.mine))])
@@ -328,9 +334,14 @@ class Bot:
         return good[0][1] if good else None
 
     def gather_order(self):
-        """Carried samples ordered by how urgently their molecules should be collected."""
+        """Carried samples ordered by how urgently their molecules should be collected.
+
+        Collecting part of what a sample needs is only worth it if the rest is coming: half the
+        molecules for a sample nobody can complete ties up carry space and keeps them out of the
+        pool, which is how a blocked robot stays blocked."""
         order = list(self.plan.seq)
-        order += [s for s in self.ideal.seq if s not in order]
+        if PARTIAL:
+            order += [s for s in self.ideal.seq if s not in order]
         order += sorted((s for s in self.diag if s not in order), key=self.net_val, reverse=True)
         return order
 

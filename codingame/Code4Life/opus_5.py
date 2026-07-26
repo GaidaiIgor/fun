@@ -35,13 +35,16 @@ TURN_COST = cfg("C4L_TURN_COST", 2.0)          # health-equivalent value of one 
 EXP_VALUE = cfg("C4L_EXP_VALUE", 4.0)          # value of one point of molecule expertise
 PROJ_VALUE = cfg("C4L_PROJ_VALUE", 50.0)       # health awarded by a science project
 PREFETCH_TURNS = cfg("C4L_PREFETCH", 25)       # only pre-gather molecules while this much time is left
-RANKS = os.environ.get("C4L_RANKS", "111,112,331,333,333").split(",")  # rank per (expertise // 3, held)
+RANKS = os.environ.get("C4L_RANKS", "111,111,111,331,333").split(",")  # rank per (expertise // 3, held)
 FETCH_AT = cfg("C4L_FETCH_AT", 0)              # most samples in hand that still justifies a sample run
 RIDE = cfg("C4L_RIDE", 1)                      # leftovers worth less than this share of a molecule
                                                # round trip ride along with the next batch instead
 LAST_FETCH = cfg("C4L_LAST_FETCH", 15)         # stop collecting new samples below this many turns
+CLOUD_MIN = cfg("C4L_CLOUD_MIN", 6)            # value a cloud sample must carry to be worth a pickup
 STALL = cfg("C4L_STALL", 10)                   # turns stuck at MOLECULES before giving up on a sample
 DRY = cfg("C4L_DRY", 25)                       # turns without producing before ditching blocked samples
+FREEZE = cfg("C4L_FREEZE", 12)                 # consecutive idle turns after which we move regardless,
+                                               # above STALL so the ordinary escapes get first refusal
 HOSTILE = cfg("C4L_HOSTILE", 30)               # turns without a rival medicine before writing off their molecules
 HOG = cfg("C4L_HOG", 0)                        # molecules per type we assume a rival never lets go of, so
                                                # samples needing almost the whole stock count as unbuildable
@@ -204,10 +207,13 @@ class Bot:
 
     # ---------------------------------------------------------------- choices
     def cloud_good(self):
-        """Cloud samples we could still finish, best first, as (value, sample) pairs."""
+        """Cloud samples worth collecting, best first, as (value, sample) pairs.
+
+        One threshold only: routing to the diagnosis module for a cloud sample and actually
+        taking it must agree, or the robot walks there and refuses to pick anything up."""
         out = [(self.net_val(s), s) for s in self.cloud if not self.hopeless(s)]
         out.sort(key=lambda x: -x[0])
-        return [x for x in out if x[0] > 0]
+        return [x for x in out if x[0] >= CLOUD_MIN]
 
     def want_samples(self):
         """True when a run to the samples module pays off.
@@ -319,7 +325,7 @@ class Bot:
         if len(self.mine) >= MAX_SAMP or self.turns_left < 15:
             return None
         good = self.cloud_good()
-        return good[0][1] if good and good[0][0] >= 6 else None
+        return good[0][1] if good else None
 
     def gather_order(self):
         """Carried samples ordered by how urgently their molecules should be collected."""
@@ -408,7 +414,22 @@ class Bot:
         if self.pos == SAMPLES and self.want_samples():
             return "CONNECT %d" % self.pick_rank()
         nxt = self.next_module()
-        return STUCK if nxt == self.pos else "GOTO " + nxt
+        if nxt != self.pos:
+            return "GOTO " + nxt
+        if self.blocked >= FREEZE:
+            return "GOTO " + self.anywhere()
+        return STUCK
+
+    def anywhere(self):
+        """Somewhere useful to go when waiting where we are has stopped paying off.
+
+        Waiting is only ever right while the molecules we need are coming back; past that it is
+        an idle loop, and any module that can still change our position is worth more."""
+        if len(self.mine) < MAX_SAMP and self.turns_left > LAST_FETCH:
+            return SAMPLES
+        if self.pos == MOLECULES:
+            return DIAGNOSIS               # trade a blocked sample for one we can actually build
+        return MOLECULES if self.diag else SAMPLES
 
     def fallback(self):
         """Simple safe policy used if the main logic raises."""

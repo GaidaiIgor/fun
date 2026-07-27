@@ -16,9 +16,9 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
-   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_MONTH = -1
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 3 2 3 2 3 2 3 2 3 2 0 2 0 2 0 2 5 2 0 2 3;POD 2 2 0 2 0 2 0 2 0 2 5 2 5 2 3 4 1 4 1 4 1 4"
+   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -752,7 +752,10 @@ class Planner:
             if not state.planned_pod_paths[pod_id] & active_edges:
                 self.remove_planned_pod(state, pod_id)
         for edge in sorted(state.planned_tubes - active_edges):
-            self.remove_planned_tube(state, edge)
+            remaining_tubes = dict(state.tubes)
+            del remaining_tubes[edge]
+            if graph_distance(tube_graph(remaining_tubes), *edge) < INF:
+                self.remove_planned_tube(state, edge)
 
     def remove_planned_pod(self, state: PlanState, pod_id: int):
         if pod_id in self.pods:

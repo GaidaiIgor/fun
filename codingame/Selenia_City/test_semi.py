@@ -11,8 +11,8 @@ if not __package__:
 from Selenia_City.semi import Building, Planner, Pod, route_key
 
 TURN_STATE = """
-month 1
-resources 5000
+month 10
+resources 5324
 module 0 1 20 15
 module 1 2 140 15
 landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
@@ -20,6 +20,16 @@ landing 3 80 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,
 landing 4 120 45 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
 module 5 2 20 75
 module 6 1 140 75
+module 7 3 10 45
+landing 8 150 45 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+tube 0 2 1
+tube 1 4 1
+tube 2 3 1
+tube 3 4 1
+tube 3 5 1
+tube 3 6 1
+pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 5, 3, 4, 1, 4, 3, 5]
+pod id=2, path=[3, 6, 3, 5, 3, 6, 3, 5, 3, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1]
 """
 
 
@@ -57,9 +67,8 @@ def parse_turn_state(text: str) -> Planner:
             case "teleport":
                 planner.teleports[int(parts[1])] = int(parts[2])
             case "pod":
-                pod_id, served_paths, path = parse_pod_line(line)
+                pod_id, path = parse_pod_line(line)
                 planner.pods[pod_id] = Pod(pod_id, path)
-                planner.served_paths[pod_id] = served_paths
             case _:
                 raise ValueError(f"Unknown turn-state line: {line}")
     return planner
@@ -86,17 +95,10 @@ def parse_path(text: str) -> list[int]:
     return [int(item) for item in text.replace(",", " ").split()]
 
 
-def parse_pod_line(line: str) -> tuple[int, set[tuple[int, ...]], list[int]]:
-    """Parses pod id, served paths, and itinerary from inline pod line."""
-    pod_text, path_text = line.removeprefix("pod ").split(", path=[")
-    id_text, served_text = pod_text.split(", served={")
-    pod_id = int(id_text.removeprefix("id="))
-    return pod_id, parse_served_paths(served_text.removesuffix("}")), parse_path(path_text.removesuffix("]"))
-
-
-def parse_served_paths(text: str) -> set[tuple[int, ...]]:
-    """Parses served paths written as pipe-separated node sequences."""
-    return {tuple(map(int, path.split("-"))) for path in text.split("|")} if text else set()
+def parse_pod_line(line: str) -> tuple[int, list[int]]:
+    """Parses pod id and itinerary from line."""
+    id_text, path_text = line.removeprefix("pod id=").split(", path=[")
+    return int(id_text), parse_path(path_text.removesuffix("]"))
 
 
 if __name__ == "__main__":

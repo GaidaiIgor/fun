@@ -25,6 +25,7 @@ DirectedPair = tuple[int, int]
 Pool = tuple[int, int]
 PoolOwner = Pool | int
 PathKey = tuple[int, ...]
+LoadKey = tuple[Pool, int, PathKey]
 
 
 @dataclass(slots=True)
@@ -871,6 +872,7 @@ class Planner:
         result = SimulationResult()
         fixed_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if not pod.dynamic]
         dynamic_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if pod.dynamic]
+        fixed_schedule = self.fixed_assignment_schedule(state, distances, wanted_edges, path_demands, fixed_pods)
         pod_positions = {pod_id: 0 for pod_id, _ in fixed_pods}
         dynamic_current = {pod_id: -1 for pod_id, _ in dynamic_pods}
         dynamic_pending = {pod_id: (-1, -1) for pod_id, _ in dynamic_pods}
@@ -889,8 +891,10 @@ class Planner:
             fixed_assignments, fixed_reservations = self.fixed_load_assignments(fixed_pods, pod_positions, active, queues, wanted_edges,
                 result)
             demand = self.edge_demand(queues, wanted_edges)
+            reserved_loads = {(path.pool, path.destination, path.nodes[:2]) for assignments in fixed_schedule[day:]
+                for paths in assignments.values() for path in paths}
             assignments, preferences, assignment_current = self.dispatch_dynamic_paths(day, active, dynamic_pods, dynamic_pending, dynamic_current,
-                fixed_assignments, fixed_reservations, result, state, graph, components, queues, wanted_edges, demand)
+                fixed_assignments, fixed_reservations, reserved_loads, result, state, graph, components, queues, wanted_edges, demand)
             path_orders = self.path_orders_for_assignments(assignments, assignment_current, graph)
             directions = {pod_id: 1 for pod_id, _ in dynamic_pods}
             requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending, assignments,
@@ -912,6 +916,40 @@ class Planner:
         if keep_dynamic_paths:
             result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
         return result
+
+    def fixed_assignment_schedule(self, state: PlanState, distances: dict[int, dict[int, int]],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], path_demands: list[PathDemand],
+            fixed_pods: list[tuple[int, PodPlan]]) -> list[dict[int, set[PathDemand]]]:
+        """Builds a fixed-only daily load schedule from state, distances, wanted_edges, path_demands, and fixed_pods and returns it."""
+        if not fixed_pods:
+            return [{} for _ in range(MONTH_DAYS)]
+        queues = self.initial_queues(distances)
+        result = SimulationResult()
+        positions = {pod_id: 0 for pod_id, _ in fixed_pods}
+        module_arrivals = Counter()
+        schedule = []
+        for day in range(MONTH_DAYS):
+            self.teleport_phase(queues, distances, state.teleports)
+            self.settle(day, queues, module_arrivals, result)
+            for passengers in queues.values():
+                passengers.sort(key=lambda item: item.id)
+            active = []
+            for path in path_demands:
+                active.extend(self.active_path_demands(path, queues, wanted_edges, result))
+            assignments, _ = self.fixed_load_assignments(fixed_pods, positions, active, queues, wanted_edges, result)
+            schedule.append(assignments)
+            if not active:
+                schedule.extend({} for _ in range(day + 1, MONTH_DAYS))
+                break
+            requests = {}
+            for pod_id, pod in fixed_pods:
+                next_index = fixed_next_index(pod.path, positions[pod_id])
+                if next_index != positions[pod_id]:
+                    requests[pod_id] = pod.path[positions[pod_id]], pod.path[next_index]
+            moves = self.allocate_tube_capacity(requests, state, self.edge_demand(queues, wanted_edges), result, False)
+            self.board_and_launch(queues, distances, state, moves, positions, {}, {})
+            self.settle(day + 1, queues, module_arrivals, result)
+        return schedule
 
     def fixed_load_assignments(self, fixed_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
             active: list[PathDemand], queues: dict[int, list[Passenger]],
@@ -1035,14 +1073,14 @@ class Planner:
 
     def dispatch_dynamic_paths(self, day: int, active: list[PathDemand], dynamic_pods: list[tuple[int, PodPlan]],
             pending: dict[int, DirectedPair], current: dict[int, int], fixed_assignments: dict[int, set[PathDemand]],
-            fixed_reservations: Counter[tuple[Pool, int]], result: SimulationResult, state: PlanState, graph: dict[int, list[int]],
-            components: dict[int, int], queues: dict[int, list[Passenger]],
+            fixed_reservations: Counter[tuple[Pool, int]], reserved_loads: set[LoadKey], result: SimulationResult, state: PlanState,
+            graph: dict[int, list[int]], components: dict[int, int], queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], demand: Counter[DirectedPair]) -> tuple:
         """Builds and returns assignments, preferences, and projected positions for dynamic_pods.
         day controls component coverage; active supplies targets; pending and current locate pods; fixed_assignments describe fixed work.
         result and state provide progress and infrastructure; graph and components provide topology.
-        fixed_reservations, queues, wanted_edges, and demand describe current-day passengers. Returns assignments, preferences, and
-        projected assignment positions."""
+        fixed_reservations, reserved_loads, queues, wanted_edges, and demand describe current and reserved passengers. Returns assignments,
+        preferences, and projected assignment positions."""
         pod_ids = [pod_id for pod_id, _ in dynamic_pods]
         assignment_current = {pod_id: pending[pod_id][1] if pending[pod_id] != (-1, -1) else current[pod_id]
             for pod_id in pod_ids}
@@ -1050,9 +1088,11 @@ class Planner:
         for path in active:
             if path.ambiguous:
                 preferred_targets.setdefault((path.pool, path.nodes[0]), set()).add(path.nodes[1])
+        unreserved = [path for path in active if (path.pool, path.destination, path.nodes[:2]) not in reserved_loads]
+        dispatchable = unreserved or active
         preferences = {}
         for pod_id in pod_ids:
-            candidates = active if day == 0 else [path for path in active
+            candidates = dispatchable if day == 0 else [path for path in dispatchable
                 if graph_distance(graph, assignment_current[pod_id], path.nodes[0]) < INF]
             candidates = [path for path in candidates if self.path_batch_allowed(path, preferred_targets, queues, wanted_edges)]
             preferences[pod_id] = sorted(candidates, key=lambda path: self.path_assignment_key(path, pod_id, {}, fixed_assignments,

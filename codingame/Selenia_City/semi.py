@@ -915,7 +915,7 @@ class Planner:
             if not active:
                 break
             if not dynamic_pods:
-                requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, {}, {}, graph, queues, wanted_edges, result)
+                requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, {}, graph, queues, wanted_edges, result)
                 moves = self.allocate_tube_capacity(requests, state, Counter(), result)
                 self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {})
                 self.settle(day + 1, queues, module_arrivals, result)
@@ -933,9 +933,8 @@ class Planner:
             assignments, preferences, locations, priorities = self.dispatch_dynamic_paths(day, active, dynamic_pods, dynamic_pending,
                 dynamic_current, fixed_reservations, reserved_loads, result, state, graph, components, queues, wanted_edges, demand)
             path_orders = self.path_orders_for_assignments(assignments, locations, graph)
-            directions = {pod_id: 1 for pod_id, _ in dynamic_pods}
             requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending, assignments,
-                path_orders, directions, graph, queues, wanted_edges, result)
+                path_orders, graph, queues, wanted_edges, result)
             moves = self.allocate_tube_capacity(requests, state, demand, result)
             assignments, path_orders, requests, moves = self.resolve_dispatch_congestion(assignments, preferences, requests, moves,
                 fixed_pods, dynamic_pods, pod_positions, dynamic_current, locations, dynamic_pending, graph, queues, wanted_edges,
@@ -1285,9 +1284,8 @@ class Planner:
                             not self.path_capacity_excess(a, trial, state) for a in loads for b in loads):
                     continue
                 orders = self.path_orders_for_assignments(trial, locations, graph)
-                directions = {dynamic_id: 1 for dynamic_id, _ in dynamic_pods}
                 trial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, current, pending, trial, orders,
-                    directions, graph, queues, wanted_edges, result)
+                    graph, queues, wanted_edges, result)
                 trial_moves = self.allocate_tube_capacity(trial_requests, state, demand, result, False)
                 trial_blocked = sum(dynamic_id in dispatchable and dynamic_id not in trial_moves for dynamic_id in trial_requests)
                 loaded = sum(min(POD_CAPACITY, demand[move]) for dynamic_id, move in trial_moves.items() if dynamic_id in dispatchable)
@@ -1316,9 +1314,8 @@ class Planner:
             loaded = sum(min(POD_CAPACITY, demand[move]) for pod_id, move in moves.items() if pod_id in dispatchable)
             for _, _, _, _, trial in sorted(trials):
                 orders = self.path_orders_for_assignments(trial, locations, graph)
-                directions = {pod_id: 1 for pod_id, _ in dynamic_pods}
                 trial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, current, pending, trial, orders,
-                    directions, graph, queues, wanted_edges, result)
+                    graph, queues, wanted_edges, result)
                 trial_moves = self.allocate_tube_capacity(trial_requests, state, demand, result, False)
                 trial_blocked = sum(pod_id in dispatchable and pod_id not in trial_moves for pod_id in trial_requests)
                 trial_loaded = sum(min(POD_CAPACITY, demand[move]) for pod_id, move in trial_moves.items() if pod_id in dispatchable)
@@ -1378,9 +1375,8 @@ class Planner:
 
     def path_pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
             pod_positions: dict[int, int], current: dict[int, int], pending: dict[int, DirectedPair], assignments: dict[int, PathDemand],
-            path_orders: dict[PathDemand, list[int]], directions: dict[int, int], graph: dict[int, list[int]],
-            queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
-            result: SimulationResult) -> dict[int, DirectedPair]:
+            path_orders: dict[PathDemand, list[int]], graph: dict[int, list[int]], queues: dict[int, list[Passenger]],
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> dict[int, DirectedPair]:
         requests = {}
         for pod_id, pod in fixed_pods:
             index = pod_positions[pod_id]
@@ -1407,7 +1403,6 @@ class Planner:
             segment = path[start:finish + 1]
             if current[pod_id] == -1:
                 if start:
-                    directions[pod_id] = -1
                     requests[pod_id] = segment[-1], segment[-2]
                 else:
                     requests[pod_id] = segment[0], segment[1]
@@ -1417,11 +1412,16 @@ class Planner:
                 continue
             position = segment.index(current[pod_id])
             if position:
-                directions[pod_id] = -1
                 requests[pod_id] = current[pod_id], segment[position - 1]
                 continue
-            directions[pod_id] = 1
-            requests[pod_id] = current[pod_id], segment[1]
+            target_id = segment[1]
+            waiting = sum(passenger.pad_id == demand.pool[0] and passenger.kind == demand.pool[1] and
+                (current[pod_id], target_id) in wanted_edges[current[pod_id], passenger.kind] for passenger in queues.get(current[pod_id], []))
+            covered = sum(min(POD_CAPACITY, self.path_remaining(other, result)) for other_id, other in assignments.items()
+                if other_id != pod_id and other.pool == demand.pool and other.destination == demand.destination and other.nodes == path[start:])
+            if start and covered and covered >= waiting:
+                target_id = path[start - 1]
+            requests[pod_id] = current[pod_id], target_id
         return requests
 
     def path_segment_ready(self, path: PathDemand, source_id: int, target_id: int, queues: dict[int, list[Passenger]],

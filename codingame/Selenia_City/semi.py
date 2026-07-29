@@ -1421,13 +1421,7 @@ class Planner:
                 requests[pod_id] = current[pod_id], segment[position - 1]
                 continue
             directions[pod_id] = 1
-            target_id = segment[1]
-            if directions[pod_id] == 1 and not self.path_segment_ready(demand, current[pod_id], target_id, queues, wanted_edges, result):
-                path_position = start + position
-                if path_position:
-                    directions[pod_id] = -1
-                    target_id = path[path_position - 1]
-            requests[pod_id] = current[pod_id], target_id
+            requests[pod_id] = current[pod_id], segment[1]
         return requests
 
     def path_segment_ready(self, path: PathDemand, source_id: int, target_id: int, queues: dict[int, list[Passenger]],

@@ -9,9 +9,72 @@ from pathlib import Path
 if not __package__:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 import Selenia_City.semi as semi
-from Selenia_City.semi import Building, Planner, Pod, route_key
+from Selenia_City.semi import Building, Planner, PlanState, Pod, SimulationResult, route_key
 
 semi.FULL_DEBUG = True
+
+def table_debug(self, result: SimulationResult, state: PlanState) -> str:
+    """Formats result assignment rows using state pod headers."""
+    headers = ["Day", "Loads", *("P{}{}".format(pod_id, "f" if not pod.dynamic else "")
+        for pod_id, pod in sorted(state.pods.items()))]
+    rows = [headers, *result.table]
+    widths = [max(map(len, column)) for column in zip(*rows)]
+    border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+    lines = ["| " + " | ".join(value.ljust(width) for value, width in zip(row, widths)) + " |" for row in rows]
+    return "Fixed reservations: " + result.reserved + "\nAssignments:\n" + \
+        "\n".join([border, lines[0], border, *lines[1:], border])
+
+
+def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
+    """Formats label score from result using cost."""
+    demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
+    stats = self.status_debug(result)
+    if label == "before":
+        landings = []
+        for pad in self.landing_pads():
+            demand_text = ", ".join(f"{kind}x{count}" for kind, count in sorted(pad.demand.items()))
+            landings.append(f"landing {pad.id}: {demand_text}")
+        return "\n".join((*landings, "", stats))
+    return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
+        f"score: {result.score}, resources: {self.resources - cost}\n{stats}"
+
+
+def status_debug(self, result: SimulationResult) -> str:
+    """Formats all pool status from result."""
+    return f"{self.pool_debug(result)}\n{self.diversity_debug(result)}"
+
+
+def pool_debug(self, result: SimulationResult) -> str:
+    """Formats speed-pool status from result."""
+    lines = []
+    for pool in self.speed_pools():
+        pad_id, kind = pool
+        max_speed = self.buildings[pad_id].demand[kind] * 50
+        delivery_time = result.delivery_times[pool] if pool in result.delivery_times else "-"
+        lines.append(f"speed pool {pool}: {result.speed_by_pool[pool]}/{max_speed}, delivery {delivery_time}")
+    return "\n".join(lines)
+
+
+def diversity_debug(self, result: SimulationResult) -> str:
+    """Formats diversity-pool status from result."""
+    lines = []
+    for building in sorted(self.buildings.values(), key=lambda item: item.id):
+        if building.kind <= 0:
+            continue
+        max_diversity = self.max_diversity(building.kind)
+        if not max_diversity:
+            continue
+        perfect_diversity = self.perfect_diversity(building.kind)
+        line = f"diversity pool {building.id}: {result.diversity_by_module[building.id]}/{perfect_diversity}/{max_diversity}, "
+        lines.append(f"{line}delivered {result.delivered_by_module[building.id]}")
+    return "\n".join(lines)
+
+
+Planner.table_debug = table_debug
+Planner.score_debug = score_debug
+Planner.status_debug = status_debug
+Planner.pool_debug = pool_debug
+Planner.diversity_debug = diversity_debug
 
 TURN_STATE = """
 month 10

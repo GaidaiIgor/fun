@@ -122,7 +122,7 @@ class SimulationResult:
     delivered_by_pool_module: Counter[tuple[Pool, int]] = field(default_factory=Counter)
     congestion_by_edge: Counter[Pair] = field(default_factory=Counter)
     dynamic_paths: dict[int, list[int]] = field(default_factory=dict)
-    assignment_table: list[str] = field(default_factory=list)
+    assignment_table: list[list[str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -217,7 +217,7 @@ class Planner:
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
-        print("\nAssignments:\n" + "\n".join(final_result.assignment_table), file=sys.stderr)
+        print("\nAssignments:\n" + self.assignment_debug(final_result, final_state), file=sys.stderr)
         print("\n" + self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
         action_order = {"TUBE": 0, "TELEPORT": 0, "UPGRADE": 1, "DESTROY": 2, "POD": 3}
         return sorted((action for action in final_state.actions if action), key=lambda action: action_order[action.split()[0]])
@@ -229,10 +229,20 @@ class Planner:
         final_state = self.override_state(OVERRIDE_COMMAND)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
-        print("\nAssignments:\n" + "\n".join(final_result.assignment_table), file=sys.stderr)
+        print("\nAssignments:\n" + self.assignment_debug(final_result, final_state), file=sys.stderr)
         print(f"override month {self.month + 1}: {OVERRIDE_COMMAND}", file=sys.stderr)
         print("\n" + self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
         return [action for action in final_state.actions if action]
+
+    def assignment_debug(self, result: SimulationResult, state: PlanState) -> str:
+        """Formats result assignments with state pod headers."""
+        headers = ["Day", "Loads", *("P{}{}".format(pod_id, "f" if not pod.dynamic else "")
+            for pod_id, pod in sorted(state.pods.items()))]
+        rows = [headers, *result.assignment_table]
+        widths = [max(map(len, column)) for column in zip(*rows)]
+        border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+        lines = ["| " + " | ".join(value.ljust(width) for value, width in zip(row, widths)) + " |" for row in rows]
+        return "\n".join([border, lines[0], border, *lines[1:], border])
 
     def override_state(self, command: str) -> PlanState:
         state = self.replay_bundle_sequence([])
@@ -917,13 +927,13 @@ class Planner:
                 fixed_pods, dynamic_pods, pod_positions, dynamic_current, assignment_current, dynamic_pending, graph, queues, wanted_edges,
                 result, state, demand, fixed_assignments, fixed_reservations, priorities)
             if keep_dynamic_paths:
-                loads = ", ".join("{}x{}{}".format("-".join(map(str, path.nodes)), self.path_remaining(path, result),
+                loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), self.path_remaining(path, result),
                     "N" if priorities[path] == 0 else "L") for path in active)
-                fixed_text = ", ".join(f"P{pod_id}=" + "/".join("-".join(map(str, path.nodes)) for path in paths)
-                    for pod_id, paths in fixed_assignments.items()) or "-"
-                assigned_text = ", ".join("P{}={}".format(pod_id, "-".join(map(str, path.nodes)))
-                    for pod_id, path in sorted(assignments.items())) or "-"
-                result.assignment_table.append(f"day {day + 1}: loads={loads}; fixed={fixed_text}; assigned={assigned_text}")
+                cells = []
+                for pod_id, pod in sorted(state.pods.items()):
+                    paths = fixed_assignments.get(pod_id, set()) if not pod.dynamic else {assignments[pod_id]} if pod_id in assignments else set()
+                    cells.append("/".join("-".join(map(str, path.nodes)) for path in paths) or "-")
+                result.assignment_table.append([str(day + 1), loads, *cells])
             for pod_id, _ in dynamic_pods:
                 if dynamic_pending[pod_id] != (-1, -1) or pod_id not in requests:
                     continue
@@ -941,7 +951,7 @@ class Planner:
     def fixed_assignment_schedule(self, state: PlanState, distances: dict[int, dict[int, int]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], path_demands: list[PathDemand],
             fixed_pods: list[tuple[int, PodPlan]]) -> list[tuple[dict[int, set[PathDemand]], Counter[LoadKey]]]:
-        """Builds fixed_pods daily load reservations from state, distances, wanted_edges, and path_demands."""
+        """Builds fixed_pods demand reservations."""
         if not fixed_pods:
             return [({}, Counter()) for _ in range(MONTH_DAYS)]
         queues = self.initial_queues(distances)
@@ -978,7 +988,7 @@ class Planner:
     def fixed_load_assignments(self, fixed_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
             active: list[PathDemand], queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> tuple:
-        """Infers fixed_pods assignments and reservations from pod_positions, active loads, queues, wanted_edges, and result."""
+        """Infers fixed_pods loads and reservations."""
         moves = {}
         for pod_id, pod in fixed_pods:
             next_index = fixed_next_index(pod.path, pod_positions[pod_id])
@@ -1014,7 +1024,7 @@ class Planner:
 
     def active_path_demands(self, path: PathDemand, queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> list[PathDemand]:
-        """Builds and returns active suffixes for path from queues and wanted_edges, capped by result delivery counts."""
+        """Builds active path suffixes."""
         remaining = self.path_remaining(path, result)
         demands = []
         delivered = result.delivered_by_pool_module[path.pool, path.destination]
@@ -1099,7 +1109,7 @@ class Planner:
             fixed_reservations: Counter[tuple[Pool, int]], reserved_loads: Counter[LoadKey], result: SimulationResult, state: PlanState,
             graph: dict[int, list[int]], components: dict[int, int], queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], demand: Counter[DirectedPair]) -> tuple:
-        """Builds dynamic_pods assignments from day, active loads, pod state, reservations, topology, queues, and demand."""
+        """Assigns dynamic_pods to active loads."""
         pod_ids = [pod_id for pod_id, _ in dynamic_pods]
         assignment_current = {pod_id: pending[pod_id][1] if pending[pod_id] != (-1, -1) else current[pod_id]
             for pod_id in pod_ids}
@@ -1172,8 +1182,7 @@ class Planner:
 
     def path_batch_allowed(self, path: PathDemand, preferred_targets: dict[tuple[Pool, int], set[int]],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]]) -> bool:
-        """Returns whether the next path batch from queues favors its direction; preferred_targets marks ambiguous routing and
-        wanted_edges identifies boardable passengers."""
+        """Checks whether queues favor path."""
         source_id, target_id = path.nodes[:2]
         preferred = nonpreferred = boarded = 0
         for passenger in queues.get(source_id, []):
@@ -1192,7 +1201,7 @@ class Planner:
 
     def dispatch_supply_exceeded(self, assignments: dict[int, PathDemand], current: dict[int, int],
             fixed_reservations: Counter[tuple[Pool, int]], queues: dict[int, list[Passenger]], result: SimulationResult) -> bool:
-        """Returns whether dynamic assignments and fixed_reservations exceed matching queues; current and result limit reservations."""
+        """Checks reservations against queues."""
         reserved = Counter(fixed_reservations)
         for pod_id, path in assignments.items():
             if current[pod_id] in (-1, path.nodes[0]):
@@ -1202,7 +1211,7 @@ class Planner:
 
     def path_orders_for_assignments(self, assignments: dict[int, PathDemand], current: dict[int, int],
             graph: dict[int, list[int]]) -> dict[PathDemand, list[int]]:
-        """Returns handoff orders for assignments using current pod positions and graph distances."""
+        """Orders assignments by pod position."""
         orders = {}
         for pod_id, path in sorted(assignments.items()):
             order = orders.setdefault(path, [])
@@ -1211,7 +1220,7 @@ class Planner:
                 continue
             edge_count = len(path.nodes) - 1
             def insertion_key(item: int) -> tuple:
-                """Returns the repositioning-distance key for inserting pod_id at item in order."""
+                """Ranks item for pod_id."""
                 pod_order = order[:]
                 pod_order.insert(item, pod_id)
                 distances = [graph_distance(graph, current[worker_id], path.nodes[min(edge_count,
@@ -1227,7 +1236,7 @@ class Planner:
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult, state: PlanState,
             demand: Counter[DirectedPair], fixed_assignments: dict[int, set[PathDemand]],
             fixed_reservations: Counter[tuple[Pool, int]], priorities: dict[PathDemand, int]) -> tuple:
-        """Reassigns assignments using preferences and state, returning assignments, orders, requests, and moves."""
+        """Reassigns blocked requests."""
         dispatchable = set(preferences)
         loads = {path for paths in preferences.values() for path in paths}
         blocked = sum(pod_id in dispatchable and pod_id not in moves for pod_id in requests)
@@ -1292,7 +1301,7 @@ class Planner:
     def path_blocks_loaded_pod(self, path: PathDemand, pod_id: int, current: dict[int, int], graph: dict[int, list[int]],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
             demand: Counter[DirectedPair], result: SimulationResult) -> bool:
-        """Returns whether path sends pod_id empty against loaded demand using current, graph, queues, wanted_edges, demand, and result."""
+        """Checks whether path blocks loaded demand."""
         source_id = current[pod_id]
         if source_id == -1:
             return False

@@ -20,6 +20,7 @@ OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 6 3 5 3 6 3 2 0 2;POD 2 3 6 3 5 3 6 3 5 3 4 1 4 1 4 1 4 1 4 1 4 1"
    # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 AUTO;POD 2 AUTO"
 FULL_DEBUG = False
+_G = {}
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -63,6 +64,12 @@ class PathDemand:
     nodes: PathKey
     cap: int
     ambiguous: bool = False
+    h: int = field(init=False, compare=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, "h", hash((self.pool, self.destination, self.nodes, self.cap, self.ambiguous)))
+    def __hash__(self) -> int:
+        return self.h
 
 
 @dataclass(slots=True)
@@ -199,6 +206,7 @@ class Planner:
     def choose_actions(self) -> list[str]:
         self.simulation_cache = {}
         self.fs_cache = {}
+        _G.clear()
         if self.month + 1 == OVERRIDE_MONTH:
             return self.override_actions()
         selected = []
@@ -909,9 +917,10 @@ class Planner:
             self.settle(day, queues, module_arrivals, result)
             for passengers in queues.values():
                 passengers.sort(key=lambda item: item.id)
+            self.supply = Counter((passenger.pad_id, passenger.kind, node_id) for node_id, passengers in queues.items() for passenger in passengers)
             active = []
             for path in path_demands:
-                active.extend(self.active_path_demands(path, queues, wanted_edges, result))
+                active.extend(self.active_path_demands(path, self.supply, wanted_edges, result))
             if not active:
                 break
             if not dynamic_pods:
@@ -920,8 +929,6 @@ class Planner:
                 self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {})
                 self.settle(day + 1, queues, module_arrivals, result)
                 continue
-            self.supply = Counter((passenger.pad_id, passenger.kind, node_id)
-                for node_id, passengers in queues.items() for passenger in passengers)
             fixed_assignments, fixed_reservations, _ = self.fixed_load_assignments(fixed_pods, pod_positions, active, queues, wanted_edges,
                 result)
             self.fixed_edges = tuple(sorted(tuple(sorted({route_key(a, b) for path in paths
@@ -977,9 +984,10 @@ class Planner:
             self.settle(day, queues, module_arrivals, result)
             for passengers in queues.values():
                 passengers.sort(key=lambda item: item.id)
+            supply = Counter((passenger.pad_id, passenger.kind, node_id) for node_id, passengers in queues.items() for passenger in passengers)
             active = []
             for path in path_demands:
-                active.extend(self.active_path_demands(path, queues, wanted_edges, result))
+                active.extend(self.active_path_demands(path, supply, wanted_edges, result))
             assignments, _, claimed = self.fixed_load_assignments(fixed_pods, positions, active, queues, wanted_edges, result)
             reservations = Counter()
             for path, count in claimed.items():
@@ -1035,15 +1043,14 @@ class Planner:
                     assignments.setdefault(pod_id, set()).add(path)
         return assignments, reservations, claimed
 
-    def active_path_demands(self, path: PathDemand, queues: dict[int, list[Passenger]],
+    def active_path_demands(self, path: PathDemand, supply: Counter[tuple[int, int, int]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> list[PathDemand]:
         remaining = self.path_remaining(path, result)
         demands = []
         delivered = result.delivered_by_pool_module[path.pool, path.destination]
         for index in range(len(path.nodes) - 2, -1, -1):
             edge = path.nodes[index], path.nodes[index + 1]
-            count = sum(passenger.pad_id == path.pool[0] and passenger.kind == path.pool[1] and
-                edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], []))
+            count = supply[path.pool[0], path.pool[1], edge[0]] if edge in wanted_edges[edge[0], path.pool[1]] else 0
             count = min(count, remaining)
             if count:
                 demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count, path.ambiguous and index == 0))
@@ -1828,17 +1835,21 @@ def tube_components(graph: dict[int, list[int]]) -> dict[int, int]:
 def graph_distance(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int:
     if start_id == finish_id:
         return 0
+    d = _G.setdefault(id(graph), (graph, {}))[1]
+    key = start_id, finish_id
+    if key in d:
+        return d[key]
     queue = deque([(start_id, 0)])
     seen = {start_id}
     while queue:
         building_id, distance = queue.popleft()
         for neighbor_id in graph.get(building_id, []):
             if neighbor_id == finish_id:
-                return distance + 1
+                return d.setdefault(key, distance + 1)
             if neighbor_id not in seen:
                 seen.add(neighbor_id)
                 queue.append((neighbor_id, distance + 1))
-    return INF
+    return d.setdefault(key, INF)
 
 
 def next_step(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int:

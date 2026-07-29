@@ -19,6 +19,7 @@ INF = 10 ** 9
 OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 6 3 5 3 6 3 2 0 2;POD 2 3 6 3 5 3 6 3 5 3 4 1 4 1 4 1 4 1 4 1 4 1"
    # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 AUTO;POD 2 AUTO"
+FULL_DEBUG = False
 
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
@@ -27,6 +28,10 @@ PoolOwner = Pool | int
 PathKey = tuple[int, ...]
 LoadKey = tuple[Pool, int, PathKey]
 
+def debug(text: str):
+    """Prints text when FULL_DEBUG is enabled."""
+    if FULL_DEBUG:
+        print(text, file=sys.stderr)
 
 @dataclass(slots=True)
 class Building:
@@ -199,7 +204,7 @@ class Planner:
         current_state = self.replay_bundle_sequence(selected)
         current_result = self.score_state(current_state)
         before_score = current_result.score
-        print("\n" + self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
+        debug("\n" + self.score_debug("before", current_result, current_state.cost))
         while True:
             best = self.best_candidate(selected, current_state, current_result, before_score)
             if best is None:
@@ -212,27 +217,27 @@ class Planner:
             efficiency = score_gain / max(1, current_state.cost)
             path_text = ", ".join(map(str, best.bundle.path))
             text = f"selected: pair={best.pair}, path=[{path_text}], bundle={best.number}, actions={total_text}, gain={score_gain}, "
-            print(f"{text}cost={current_state.cost}, efficiency={efficiency:.3f}, "
-                f"resources left={self.resources - current_state.cost}", file=sys.stderr)
-            print("\n" + self.status_debug(current_result), file=sys.stderr)
+            debug(f"{text}cost={current_state.cost}, efficiency={efficiency:.3f}, "
+                f"resources left={self.resources - current_state.cost}")
+            debug("\n" + self.status_debug(current_result))
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
-        print("\n" + self.table_debug(final_result, final_state), file=sys.stderr)
-        print("\n" + self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
+        debug("\n" + self.table_debug(final_result, final_state))
+        debug("\n" + self.score_debug("after", final_result, final_state.cost))
         action_order = {"TUBE": 0, "TELEPORT": 0, "UPGRADE": 1, "DESTROY": 2, "POD": 3}
         return sorted((action for action in final_state.actions if action), key=lambda action: action_order[action.split()[0]])
 
     def override_actions(self) -> list[str]:
         current_state = self.replay_bundle_sequence([])
         current_result = self.score_state(current_state)
-        print("\n" + self.score_debug("before", current_result, current_state.cost), file=sys.stderr)
+        debug("\n" + self.score_debug("before", current_result, current_state.cost))
         final_state = self.override_state(OVERRIDE_COMMAND)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
-        print("\n" + self.table_debug(final_result, final_state), file=sys.stderr)
-        print(f"override month {self.month + 1}: {OVERRIDE_COMMAND}", file=sys.stderr)
-        print("\n" + self.score_debug("after", final_result, final_state.cost), file=sys.stderr)
+        debug("\n" + self.table_debug(final_result, final_state))
+        debug(f"override month {self.month + 1}: {OVERRIDE_COMMAND}")
+        debug("\n" + self.score_debug("after", final_result, final_state.cost))
         return [action for action in final_state.actions if action]
 
     def table_debug(self, result: SimulationResult, state: PlanState) -> str:
@@ -325,10 +330,10 @@ class Planner:
                 pools.append((missing, (1, module.id), module.id, [(group, group, [module.id]) for group in groups]))
         pools.sort(key=lambda item: (-item[0], item[1]))
         for _, _, owner, pairs in pools:
-            print(f"Considering {owner}:", file=sys.stderr)
+            debug(f"Considering {owner}:")
             best = None
             for pair, group, module_ids in pairs:
-                print(f"  Considering {pair}:", file=sys.stderr)
+                debug(f"  Considering {pair}:")
                 candidate = self.next_candidate(owner, pair, group, selected, current_state, current_result, before_score,
                     self.generate_bundles(owner, group, module_ids, selected, current_state, current_result, before_score))
                 if candidate and (best is None or (candidate.efficiency, candidate.global_gain, -candidate.global_cost) >
@@ -388,11 +393,11 @@ class Planner:
             if bundle.path != path:
                 path = bundle.path
                 path_text = ", ".join(map(str, path))
-                print(f"    Considering path=[{path_text}]:", file=sys.stderr)
+                debug(f"    Considering path=[{path_text}]:")
             prefix = "-> " if bundle.debug_chosen else ""
             text = f"      {prefix}{bundle.debug_id}: action={action_text}, "
             if state.cost > self.resources:
-                print(f"{text}local gain=-, global gain=-, cost={cost}, efficiency=-", file=sys.stderr)
+                debug(f"{text}local gain=-, global gain=-, cost={cost}, efficiency=-")
                 continue
             result = self.score_state(state)
             pool_score = result.speed_by_pool[owner] if isinstance(owner, tuple) else result.diversity_by_module[owner]
@@ -400,8 +405,8 @@ class Planner:
             global_gain = result.score - before_score
             checkpoint_delta = result.score - current_result.score
             efficiency = global_gain / cost if cost > 0 else inf
-            print(f"{text}local gain={local_gain}, global gain={global_gain}({checkpoint_delta:+d}), cost={cost}, "
-                f"efficiency={efficiency:.3f}", file=sys.stderr)
+            debug(f"{text}local gain={local_gain}, global gain={global_gain}({checkpoint_delta:+d}), cost={cost}, "
+                f"efficiency={efficiency:.3f}")
             if global_gain > 0 and result.score > current_result.score:
                 candidate = Candidate(bundle, pair, bundle.debug_id, local_gain, global_gain, cost)
                 if best is None or (candidate.efficiency, candidate.global_gain, -candidate.global_cost) > \

@@ -8,7 +8,10 @@ from pathlib import Path
 
 if not __package__:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
+import Selenia_City.semi as semi
 from Selenia_City.semi import Building, Planner, Pod, route_key
+
+semi.FULL_DEBUG = True
 
 TURN_STATE = """
 month 10

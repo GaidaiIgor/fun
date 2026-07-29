@@ -1256,7 +1256,7 @@ class Planner:
             trials = [(pod_id, path, -1) for pod_id, paths in preferences.items() for path in paths
                 if assignments.get(pod_id) != path]
             trials.extend((pod_id, assignments[other_id], other_id) for pod_id in assignments for other_id in assignments
-                if pod_id < other_id and assignments[pod_id] != assignments[other_id])
+                if pod_id < other_id and assignments[other_id] in preferences[pod_id] and assignments[pod_id] in preferences[other_id])
             for pod_id, path, other_id in trials:
                 previous = assignments.get(pod_id)
                 trial = dict(assignments)

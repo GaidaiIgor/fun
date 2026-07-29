@@ -1143,7 +1143,7 @@ class Planner:
             candidates = dispatchable if day == 0 else [path for path in dispatchable
                 if graph_distance(graph, assignment_current[pod_id], path.nodes[0]) < INF]
             candidates = [path for path in candidates if self.path_batch_allowed(path, preferred_targets, queues, wanted_edges)]
-            preferences[pod_id] = sorted(candidates, key=lambda path: (priorities[path], -availability[path],
+            preferences[pod_id] = sorted(candidates, key=lambda path: (priorities[path], -min(POD_CAPACITY, availability[path]),
                 *self.path_assignment_key(path, pod_id, initial_capacity[path], assignment_current, result, graph, queues, wanted_edges,
                     demand)))
         assignments = {}

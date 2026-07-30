@@ -70,11 +70,38 @@ def diversity_debug(self, result: SimulationResult) -> str:
     return "\n".join(lines)
 
 
+def state_delta_text(self, before: PlanState, after: PlanState) -> str:
+    """Formats infrastructure and pod changes between before and after."""
+    actions = []
+    for edge in sorted(before.planned_tubes - after.planned_tubes):
+        actions.append(f"DROP TUBE {edge[0]} {edge[1]}")
+    new_edges = sorted(after.planned_tubes - before.planned_tubes)
+    for edge in new_edges:
+        actions.append(f"TUBE {edge[0]} {edge[1]}")
+    for edge in new_edges:
+        actions.extend(f"UPGRADE {edge[0]} {edge[1]}" for _ in range(after.tubes[edge] - 1))
+    for edge in sorted(set(before.tubes) & set(after.tubes)):
+        for _ in range(after.tubes[edge] - before.tubes[edge]):
+            actions.append(f"UPGRADE {edge[0]} {edge[1]}")
+        for _ in range(before.tubes[edge] - after.tubes[edge]):
+            actions.append(f"DROP UPGRADE {edge[0]} {edge[1]}")
+    for entrance_id in sorted(set(before.teleports) - set(after.teleports)):
+        actions.append(f"DROP TELEPORT {entrance_id} {before.teleports[entrance_id]}")
+    for entrance_id in sorted(set(after.teleports) - set(before.teleports)):
+        actions.append(f"TELEPORT {entrance_id} {after.teleports[entrance_id]}")
+    for pod_id in sorted(before.planned_pods - after.planned_pods):
+        actions.append(f"DROP POD {pod_id}")
+    for pod_id in sorted(after.planned_pods - before.planned_pods):
+        actions.append(self.pod_debug_text(pod_id))
+    return ";".join(actions) if actions else "WAIT"
+
+
 Planner.table_debug = table_debug
 Planner.score_debug = score_debug
 Planner.status_debug = status_debug
 Planner.pool_debug = pool_debug
 Planner.diversity_debug = diversity_debug
+Planner.state_delta_text = state_delta_text
 
 TURN_STATE = """
 month 10

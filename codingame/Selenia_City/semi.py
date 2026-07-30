@@ -668,29 +668,8 @@ class Planner:
         return ";".join(actions) if actions else "WAIT"
 
     def state_delta_text(self, before: PlanState, after: PlanState) -> str:
-        actions = []
-        for edge in sorted(before.planned_tubes - after.planned_tubes):
-            actions.append(f"DROP TUBE {edge[0]} {edge[1]}")
-        new_edges = sorted(after.planned_tubes - before.planned_tubes)
-        for edge in new_edges:
-            actions.append(f"TUBE {edge[0]} {edge[1]}")
-        for edge in new_edges:
-            actions.extend(f"UPGRADE {edge[0]} {edge[1]}" for _ in range(after.tubes[edge] - 1))
-        for edge in sorted(set(before.tubes) & set(after.tubes)):
-            for _ in range(after.tubes[edge] - before.tubes[edge]):
-                actions.append(f"UPGRADE {edge[0]} {edge[1]}")
-            for _ in range(before.tubes[edge] - after.tubes[edge]):
-                actions.append(f"DROP UPGRADE {edge[0]} {edge[1]}")
-        for entrance_id in sorted(set(before.teleports) - set(after.teleports)):
-            actions.append(f"DROP TELEPORT {entrance_id} {before.teleports[entrance_id]}")
-        for entrance_id in sorted(set(after.teleports) - set(before.teleports)):
-            actions.append(f"TELEPORT {entrance_id} {after.teleports[entrance_id]}")
-        for pod_id in sorted(before.planned_pods - after.planned_pods):
-            actions.append(f"DROP POD {pod_id}")
-        for pod_id in sorted(after.planned_pods):
-            if pod_id not in before.planned_pods:
-                actions.append(self.pod_debug_text(pod_id))
-        return ";".join(actions) if actions else "WAIT"
+        unchanged = before.tubes == after.tubes and before.teleports == after.teleports and before.planned_pods == after.planned_pods
+        return "WAIT" if unchanged else "ACTION"
 
     def pod_debug_text(self, pod_id: int) -> str:
         return f"POD {pod_id} AUTO"
@@ -751,6 +730,14 @@ class Planner:
                     diversity_routes[group, bundle.destination] = edges
         for edges in (*speed_routes.values(), *diversity_routes.values()):
             active_edges.update(edges)
+        for index, action in enumerate(state.actions):
+            parts = action.split()
+            if parts and parts[0] == "UPGRADE":
+                edge = route_key(int(parts[1]), int(parts[2]))
+                if edge not in active_edges:
+                    state.cost -= tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * state.tubes[edge]
+                    state.tubes[edge] -= 1
+                    state.actions[index] = ""
         for pod_id in list(state.planned_pods):
             if not state.planned_pod_paths[pod_id] & active_edges:
                 self.remove_planned_pod(state, pod_id)

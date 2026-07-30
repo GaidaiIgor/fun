@@ -190,14 +190,8 @@ class Planner:
             selected.append(best.bundle)
             current_state = self.replay_bundle_sequence(selected)
             current_result = self.score_state(current_state)
-            total_text = self.state_action_text(current_state)
-            score_gain = current_result.score - before_score
-            efficiency = score_gain / max(1, current_state.cost)
-            path_text = ", ".join(map(str, best.bundle.path))
-            text = f"selected: pair={best.pair}, path=[{path_text}], bundle={best.number}, actions={total_text}, gain={score_gain}, "
-            debug(f"{text}cost={current_state.cost}, efficiency={efficiency:.3f}, "
-                f"resources left={self.resources - current_state.cost}")
             if FULL_DEBUG:
+                self.selected_debug(best, current_state, current_result, before_score)
                 debug("\n" + self.status_debug(current_result))
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
@@ -604,8 +598,6 @@ class Planner:
     def pod_locations(self, state: PlanState) -> dict[int, set[int]]:
         dynamic_paths = self.score_state(state, True).dynamic_paths if state.planned_pods else {}
         return {pod_id: set(dynamic_paths.get(pod_id) or pod.path) for pod_id, pod in state.pods.items()}
-    def state_action_text(self, state: PlanState) -> str:
-        return ""
     def state_delta_text(self, before: PlanState, after: PlanState) -> str:
         unchanged = before.tubes == after.tubes and before.teleports == after.teleports and before.planned_pods == after.planned_pods
         return "WAIT" if unchanged else "ACTION"
@@ -648,16 +640,21 @@ class Planner:
         return state
     def prune_uncommitted_infrastructure(self, state: PlanState, selected: list[Bundle]):
         active_edges = set()
+        freed = set()
         speed_routes = {}
         diversity_routes = {}
         for bundle in selected:
             if bundle.path_edges or bundle.teleport != (-1, -1):
                 edges = set(bundle.path_edges)
                 if isinstance(bundle.pool, tuple):
+                    if bundle.teleport != (-1, -1):
+                        freed.update(speed_routes.get(bundle.pool, ()))
                     speed_routes[bundle.pool] = edges
                     diversity_routes.pop((bundle.pool, bundle.destination), None)
                 else:
                     group = bundle.path[0], self.buildings[bundle.pool].kind
+                    if bundle.teleport != (-1, -1):
+                        freed.update(diversity_routes.get((group, bundle.destination), ()))
                     diversity_routes[group, bundle.destination] = edges
         for edges in (*speed_routes.values(), *diversity_routes.values()):
             active_edges.update(edges)
@@ -675,7 +672,7 @@ class Planner:
         for edge in sorted(state.planned_tubes - active_edges):
             remaining_tubes = dict(state.tubes)
             del remaining_tubes[edge]
-            if graph_distance(tube_graph(remaining_tubes), *edge) < INF:
+            if edge in freed or graph_distance(tube_graph(remaining_tubes), *edge) < INF:
                 self.remove_planned_tube(state, edge)
     def remove_planned_pod(self, state: PlanState, pod_id: int):
         if pod_id in self.pods:

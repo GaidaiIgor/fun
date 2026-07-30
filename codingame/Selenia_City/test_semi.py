@@ -9,7 +9,7 @@ from pathlib import Path
 if not __package__:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 import Selenia_City.semi as semi
-from Selenia_City.semi import Building, Planner, PlanState, Pod, SimulationResult, route_key
+from Selenia_City.semi import Building, Candidate, Planner, PlanState, Pod, SimulationResult, route_key
 
 semi.FULL_DEBUG = True
 
@@ -19,15 +19,16 @@ def table_debug(self, result: SimulationResult, state: PlanState) -> str:
         for pod_id, pod in sorted(state.pods.items()))]
     rows = [headers, *(row[:] for row in result.table)]
     for column in range(2, len(headers)):
-        path_width = max(len(row[column].rsplit(" (", 1)[0]) for row in rows[1:])
+        path_width = max((len(row[column].rsplit(" (", 1)[0]) for row in rows[1:]), default=0)
         for row in rows[1:]:
             path, location = row[column].rsplit(" (", 1)
             row[column] = f"{path.ljust(path_width)} ({location}"
     widths = [max(map(len, column)) for column in zip(*rows)]
     border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
     lines = ["| " + " | ".join(value.ljust(width) for value, width in zip(row, widths)) + " |" for row in rows]
-    return "Fixed reservations: " + result.reserved + "\nAssignments:\n" + \
-        "\n".join([border, lines[0], border, *lines[1:], border])
+    table = [border, lines[0], border, *lines[1:]]
+    table.extend([border] if len(lines) > 1 else [])
+    return "Fixed reservations: " + result.reserved + "\nAssignments:\n" + "\n".join(table)
 
 
 def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
@@ -95,7 +96,7 @@ def state_delta_text(self, before: PlanState, after: PlanState) -> str:
     for entrance_id in sorted(set(after.teleports) - set(before.teleports)):
         actions.append(f"TELEPORT {entrance_id} {after.teleports[entrance_id]}")
     for pod_id in sorted(before.planned_pods - after.planned_pods):
-        actions.append(f"DROP POD {pod_id}")
+        actions.append(f"REVERT POD {pod_id}" if pod_id in self.pods else f"DROP POD {pod_id}")
     for pod_id in sorted(after.planned_pods - before.planned_pods):
         actions.append(f"POD {pod_id} AUTO")
     return ";".join(actions) if actions else "WAIT"
@@ -108,6 +109,15 @@ def state_action_text(self, state: PlanState) -> str:
     return ";".join(actions) if actions else "WAIT"
 
 
+def selected_debug(self, best: Candidate, state: PlanState, result: SimulationResult, before_score: int):
+    """Prints the selected branch and resulting grand-total plan."""
+    score_gain = result.score - before_score
+    path_text = ", ".join(map(str, best.bundle.path))
+    text = f"selected: pair={best.pair}, path=[{path_text}], bundle={best.number}, actions={self.state_action_text(state)}, "
+    semi.debug(f"{text}gain={score_gain}, cost={state.cost}, efficiency={score_gain / max(1, state.cost):.3f}, "
+        f"resources left={self.resources - state.cost}")
+
+
 Planner.table_debug = table_debug
 Planner.score_debug = score_debug
 Planner.status_debug = status_debug
@@ -115,6 +125,7 @@ Planner.pool_debug = pool_debug
 Planner.diversity_debug = diversity_debug
 Planner.state_delta_text = state_delta_text
 Planner.state_action_text = state_action_text
+Planner.selected_debug = selected_debug
 
 TURN_STATE = """
 month 10

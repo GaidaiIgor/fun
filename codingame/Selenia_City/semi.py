@@ -92,8 +92,8 @@ class PlanState:
     actions: list[str] = field(default_factory=list)
     placeholders: list[tuple[int, int]] = field(default_factory=list)
     planned_pods: set[int] = field(default_factory=set)
-    planned_pod_paths: dict[int, set[Pair]] = field(default_factory=dict)
-    planned_pod_pools: dict[int, PoolOwner] = field(default_factory=dict)
+    pod_routes: dict[int, set[Pair]] = field(default_factory=dict)
+    pod_owners: dict[int, PoolOwner] = field(default_factory=dict)
     planned_tubes: set[Pair] = field(default_factory=set)
     cost: int = 0
 @dataclass(slots=True)
@@ -508,7 +508,8 @@ class Planner:
         tubes = tuple(edge for edge in template.path_edges if edge in after.tubes and edge not in before.tubes)
         upgrades = tuple(edge for edge in sorted(after.tubes) for _ in range(after.tubes[edge] - before.tubes.get(edge, 1)))
         specs = [PodSpec(pod_id) for pod_id in sorted(set(before.pods) & set(after.pods))
-            if after.pods[pod_id].dynamic and not before.pods[pod_id].dynamic]
+            if after.pods[pod_id].dynamic and (not before.pods[pod_id].dynamic or
+                before.pod_routes[pod_id] != after.pod_routes[pod_id])]
         specs.extend(PodSpec(0) for _ in set(after.pods) - set(before.pods))
         return Bundle(owner, tubes=tubes, pod_specs=tuple(specs), upgrades=upgrades, label=label, path_edges=template.path_edges,
             destination=template.destination, path_length=template.path_length, path=template.path)
@@ -625,8 +626,8 @@ class Planner:
     def replay_bundle_on_state(self, state: PlanState, bundle: Bundle) -> PlanState:
         pods = {pod_id: PodPlan(pod.id, pod.path[:], pod.dynamic) for pod_id, pod in state.pods.items()}
         copied = PlanState(dict(state.tubes), dict(state.teleports), pods, list(state.actions), list(state.placeholders),
-            set(state.planned_pods), {pod_id: set(edges) for pod_id, edges in state.planned_pod_paths.items()},
-            dict(state.planned_pod_pools), set(state.planned_tubes), state.cost)
+            set(state.planned_pods), {pod_id: set(edges) for pod_id, edges in state.pod_routes.items()},
+            dict(state.pod_owners), set(state.planned_tubes), state.cost)
         self.apply_bundle(copied, bundle)
         return copied
     def replay_bundle_sequence(self, selected: list[Bundle]) -> PlanState:
@@ -639,10 +640,10 @@ class Planner:
             self.prune_uncommitted_infrastructure(state, applied)
         return state
     def prune_uncommitted_infrastructure(self, state: PlanState, selected: list[Bundle]):
-        active_edges = set()
+        active = set()
         freed = set()
         speed_routes = {}
-        diversity_routes = {}
+        div_routes = {}
         for bundle in selected:
             if bundle.path_edges or bundle.teleport != (-1, -1):
                 edges = set(bundle.path_edges)
@@ -650,26 +651,29 @@ class Planner:
                     if bundle.teleport != (-1, -1):
                         freed.update(speed_routes.get(bundle.pool, ()))
                     speed_routes[bundle.pool] = edges
-                    diversity_routes.pop((bundle.pool, bundle.destination), None)
+                    div_routes.pop((bundle.pool, bundle.destination), None)
                 else:
                     group = bundle.path[0], self.buildings[bundle.pool].kind
                     if bundle.teleport != (-1, -1):
-                        freed.update(diversity_routes.get((group, bundle.destination), ()))
-                    diversity_routes[group, bundle.destination] = edges
-        for edges in (*speed_routes.values(), *diversity_routes.values()):
-            active_edges.update(edges)
+                        freed.update(div_routes.get((group, bundle.destination), ()))
+                    div_routes[group, bundle.destination] = edges
+        for edges in (*speed_routes.values(), *div_routes.values()):
+            active.update(edges)
         for index, action in enumerate(state.actions):
             parts = action.split()
             if parts and parts[0] == "UPGRADE":
                 edge = route_key(int(parts[1]), int(parts[2]))
-                if edge not in active_edges:
+                if edge not in active:
                     state.cost -= tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * state.tubes[edge]
                     state.tubes[edge] -= 1
                     state.actions[index] = ""
         for pod_id in list(state.planned_pods):
-            if not state.planned_pod_paths[pod_id] & active_edges:
+            owner = state.pod_owners[pod_id]
+            routes = (speed_routes.get(owner),) if isinstance(owner, tuple) else \
+                tuple(edges for (_, dest), edges in div_routes.items() if dest == owner)
+            if state.pod_routes[pod_id] not in routes:
                 self.remove_planned_pod(state, pod_id)
-        for edge in sorted(state.planned_tubes - active_edges):
+        for edge in sorted(state.planned_tubes - active):
             remaining_tubes = dict(state.tubes)
             del remaining_tubes[edge]
             if edge in freed or graph_distance(tube_graph(remaining_tubes), *edge) < INF:
@@ -682,8 +686,8 @@ class Planner:
             state.cost -= POD_COST
             del state.pods[pod_id]
         state.planned_pods.remove(pod_id)
-        del state.planned_pod_paths[pod_id]
-        del state.planned_pod_pools[pod_id]
+        del state.pod_routes[pod_id]
+        del state.pod_owners[pod_id]
         state.placeholders = [(index, placeholder_id) for index, placeholder_id in state.placeholders if placeholder_id != pod_id]
         for index, action in enumerate(state.actions):
             parts = action.split()
@@ -746,8 +750,8 @@ class Planner:
                 state.planned_pods.add(pod_id)
                 state.placeholders.append((len(state.actions), pod_id))
                 state.actions.append("")
-            state.planned_pod_paths[pod_id] = set(bundle.path_edges)
-            state.planned_pod_pools[pod_id] = bundle.pool
+            state.pod_routes[pod_id] = set(bundle.path_edges)
+            state.pod_owners[pod_id] = bundle.pool
             state.pods[pod_id] = PodPlan(pod_id, [], True)
     def fill_dynamic_actions(self, state: PlanState, dynamic_paths: dict[int, list[int]]):
         for index, pod_id in state.placeholders:
@@ -793,7 +797,7 @@ class Planner:
             path = dynamic_paths[pod_id][:] if pod.dynamic else pod.path[:]
             pods[pod_id] = PodPlan(pod.id, path)
         return PlanState(dict(state.tubes), dict(state.teleports), pods, list(state.actions), list(state.placeholders), set(state.planned_pods),
-            {pod_id: set(edges) for pod_id, edges in state.planned_pod_paths.items()}, dict(state.planned_pod_pools), set(state.planned_tubes), state.cost)
+            {pod_id: set(edges) for pod_id, edges in state.pod_routes.items()}, dict(state.pod_owners), set(state.planned_tubes), state.cost)
     def simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         distances, module_distances = self.distances_to_targets(state)
         graph = tube_graph(state.tubes)

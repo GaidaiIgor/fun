@@ -98,6 +98,9 @@ def state_delta_text(self, before: PlanState, after: PlanState) -> str:
         actions.append(f"TELEPORT {entrance_id} {after.teleports[entrance_id]}")
     for pod_id in sorted(before.planned_pods - after.planned_pods):
         actions.append(f"REVERT POD {pod_id}" if pod_id in self.pods else f"DROP POD {pod_id}")
+    for pod_id in sorted(before.planned_pods & after.planned_pods):
+        if before.pod_routes[pod_id] != after.pod_routes[pod_id]:
+            actions.append(f"REROUTE POD {pod_id}")
     for pod_id in sorted(after.planned_pods - before.planned_pods):
         actions.append(f"POD {pod_id} AUTO")
     return ";".join(actions) if actions else "WAIT"

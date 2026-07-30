@@ -92,7 +92,14 @@ def state_delta_text(self, before: PlanState, after: PlanState) -> str:
     for pod_id in sorted(before.planned_pods - after.planned_pods):
         actions.append(f"DROP POD {pod_id}")
     for pod_id in sorted(after.planned_pods - before.planned_pods):
-        actions.append(self.pod_debug_text(pod_id))
+        actions.append(f"POD {pod_id} AUTO")
+    return ";".join(actions) if actions else "WAIT"
+
+
+def state_action_text(self, state: PlanState) -> str:
+    """Formats the complete planned infrastructure and pod actions in state."""
+    actions = [action for action in state.actions if action and action.split()[0] in ("TUBE", "TELEPORT", "UPGRADE")]
+    actions.extend(f"POD {pod_id} AUTO" for pod_id in sorted(state.planned_pods))
     return ";".join(actions) if actions else "WAIT"
 
 
@@ -102,6 +109,7 @@ Planner.status_debug = status_debug
 Planner.pool_debug = pool_debug
 Planner.diversity_debug = diversity_debug
 Planner.state_delta_text = state_delta_text
+Planner.state_action_text = state_action_text
 
 TURN_STATE = """
 month 10
@@ -138,7 +146,7 @@ def run_turn_state(text: str) -> str:
 
 
 def parse_turn_state(text: str) -> Planner:
-    """Parses resources, buildings, routes, pods, and served paths from text."""
+    """Parses resources, buildings, routes, pods, and pod itineraries from text."""
     planner = Planner()
     for raw_line in text.splitlines():
         line = raw_line.strip()

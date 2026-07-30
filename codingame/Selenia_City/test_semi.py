@@ -17,7 +17,12 @@ def table_debug(self, result: SimulationResult, state: PlanState) -> str:
     """Formats result assignment rows using state pod headers."""
     headers = ["Day", "Loads", *("P{}{}".format(pod_id, "f" if not pod.dynamic else "")
         for pod_id, pod in sorted(state.pods.items()))]
-    rows = [headers, *result.table]
+    rows = [headers, *(row[:] for row in result.table)]
+    for column in range(2, len(headers)):
+        path_width = max(len(row[column].rsplit(" (", 1)[0]) for row in rows[1:])
+        for row in rows[1:]:
+            path, location = row[column].rsplit(" (", 1)
+            row[column] = f"{path.ljust(path_width)} ({location}"
     widths = [max(map(len, column)) for column in zip(*rows)]
     border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
     lines = ["| " + " | ".join(value.ljust(width) for value, width in zip(row, widths)) + " |" for row in rows]

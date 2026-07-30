@@ -1031,8 +1031,7 @@ class Planner:
             components: dict[int, int], queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], demand: Counter[DirectedPair]) -> tuple:
         pod_ids = [pod_id for pod_id, _ in dynamic_pods]
-        locations = {pod_id: pending[pod_id][1] if pending[pod_id] != (-1, -1) else current[pod_id]
-            for pod_id in pod_ids}
+        locations = dict(current)
         preferred_targets = {}
         for path in active:
             if path.ambiguous:
@@ -1088,9 +1087,8 @@ class Planner:
                 break
             for path, pod_options in proposals.items():
                 first_edge = path.nodes[0], path.nodes[1]
-                pod_id = min(pod_options, key=lambda item: (pending[item] != first_edge[::-1],
-                    pending[item] == (-1, -1) or pending[item][1] != path.nodes[0],
-                    graph_distance(graph, locations[item], path.nodes[0]), item))
+                pod_id = min(pod_options, key=lambda item: (graph_distance(graph, locations[item], path.nodes[0]),
+                    pending[item] != first_edge[::-1], pending[item] == (-1, -1) or pending[item][1] != path.nodes[0], item))
                 if self.path_capacity_excess(path, assignments, state) or \
                         self.dispatch_supply_exceeded(assignments | {pod_id: path}, locations, fixed_reservations, result):
                     unavailable.add(path)
@@ -1130,9 +1128,9 @@ class Planner:
             state: PlanState, demand: Counter[DirectedPair], fixed_reservations: Counter[tuple[Pool, int]],
             priorities: dict[PathDemand, int]) -> tuple:
         def reposition(values: dict[int, PathDemand]) -> tuple:
-            distances = [graph_distance(graph, locations[pod_id], path.nodes[0]) for pod_id, path in values.items()
-                if locations[pod_id] != -1]
-            return max(distances, default=0), sum(distances)
+            distances = [[graph_distance(graph, locations[pod_id], path.nodes[0]) for pod_id, path in values.items()
+                if locations[pod_id] != -1 and priorities[path] == priority] for priority in (0, 1)]
+            return tuple(value for items in distances for value in (max(items, default=0), sum(items)))
         dispatchable = set(preferences)
         loads = {path for paths in preferences.values() for path in paths}
         blocked = sum(pod_id in dispatchable and pod_id not in moves for pod_id in requests)
@@ -1174,12 +1172,12 @@ class Planner:
                 loaded = sum(min(POD_CAPACITY, demand[move]) for dynamic_id, move in trial_moves.items() if dynamic_id in dispatchable)
                 changes = sum(trial.get(dynamic_id) != original.get(dynamic_id) for dynamic_id in dispatchable)
                 rank = sum(preferences[dynamic_id].index(trial[dynamic_id]) for dynamic_id in dispatchable if dynamic_id in trial)
-                candidate = trial_blocked, changes, rank, -loaded, pod_id, other_id, trial, trial_requests, trial_moves
-                if best is None or candidate[:6] < best[:6]:
+                candidate = trial_blocked, reposition(trial), changes, rank, -loaded, pod_id, other_id, trial, trial_requests, trial_moves
+                if best is None or candidate[:7] < best[:7]:
                     best = candidate
             if best is None or best[0] >= blocked:
                 break
-            blocked, _, _, _, _, _, assignments, requests, moves = best
+            blocked, _, _, _, _, _, _, assignments, requests, moves = best
         while True:
             target = reposition(assignments)
             trials = []
@@ -1195,7 +1193,7 @@ class Planner:
                         trials.append((*distance, pod_id, other_id, trial))
             changed = False
             loaded = sum(min(POD_CAPACITY, demand[move]) for pod_id, move in moves.items() if pod_id in dispatchable)
-            for _, _, _, _, trial in sorted(trials):
+            for *_, trial in sorted(trials):
                 trial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, current, pending, trial, state, graph, result)
                 trial_moves = self.allocate_tube_capacity(trial_requests, state, demand, result, False)
                 trial_blocked = sum(pod_id in dispatchable and pod_id not in trial_moves for pod_id in trial_requests)

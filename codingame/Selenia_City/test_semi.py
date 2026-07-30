@@ -35,12 +35,13 @@ def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
     """Formats label score from result using cost."""
     demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
     stats = self.status_debug(result)
-    if label == "before":
+    if label != "after":
         landings = []
         for pad in self.landing_pads():
             demand_text = ", ".join(f"{kind}x{count}" for kind, count in sorted(pad.demand.items()))
             landings.append(f"landing {pad.id}: {demand_text}")
-        return "\n".join((*landings, "", stats))
+        iteration = ("Iteration 1",) if label == "before" else ()
+        return "\n".join((*landings, "", *iteration, stats))
     return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
         f"score: {result.score}, resources: {self.resources - cost}\n{stats}"
 

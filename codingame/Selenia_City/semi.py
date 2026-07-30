@@ -192,7 +192,7 @@ class Planner:
             current_result = self.score_state(current_state)
             if FULL_DEBUG:
                 self.selected_debug(best, current_state, current_result, before_score)
-                debug("\n" + self.status_debug(current_result))
+                debug(f"\nIteration {len(selected) + 1}\n" + self.status_debug(current_result))
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
@@ -205,7 +205,7 @@ class Planner:
         current_state = self.replay_bundle_sequence([])
         current_result = self.score_state(current_state)
         if FULL_DEBUG:
-            debug("\n" + self.score_debug("before", current_result, current_state.cost))
+            debug("\n" + self.score_debug("override", current_result, current_state.cost))
         final_state = self.override_state(OVERRIDE_COMMAND)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)

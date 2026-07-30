@@ -524,8 +524,9 @@ class Planner:
         return bundles
     def pod_connection_bundle(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> Bundle:
         best = None
-        locations_by_pod = self.pod_locations(state)
-        for pod_id, locations in locations_by_pod.items():
+        places = self.pod_locations(state)
+        for pod_id in self.pods:
+            locations = places[pod_id]
             routes = []
             path = self.cheapest_path_with_hop_limit(group[0], module_ids, MAX_TUBE_HOPS, state, via_nodes=tuple(locations))
             if path:
@@ -586,17 +587,19 @@ class Planner:
         return [Bundle(owner, self.nominal_cost(tubes, specs, (), state), tubes, pod_specs=specs, label=label, path_edges=path_edges,
             destination=path[-1], path_length=len(path) - 1, path=tuple(path))]
     def closest_pod(self, origin_id: int, path_edges: tuple[Pair, ...], state: PlanState) -> int:
-        if not state.pods:
+        if not self.pods:
             return 0
         tubes = dict(state.tubes)
         tubes.update((edge, 1) for edge in path_edges)
         graph = tube_graph(tubes)
-        candidates = []
-        for pod_id, locations in self.pod_locations(state).items():
-            distance = min(graph_distance(graph, origin_id, node) for node in locations)
-            candidates.append((distance, pod_id not in state.pod_ops, pod_id))
-        closest = min(candidates)
-        return closest[2] if closest[0] < INF else 0
+        options = []
+        places = self.pod_locations(state)
+        for pod_id in self.pods:
+            nodes = places[pod_id]
+            dist = min(graph_distance(graph, origin_id, node) for node in nodes)
+            options.append((dist, pod_id not in state.pod_ops, pod_id))
+        best = min(options)
+        return best[2] if best[0] < INF else 0
     def pod_locations(self, state: PlanState) -> dict[int, set[int]]:
         dynamic_paths = self.score_state(state, True).dynamic_paths if state.pod_ops else {}
         return {pod_id: set(dynamic_paths.get(pod_id) or pod.path) for pod_id, pod in state.pods.items()}

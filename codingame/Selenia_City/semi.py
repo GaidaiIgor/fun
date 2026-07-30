@@ -1,11 +1,9 @@
 from __future__ import annotations
-
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
 from math import inf, isqrt
 import sys
-
 MONTH_DAYS = 20
 MAX_TUBES_PER_BUILDING = 5
 MAX_PODS = 500
@@ -18,21 +16,18 @@ MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 6 3 5 3 6 3 2 0 2;POD 2 3 6 3 5 3 6 3 5 3 4 1 4 1 4 1 4 1 4 1 4 1"
-   # "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 AUTO;POD 2 AUTO"
+# "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 AUTO;POD 2 AUTO"
 FULL_DEBUG = False
 _G = {}
-
 Pair = tuple[int, int]
 DirectedPair = tuple[int, int]
 Pool = tuple[int, int]
 PoolOwner = Pool | int
 PathKey = tuple[int, ...]
 LoadKey = tuple[Pool, int, PathKey]
-
 def debug(text: str):
     if FULL_DEBUG:
         print(text, file=sys.stderr)
-
 @dataclass(slots=True)
 class Building:
     id: int
@@ -41,22 +36,16 @@ class Building:
     y: int
     demand: Counter[int] = field(default_factory=Counter)
     order: list[int] = field(default_factory=list)
-
-
 @dataclass(slots=True)
 class Pod:
     id: int
     path: list[int]
-
-
 @dataclass(slots=True)
 class Passenger:
     pad_id: int
     index: int
     kind: int
     id: int
-
-
 @dataclass(slots=True, frozen=True)
 class PathDemand:
     pool: Pool
@@ -65,25 +54,18 @@ class PathDemand:
     cap: int
     ambiguous: bool = False
     h: int = field(init=False, compare=False)
-
     def __post_init__(self):
         object.__setattr__(self, "h", hash((self.pool, self.destination, self.nodes, self.cap, self.ambiguous)))
     def __hash__(self) -> int:
         return self.h
-
-
 @dataclass(slots=True)
 class PodPlan:
     id: int
     path: list[int] = field(default_factory=list)
     dynamic: bool = False
-
-
 @dataclass(slots=True)
 class PodSpec:
     pod_id: int
-
-
 @dataclass(slots=True)
 class Bundle:
     pool: PoolOwner
@@ -99,12 +81,9 @@ class Bundle:
     path: tuple[int, ...] = ()
     debug_id: str = ""
     debug_chosen: str = ""
-
     @property
     def fingerprint(self) -> tuple:
         return self.tubes, self.teleport, tuple(spec.pod_id for spec in self.pod_specs), self.upgrades
-
-
 @dataclass(slots=True)
 class PlanState:
     tubes: dict[Pair, int]
@@ -117,8 +96,6 @@ class PlanState:
     planned_pod_pools: dict[int, PoolOwner] = field(default_factory=dict)
     planned_tubes: set[Pair] = field(default_factory=set)
     cost: int = 0
-
-
 @dataclass(slots=True)
 class SimulationResult:
     score: int = 0
@@ -135,8 +112,6 @@ class SimulationResult:
     dynamic_paths: dict[int, list[int]] = field(default_factory=dict)
     table: list[list[str]] = field(default_factory=list)
     reserved: str = "-"
-
-
 @dataclass(slots=True)
 class Candidate:
     bundle: Bundle
@@ -145,12 +120,9 @@ class Candidate:
     local_gain: int
     global_gain: int
     global_cost: int
-
     @property
     def efficiency(self) -> float:
         return self.global_gain / self.global_cost if self.global_cost > 0 else inf
-
-
 class Planner:
     buildings: dict[int, Building]
     resources: int
@@ -159,7 +131,6 @@ class Planner:
     teleports: dict[int, int]
     pods: dict[int, Pod]
     simulation_cache: dict[tuple, SimulationResult]
-
     def __init__(self):
         self.buildings = {}
         self.resources = 0
@@ -169,7 +140,6 @@ class Planner:
         self.pods = {}
         self.simulation_cache = {}
         self.fs_cache = {}
-
     def play(self):
         while True:
             try:
@@ -179,7 +149,6 @@ class Planner:
             actions = self.choose_actions()
             print(";".join(actions) if actions else "WAIT")
             self.month += 1
-
     def read_month(self):
         self.resources = int(input())
         self.tubes = {}
@@ -202,7 +171,6 @@ class Planner:
             else:
                 self.buildings[values[1]] = Building(values[1], values[0], values[2], values[3])
         self.print_debug_input()
-
     def choose_actions(self) -> list[str]:
         self.simulation_cache = {}
         self.fs_cache = {}
@@ -239,7 +207,6 @@ class Planner:
             debug("\n" + self.score_debug("after", final_result, final_state.cost))
         action_order = {"TUBE": 0, "TELEPORT": 0, "UPGRADE": 1, "DESTROY": 2, "POD": 3}
         return sorted((action for action in final_state.actions if action), key=lambda action: action_order[action.split()[0]])
-
     def override_actions(self) -> list[str]:
         current_state = self.replay_bundle_sequence([])
         current_result = self.score_state(current_state)
@@ -253,7 +220,6 @@ class Planner:
             debug(f"override month {self.month + 1}: {OVERRIDE_COMMAND}")
             debug("\n" + self.score_debug("after", final_result, final_state.cost))
         return [action for action in final_state.actions if action]
-
     def override_state(self, command: str) -> PlanState:
         state = self.replay_bundle_sequence([])
         if command.strip() == "WAIT":
@@ -262,7 +228,6 @@ class Planner:
             if action:
                 self.apply_override_action(state, action)
         return state
-
     def apply_override_action(self, state: PlanState, action: str):
         parts = action.split()
         command = parts[0]
@@ -292,7 +257,6 @@ class Planner:
             self.apply_override_pod(state, action)
         elif command != "WAIT":
             raise ValueError(f"unknown override action {command}")
-
     def apply_override_pod(self, state: PlanState, action: str):
         _, pod_text, route_text = action.split(maxsplit=2)
         pod_id = int(pod_text)
@@ -310,7 +274,6 @@ class Planner:
         state.cost += POD_COST
         state.pods[pod_id] = PodPlan(pod_id, path)
         state.actions.append(action)
-
     def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
             before_score: int) -> Candidate:
         pools = []
@@ -345,7 +308,6 @@ class Planner:
             if best:
                 return best
         return None
-
     def speed_destination_eligible(self, pool: Pool, module_id: int, result: SimulationResult) -> bool:
         modules = [building for building in self.buildings.values() if building.kind == pool[1]]
         before = sum(result.diversity_by_module[module.id] for module in modules)
@@ -356,7 +318,6 @@ class Planner:
         populations[module_id] += self.buildings[pool[0]].demand[pool[1]]
         after = sum(sum(max(0, 50 - index) for index in range(populations[module.id])) for module in modules)
         return after >= before
-
     def diversity_group_eligible(self, group: Pool, module_id: int, state: PlanState, result: SimulationResult,
             distances: dict[int, dict[int, int]]) -> bool:
         if result.delivered_by_pool_module[group, module_id]:
@@ -367,7 +328,6 @@ class Planner:
         hop_limit = min(max(0, current_length - 1), MAX_TUBE_HOPS)
         return self.speed_destination_eligible(group, module_id, result) and \
             bool(hop_limit and self.cheapest_path_with_hop_limit(group[0], [module_id], hop_limit, state))
-
     def next_candidate(self, owner: PoolOwner, pair: PoolOwner, group: Pool, selected: list[Bundle], current_state: PlanState,
             current_result: SimulationResult, before_score: int, bundles: list[Bundle]) -> Candidate:
         best = None
@@ -416,7 +376,6 @@ class Planner:
                         (best.efficiency, best.global_gain, -best.global_cost):
                     best = candidate
         return best
-
     def generate_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], selected: list[Bundle], state: PlanState,
             current_result: SimulationResult, before_score: int) -> list[Bundle]:
         bases = []
@@ -463,7 +422,6 @@ class Planner:
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
         bundles.extend(teleports)
         return bundles
-
     def connection_bundle_stack(self, owner: PoolOwner, group: Pool, bases: list[Bundle], selected: list[Bundle], state: PlanState,
             before_score: int) -> list[Bundle]:
         bundles = []
@@ -480,7 +438,6 @@ class Planner:
         parent.debug_chosen = parent.debug_id
         bundles.extend(self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, before_score, 1))
         return bundles
-
     def path_bundle_stack(self, owner: PoolOwner, group: Pool, base: Bundle, selected: list[Bundle], state: PlanState,
             before_score: int) -> list[Bundle]:
         if base.tubes:
@@ -497,7 +454,6 @@ class Planner:
         _, _, efficiency, parent_state = self.bundle_metrics(parent, selected, before_score)
         pod_seed = base if base.fingerprint != Bundle(owner).fingerprint else None
         return self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, before_score, 1, pod_seed)
-
     def throughput_bundles(self, owner: PoolOwner, group: Pool, parent: Bundle, parent_state: PlanState, parent_efficiency: float,
             selected: list[Bundle], state: PlanState, before_score: int, round_number: int, pod_seed: Bundle = None) -> list[Bundle]:
         bundles = []
@@ -546,7 +502,6 @@ class Planner:
             round_number += 1
             pod_seed = None
         return bundles
-
     def bundle_metrics(self, bundle: Bundle, selected: list[Bundle], before_score: int) -> tuple[int, int, float, PlanState]:
         projected = self.replay_bundle_sequence([*selected, bundle])
         cost = projected.cost
@@ -555,7 +510,6 @@ class Planner:
         result = self.score_state(projected)
         gain = result.score - before_score
         return gain, cost, gain / cost if cost > 0 else inf if gain > 0 else 0, projected
-
     def projection_bundle(self, owner: PoolOwner, template: Bundle, before: PlanState, after: PlanState, label: str) -> Bundle:
         tubes = tuple(edge for edge in template.path_edges if edge in after.tubes and edge not in before.tubes)
         upgrades = tuple(edge for edge in sorted(after.tubes) for _ in range(after.tubes[edge] - before.tubes.get(edge, 1)))
@@ -564,7 +518,6 @@ class Planner:
         specs.extend(PodSpec(0) for _ in set(after.pods) - set(before.pods))
         return Bundle(owner, tubes=tubes, pod_specs=tuple(specs), upgrades=upgrades, label=label, path_edges=template.path_edges,
             destination=template.destination, path_length=template.path_length, path=template.path)
-
     def connection_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> list[Bundle]:
         path = self.cheapest_connecting_path(group[0], module_ids, state)
         bundles = self.path_bundles(owner, "connect", path, state)
@@ -573,7 +526,6 @@ class Planner:
             if connected:
                 bundles.append(connected)
         return bundles
-
     def pod_connection_bundle(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> Bundle:
         best = None
         locations_by_pod = self.pod_locations(state)
@@ -609,7 +561,6 @@ class Planner:
                 if best is None or order < best[0]:
                     best = order, bundle
         return best[1] if best else None
-
     def shortest_route_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], route_length: int,
             state: PlanState) -> list[Bundle]:
         bundles = []
@@ -618,7 +569,6 @@ class Planner:
                 path = self.cheapest_hop_path(group[0], [module_id], hop_count, state)
                 bundles.extend(self.path_bundles(owner, f"short-{hop_count}", path, state))
         return bundles
-
     def teleport_bundles(self, owner: PoolOwner, group: Pool, modules: list[int], state: PlanState) -> list[Bundle]:
         pad_id = group[0]
         used = self.teleport_used_buildings(state.teleports)
@@ -630,7 +580,6 @@ class Planner:
         for index, bundle in enumerate(bundles, 1):
             bundle.debug_id = "0t" if index == 1 else f"0t{index}"
         return bundles
-
     def path_bundles(self, owner: PoolOwner, label: str, path: list[int], state: PlanState) -> list[Bundle]:
         if not path:
             return []
@@ -640,7 +589,6 @@ class Planner:
         specs = (PodSpec(pod_id),) if pod_id >= 0 else ()
         return [Bundle(owner, self.nominal_cost(tubes, specs, (), state), tubes, pod_specs=specs, label=label, path_edges=path_edges,
             destination=path[-1], path_length=len(path) - 1, path=tuple(path))]
-
     def closest_pod(self, origin_id: int, path_edges: tuple[Pair, ...], state: PlanState) -> int:
         if not state.pods:
             return 0
@@ -653,22 +601,17 @@ class Planner:
             candidates.append((distance, pod_id not in state.planned_pods, pod_id))
         closest = min(candidates)
         return closest[2] if closest[0] < INF else 0
-
     def pod_locations(self, state: PlanState) -> dict[int, set[int]]:
         dynamic_paths = self.score_state(state, True).dynamic_paths if state.planned_pods else {}
         return {pod_id: set(dynamic_paths.get(pod_id) or pod.path) for pod_id, pod in state.pods.items()}
-
     def state_action_text(self, state: PlanState) -> str:
-        return "ACTION"
-
+        return ""
     def state_delta_text(self, before: PlanState, after: PlanState) -> str:
         unchanged = before.tubes == after.tubes and before.teleports == after.teleports and before.planned_pods == after.planned_pods
         return "WAIT" if unchanged else "ACTION"
-
     def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair]) -> Pair:
         candidates = [(counts[edge], edge) for edge in path_edges if counts[edge]]
         return max(candidates, key=lambda item: (item[0], -item[1][0], -item[1][1]))[1] if candidates else (-1, -1)
-
     def nominal_cost(self, tubes: tuple[Pair, ...] | list[Pair], specs: tuple[PodSpec, ...] | list[PodSpec],
             upgrades: tuple[Pair, ...] | list[Pair], state: PlanState) -> int:
         cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes if route_key(a, b) not in state.tubes)
@@ -687,7 +630,6 @@ class Planner:
                 cost += tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * (capacities[edge] + 1)
                 capacities[edge] += 1
         return cost
-
     def replay_bundle_on_state(self, state: PlanState, bundle: Bundle) -> PlanState:
         pods = {pod_id: PodPlan(pod.id, pod.path[:], pod.dynamic) for pod_id, pod in state.pods.items()}
         copied = PlanState(dict(state.tubes), dict(state.teleports), pods, list(state.actions), list(state.placeholders),
@@ -695,7 +637,6 @@ class Planner:
             dict(state.planned_pod_pools), set(state.planned_tubes), state.cost)
         self.apply_bundle(copied, bundle)
         return copied
-
     def replay_bundle_sequence(self, selected: list[Bundle]) -> PlanState:
         pods = {pod_id: PodPlan(pod_id, pod.path[:]) for pod_id, pod in self.pods.items()}
         state = PlanState(dict(self.tubes), dict(self.teleports), pods)
@@ -705,7 +646,6 @@ class Planner:
             applied.append(bundle)
             self.prune_uncommitted_infrastructure(state, applied)
         return state
-
     def prune_uncommitted_infrastructure(self, state: PlanState, selected: list[Bundle]):
         active_edges = set()
         speed_routes = {}
@@ -737,7 +677,6 @@ class Planner:
             del remaining_tubes[edge]
             if graph_distance(tube_graph(remaining_tubes), *edge) < INF:
                 self.remove_planned_tube(state, edge)
-
     def remove_planned_pod(self, state: PlanState, pod_id: int):
         if pod_id in self.pods:
             state.cost -= REROUTE_COST
@@ -753,7 +692,6 @@ class Planner:
             parts = action.split()
             if parts and parts[0] == "DESTROY" and int(parts[1]) == pod_id:
                 state.actions[index] = ""
-
     def remove_planned_tube(self, state: PlanState, edge: Pair):
         capacity = state.tubes[edge]
         state.cost -= tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * capacity * (capacity + 1) // 2
@@ -763,7 +701,6 @@ class Planner:
             parts = action.split()
             if parts and parts[0] in ("TUBE", "UPGRADE") and route_key(int(parts[1]), int(parts[2])) == edge:
                 state.actions[index] = ""
-
     def apply_bundle(self, state: PlanState, bundle: Bundle):
         degrees = self.tube_degrees(state.tubes)
         for a, b in bundle.tubes:
@@ -815,13 +752,11 @@ class Planner:
             state.planned_pod_paths[pod_id] = set(bundle.path_edges)
             state.planned_pod_pools[pod_id] = bundle.pool
             state.pods[pod_id] = PodPlan(pod_id, [], True)
-
     def fill_dynamic_actions(self, state: PlanState, dynamic_paths: dict[int, list[int]]):
         for index, pod_id in state.placeholders:
             path = dynamic_paths[pod_id]
             assert len(path) >= 2, f"dynamic pod {pod_id} produced an empty route"
             state.actions[index] = "POD {} {}".format(pod_id, " ".join(map(str, path)))
-
     def score_state(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         if not any(pod.dynamic for pod in state.pods.values()):
             return self.cached_simulate(state)
@@ -833,18 +768,15 @@ class Planner:
             fixed_result.table = dynamic_result.table
             fixed_result.reserved = dynamic_result.reserved
         return fixed_result
-
     def cached_simulate(self, state: PlanState) -> SimulationResult:
         keep_dynamic_paths = any(pod.dynamic for pod in state.pods.values())
         key = self.simulation_cache_key(state, keep_dynamic_paths)
         if key not in self.simulation_cache:
             self.simulation_cache[key] = self.simulate(state, keep_dynamic_paths)
         return self.simulation_cache[key]
-
     def simulation_cache_key(self, state: PlanState, keep_dynamic_paths: bool) -> tuple:
         pods = tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items()))
         return tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), pods, keep_dynamic_paths
-
     def copy_simulation_result(self, result: SimulationResult) -> SimulationResult:
         copy = SimulationResult(result.score, result.speed, result.diversity, result.delivered)
         copy.speed_by_pool = Counter(result.speed_by_pool)
@@ -858,7 +790,6 @@ class Planner:
         copy.table = result.table[:]
         copy.reserved = result.reserved
         return copy
-
     def fixed_dynamic_state(self, state: PlanState, dynamic_paths: dict[int, list[int]]) -> PlanState:
         pods = {}
         for pod_id, pod in state.pods.items():
@@ -866,7 +797,6 @@ class Planner:
             pods[pod_id] = PodPlan(pod.id, path)
         return PlanState(dict(state.tubes), dict(state.teleports), pods, list(state.actions), list(state.placeholders), set(state.planned_pods),
             {pod_id: set(edges) for pod_id, edges in state.planned_pod_paths.items()}, dict(state.planned_pod_pools), set(state.planned_tubes), state.cost)
-
     def simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         distances, module_distances = self.distances_to_targets(state)
         graph = tube_graph(state.tubes)
@@ -929,7 +859,10 @@ class Planner:
                 cells = []
                 for pod_id, pod in sorted(state.pods.items()):
                     paths = fixed_assignments.get(pod_id, set()) if not pod.dynamic else {assignments[pod_id]} if pod_id in assignments else set()
-                    cells.append("/".join("-".join(map(str, path.nodes)) for path in paths) or "-")
+                    path_text = "/".join("-".join(map(str, path.nodes)) for path in paths) or "-"
+                    location = pod.path[pod_positions[pod_id]] if not pod.dynamic else dynamic_current[pod_id]
+                    location = requests[pod_id][0] if location == -1 and pod_id in requests else location
+                    cells.append("{} ({})".format(path_text, location if location != -1 else "-"))
                 result.table.append([str(day + 1), loads, *cells])
             for pod_id, _ in dynamic_pods:
                 if dynamic_pending[pod_id] != (-1, -1) or pod_id not in requests:
@@ -944,7 +877,6 @@ class Planner:
         if keep_dynamic_paths:
             result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
         return result
-
     def fixed_assignment_schedule(self, state: PlanState, distances: dict[int, dict[int, int]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], path_demands: list[PathDemand],
             fixed_pods: list[tuple[int, PodPlan]]) -> tuple[list[tuple[dict[int, set[PathDemand]], Counter[LoadKey]]], Counter[PathKey]]:
@@ -983,7 +915,6 @@ class Planner:
             self.board_and_launch(queues, distances, state, moves, positions, {}, {})
             self.settle(day + 1, queues, module_arrivals, result)
         return schedule, summary
-
     def fixed_load_assignments(self, fixed_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
             active: list[PathDemand], queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> tuple:
@@ -1019,7 +950,6 @@ class Planner:
                     claimed[path] += 1
                     assignments.setdefault(pod_id, set()).add(path)
         return assignments, reservations, claimed
-
     def active_path_demands(self, path: PathDemand, supply: Counter[tuple[int, int, int]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> list[PathDemand]:
         remaining = self.path_remaining(path, result)
@@ -1033,7 +963,6 @@ class Planner:
                 demands.append(PathDemand(path.pool, path.destination, path.nodes[index:], delivered + count, path.ambiguous and index == 0))
                 remaining -= count
         return demands
-
     def path_demands(self, state: PlanState, distances: dict[int, dict[int, int]],
             module_distances: dict[int, dict[int, int]]) -> list[PathDemand]:
         groups = []
@@ -1060,7 +989,6 @@ class Planner:
                 for run in self.tube_path_runs(path, state.tubes):
                     demands.append(PathDemand(pool, module_id, run, cap, len(options) > 1))
         return demands
-
     def concrete_path(self, start_id: int, finish_id: int, state: PlanState) -> PathKey:
         edges = {}
         for a, b in state.tubes:
@@ -1080,7 +1008,6 @@ class Planner:
             for target_id, edge_cost in sorted(edges.get(node, [])):
                 heappush(queue, (cost + edge_cost, (*path, target_id), target_id))
         return ()
-
     def tube_path_runs(self, path: PathKey, tubes: dict[Pair, int]) -> list[PathKey]:
         runs = []
         run = []
@@ -1095,11 +1022,9 @@ class Planner:
         if run:
             runs.append(tuple(run))
         return runs
-
     def path_remaining(self, path: PathDemand, result: SimulationResult) -> int:
         remaining_pool = self.buildings[path.pool[0]].demand[path.pool[1]] - result.delivered_by_pool[path.pool]
         return min(max(0, path.cap - result.delivered_by_pool_module[path.pool, path.destination]), remaining_pool)
-
     def dispatch_dynamic_paths(self, day: int, active: list[PathDemand], dynamic_pods: list[tuple[int, PodPlan]],
             pending: dict[int, DirectedPair], current: dict[int, int], fixed_reservations: Counter[tuple[Pool, int]],
             reserved_loads: Counter[LoadKey], result: SimulationResult, state: PlanState, graph: dict[int, list[int]],
@@ -1174,7 +1099,6 @@ class Planner:
                 counts[path] += 1
                 remaining.remove(pod_id)
         return assignments, preferences, locations, priorities
-
     def path_batch_allowed(self, path: PathDemand, preferred_targets: dict[tuple[Pool, int], set[int]],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]]) -> bool:
         source_id, target_id = path.nodes[:2]
@@ -1192,7 +1116,6 @@ class Planner:
             if boarded == POD_CAPACITY:
                 break
         return preferred >= nonpreferred
-
     def dispatch_supply_exceeded(self, assignments: dict[int, PathDemand], current: dict[int, int],
             fixed_reservations: Counter[tuple[Pool, int]], result: SimulationResult) -> bool:
         reserved = Counter(fixed_reservations)
@@ -1200,7 +1123,6 @@ class Planner:
             if current[pod_id] in (-1, path.nodes[0]):
                 reserved[path.pool, path.nodes[0]] += min(POD_CAPACITY, self.path_remaining(path, result))
         return any(count > self.supply[pool[0], pool[1], source] for (pool, source), count in reserved.items())
-
     def resolve_dispatch_congestion(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             requests: dict[int, DirectedPair], moves: dict[int, DirectedPair], fixed_pods: list[tuple[int, PodPlan]],
             dynamic_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int], current: dict[int, int],
@@ -1284,7 +1206,6 @@ class Planner:
             if not changed:
                 break
         return assignments, requests, moves
-
     def path_assignment_key(self, path: PathDemand, pod_id: int, capacity_blocked: bool, current: dict[int, int],
             result: SimulationResult, graph: dict[int, list[int]], queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], demand: Counter[DirectedPair]) -> tuple:
@@ -1293,7 +1214,6 @@ class Planner:
             self.path_blocks_loaded_pod(path, pod_id, current, graph, queues, wanted_edges, demand, result)
         return blocked, not path.ambiguous, self.path_remaining(path, result) < POD_CAPACITY, distance, len(path.nodes) - 1, \
             result.delivered_by_module[path.destination]
-
     def path_blocks_loaded_pod(self, path: PathDemand, pod_id: int, current: dict[int, int], graph: dict[int, list[int]],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
             demand: Counter[DirectedPair], result: SimulationResult) -> bool:
@@ -1309,7 +1229,6 @@ class Planner:
                 target_id = path.nodes[position - 1]
         return not demand[source_id, target_id] and demand[target_id, source_id] and \
             any(other_id != pod_id and node_id == target_id for other_id, node_id in current.items())
-
     def path_capacity_excess(self, candidate: PathDemand, assignments: dict[int, PathDemand], state: PlanState) -> bool:
         paths = sorted([*(path.nodes for path in assignments.values()), candidate.nodes])
         fixed = self.fixed_edges
@@ -1331,10 +1250,9 @@ class Planner:
                 return False
             self.cap_cache[key] = any(not place(worker, set()) for worker in range(len(paths)))
         return self.cap_cache[key]
-
     def path_pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
             pod_positions: dict[int, int], current: dict[int, int], pending: dict[int, DirectedPair], assignments: dict[int, PathDemand],
-            state: PlanState, graph: dict[int, list[int]], result: SimulationResult, count_congestion: bool = False) -> dict[int, DirectedPair]:
+            state: PlanState, graph: dict[int, list[int]], result: SimulationResult, track: bool = False) -> dict[int, DirectedPair]:
         def place(pod_id: int, seen: set[tuple[Pair, int]]) -> bool:
             for occupied in (False, True):
                 for move in options[pod_id]:
@@ -1357,12 +1275,12 @@ class Planner:
         used = Counter(route_key(*move) for move in requests.values())
         slots = {edge: [(edge, index) for index in range(max(0, capacity - used[edge]))] for edge, capacity in state.tubes.items()}
         options = {}
-        upstream_options = {}
+        reverse = {}
         claims = Counter()
         for pod_id, _ in dynamic_pods:
             if pending[pod_id] != (-1, -1):
                 options[pod_id] = [pending[pod_id]]
-                upstream_options[pod_id] = set()
+                reverse[pod_id] = set()
                 if pod_id in assignments:
                     path = assignments[pod_id].nodes
                     if pending[pod_id] in zip(path, path[1:]):
@@ -1376,7 +1294,7 @@ class Planner:
                 key = demand.pool, path[0], path[1]
                 waiting = min(self.supply[demand.pool[0], demand.pool[1], path[0]], self.path_remaining(demand, result))
                 moves = [(path[index], path[index - 1]) for index in range(1, len(path))]
-                upstream_options[pod_id] = set(moves)
+                reverse[pod_id] = set(moves)
                 if claims[key] * POD_CAPACITY < waiting:
                     moves.insert(0, (path[0], path[1]))
                     claims[key] += 1
@@ -1384,7 +1302,7 @@ class Planner:
                 continue
             if current[pod_id] not in path:
                 options[pod_id] = [(current[pod_id], next_step(graph, current[pod_id], path[0]))]
-                upstream_options[pod_id] = set(options[pod_id])
+                reverse[pod_id] = set(options[pod_id])
                 continue
             position = path.index(current[pod_id])
             upstream = (current[pod_id], path[position - 1]) if position else None
@@ -1399,8 +1317,8 @@ class Planner:
                 loaded = claims[key] * POD_CAPACITY < max(0, waiting - covered)
                 claims[key] += loaded
             options[pod_id] = [move for move in ((downstream, upstream) if loaded else (upstream, downstream)) if move]
-            upstream_options[pod_id] = {upstream} if upstream else set()
-        if count_congestion:
+            reverse[pod_id] = {upstream} if upstream else set()
+        if track:
             preferred = Counter(route_key(*move) for move in requests.values())
             preferred.update(route_key(*moves[0]) for moves in options.values())
             for edge, count in preferred.items():
@@ -1422,28 +1340,25 @@ class Planner:
                     for other_rank, other_move in enumerate(options[other_id]):
                         trial = occupied + Counter((route_key(*move), route_key(*other_move)))
                         if all(count <= state.tubes[edge] for edge, count in trial.items()):
-                            upstream = int(move in upstream_options[pod_id]) + int(other_move in upstream_options[other_id])
+                            upstream = int(move in reverse[pod_id]) + int(other_move in reverse[other_id])
                             choices.append(((rank + other_rank, -upstream, rank, other_rank), move, other_move))
                 _, selected[pod_id], selected[other_id] = min(choices)
         requests.update(selected)
         for pod_id, moves in options.items():
             requests.setdefault(pod_id, moves[0])
         return requests
-
     def path_segment_ready(self, path: PathDemand, source_id: int, target_id: int, queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], result: SimulationResult) -> bool:
         edge = source_id, target_id
         eligible = sum(passenger.pad_id == path.pool[0] and passenger.kind == path.pool[1] and
             edge in wanted_edges[source_id, passenger.kind] for passenger in queues.get(source_id, []))
         return eligible >= min(POD_CAPACITY, self.path_remaining(path, result))
-
     def edge_demand(self, queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]]) -> Counter[DirectedPair]:
         demand = Counter()
         for building_id, passengers in queues.items():
             for passenger in passengers:
                 demand.update(wanted_edges[building_id, passenger.kind])
         return demand
-
     def distances_to_targets(self, state: PlanState) -> tuple[dict[int, dict[int, int]], dict[int, dict[int, int]]]:
         demanded = {kind for pad in self.landing_pads() for kind in pad.demand}
         reverse_edges = {}
@@ -1473,7 +1388,6 @@ class Planner:
         distances = {kind: {building_id: min(module_distances[module.id][building_id] for module in self.buildings.values() if module.kind == kind)
             for building_id in self.buildings} for kind in demanded}
         return distances, module_distances
-
     def nearest_module_map(self, distances: dict[int, dict[int, int]], module_distances: dict[int, dict[int, int]]) -> \
             dict[tuple[int, int], tuple[int, ...]]:
         modules = {}
@@ -1482,7 +1396,6 @@ class Planner:
         return {(building_id, kind): tuple(module_id for module_id in module_ids
             if module_distances[module_id][building_id] == distances[kind][building_id])
             for kind, module_ids in modules.items() for building_id in self.buildings}
-
     def initial_queues(self, distances: dict[int, dict[int, int]]) -> dict[int, list[Passenger]]:
         queues = {}
         for pad in self.landing_pads():
@@ -1490,7 +1403,6 @@ class Planner:
             if passengers:
                 queues[pad.id] = passengers
         return queues
-
     def wanted_edges(self, distances: dict[int, dict[int, int]], graph: dict[int, list[int]]) -> dict[tuple[int, int], tuple[DirectedPair, ...]]:
         wanted = {}
         for kind, kind_distances in distances.items():
@@ -1498,7 +1410,6 @@ class Planner:
                 options = [neighbor_id for neighbor_id in graph.get(building_id, []) if kind_distances[neighbor_id] < distance]
                 wanted[building_id, kind] = tuple((building_id, neighbor_id) for neighbor_id in options)
         return wanted
-
     def teleport_phase(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], teleports: dict[int, int]):
         for entrance_id, exit_id in sorted(teleports.items()):
             if entrance_id not in queues:
@@ -1513,7 +1424,6 @@ class Planner:
                 queues[entrance_id] = remaining
             else:
                 del queues[entrance_id]
-
     def settle(self, day: int, queues: dict[int, list[Passenger]], module_arrivals: Counter[int], result: SimulationResult):
         for building_id in sorted(list(queues)):
             building = self.buildings[building_id]
@@ -1544,7 +1454,6 @@ class Planner:
                 queues[building_id] = remaining
             else:
                 del queues[building_id]
-
     def allocate_tube_capacity(self, requests: dict[int, DirectedPair], state: PlanState, demand: Counter[DirectedPair],
             result: SimulationResult, count_congestion: bool = True) -> dict[int, DirectedPair]:
         moves = {}
@@ -1562,7 +1471,6 @@ class Planner:
             for pod_id, move in selected:
                 moves[pod_id] = move
         return moves
-
     def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], state: PlanState,
             moves: dict[int, DirectedPair], pod_positions: dict[int, int], dynamic_current: dict[int, int],
             dynamic_pending: dict[int, DirectedPair]):
@@ -1599,7 +1507,6 @@ class Planner:
                 dynamic_pending[pod_id] = (-1, -1)
             if onboard.get(pod_id):
                 queues.setdefault(target_id, []).extend(onboard[pod_id])
-
     def shortest_existing_tube_path(self, start_id: int, targets: list[int], tubes: dict[Pair, int]) -> list[int]:
         graph = tube_graph(tubes)
         queue = deque([start_id])
@@ -1614,14 +1521,11 @@ class Planner:
                     parent[neighbor_id] = building_id
                     queue.append(neighbor_id)
         return []
-
     def cheapest_connecting_path(self, start_id: int, targets: list[int], state: PlanState) -> list[int]:
         return self.cheapest_path_with_hop_limit(start_id, targets, MAX_TUBE_HOPS, state)
-
     def cheapest_hop_path(self, start_id: int, targets: list[int], hop_count: int, state: PlanState) -> list[int]:
         path = self.cheapest_path_with_hop_limit(start_id, targets, hop_count, state, exact_hops=True)
         return path
-
     def cheapest_path_with_hop_limit(self, start_id: int, targets: list[int], hop_limit: int, state: PlanState,
             exact_hops: bool = False, via_nodes: tuple[int, ...] = ()) -> list[int]:
         target_set = set(targets)
@@ -1664,7 +1568,6 @@ class Planner:
         path.append(start_id)
         path.reverse()
         return path if self.can_add_tubes(unique_new_tubes(path, state.tubes), state.tubes) else []
-
     def build_candidate_edge_graph(self, tubes: dict[Pair, int]) -> dict[int, list[tuple[int, int]]]:
         graph = {building_id: [] for building_id in self.buildings}
         building_ids = sorted(self.buildings)
@@ -1682,7 +1585,6 @@ class Planner:
         for neighbors in graph.values():
             neighbors.sort(key=lambda item: (item[1], item[0]))
         return graph
-
     def can_add_tubes(self, tubes: list[Pair], existing_tubes: dict[Pair, int]) -> bool:
         test_tubes = dict(existing_tubes)
         degrees = self.tube_degrees(test_tubes)
@@ -1698,7 +1600,6 @@ class Planner:
             degrees[a] += 1
             degrees[b] += 1
         return True
-
     def can_build_tube(self, a: int, b: int, tubes: dict[Pair, int]) -> bool:
         if a == b or route_key(a, b) in tubes:
             return False
@@ -1711,34 +1612,28 @@ class Planner:
             if len({a, b, c, d}) == 4 and segments_intersect(first, second, self.buildings[c], self.buildings[d]):
                 return False
         return True
-
     def speed_pools(self) -> list[Pool]:
         pools = []
         for pad in self.landing_pads():
             pools.extend((pad.id, kind) for kind in sorted(pad.demand))
         return pools
-
     def landing_pads(self) -> list[Building]:
         return [building for building in sorted(self.buildings.values(), key=lambda item: item.id) if building.kind == 0]
-
     def tube_degrees(self, tubes: dict[Pair, int]) -> Counter[int]:
         degrees = Counter()
         for a, b in tubes:
             degrees[a] += 1
             degrees[b] += 1
         return degrees
-
     def teleport_used_buildings(self, teleports: dict[int, int]) -> set[int]:
         used = set(teleports)
         used.update(teleports.values())
         return used
-
     def next_pod_id(self, pods: dict[int, PodPlan]) -> int:
         for pod_id in range(1, MAX_PODS + 1):
             if pod_id not in pods:
                 return pod_id
         raise RuntimeError("No pod identifiers remain")
-
     def print_debug_input(self):
         print(f"month {self.month + 1}", file=sys.stderr)
         print(f"resources {self.resources}", file=sys.stderr)
@@ -1755,35 +1650,22 @@ class Planner:
         for pod_id in sorted(self.pods):
             path_text = ", ".join(map(str, self.pods[pod_id].path))
             print(f"pod id={pod_id}, path=[{path_text}]", file=sys.stderr)
-
-
     def perfect_diversity(self, kind: int) -> int:
         demand = sum(pad.demand[kind] for pad in self.landing_pads())
         module_count = sum(building.kind == kind for building in self.buildings.values())
         balanced_population = (demand + module_count - 1) // module_count
         return sum(max(0, 50 - index) for index in range(balanced_population))
-
     def max_diversity(self, kind: int) -> int:
         demand = sum(pad.demand[kind] for pad in self.landing_pads())
         return sum(max(0, 50 - index) for index in range(demand))
-
-
 def route_key(a: int, b: int) -> Pair:
     return (a, b) if a < b else (b, a)
-
-
 def tube_cost(a: Building, b: Building) -> int:
     return isqrt(100 * ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)))
-
-
 def orientation(a: Building, b: Building, c: Building) -> int:
     return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-
-
 def point_on_segment(point: Building, a: Building, b: Building) -> bool:
     return orientation(a, b, point) == 0 and min(a.x, b.x) <= point.x <= max(a.x, b.x) and min(a.y, b.y) <= point.y <= max(a.y, b.y)
-
-
 def segments_intersect(a: Building, b: Building, c: Building, d: Building) -> bool:
     o1 = orientation(a, b, c)
     o2 = orientation(a, b, d)
@@ -1794,8 +1676,6 @@ def segments_intersect(a: Building, b: Building, c: Building, d: Building) -> bo
     if o3 == 0 and point_on_segment(a, c, d) or o4 == 0 and point_on_segment(b, c, d):
         return True
     return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
-
-
 def unique_new_tubes(path: list[int], tubes: dict[Pair, int]) -> list[Pair]:
     result = []
     seen = set()
@@ -1805,16 +1685,12 @@ def unique_new_tubes(path: list[int], tubes: dict[Pair, int]) -> list[Pair]:
             result.append(edge)
             seen.add(edge)
     return result
-
-
 def tube_graph(tubes: dict[Pair, int]) -> dict[int, list[int]]:
     graph = {}
     for a, b in tubes:
         graph.setdefault(a, []).append(b)
         graph.setdefault(b, []).append(a)
     return {node: sorted(neighbors) for node, neighbors in graph.items()}
-
-
 def tube_components(graph: dict[int, list[int]]) -> dict[int, int]:
     components = {}
     for origin_id in sorted(graph):
@@ -1829,8 +1705,6 @@ def tube_components(graph: dict[int, list[int]]) -> dict[int, int]:
                     components[neighbor_id] = origin_id
                     queue.append(neighbor_id)
     return components
-
-
 def graph_distance(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int:
     if start_id == finish_id:
         return 0
@@ -1849,8 +1723,6 @@ def graph_distance(graph: dict[int, list[int]], start_id: int, finish_id: int) -
                 seen.add(neighbor_id)
                 queue.append((neighbor_id, distance + 1))
     return d.setdefault(key, INF)
-
-
 def next_step(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int:
     if start_id == finish_id:
         return start_id
@@ -1866,16 +1738,12 @@ def next_step(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int
     while parent[step] != start_id:
         step = parent[step]
     return step
-
-
 def unwind_path(parent: dict[int, int], start_id: int, finish_id: int) -> list[int]:
     path = [finish_id]
     while path[-1] != start_id:
         path.append(parent[path[-1]])
     path.reverse()
     return path
-
-
 def normalize_month_path(path: list[int]) -> list[int]:
     if len(path) >= MONTH_DAYS + 1:
         return path[:MONTH_DAYS + 1]
@@ -1888,8 +1756,6 @@ def normalize_month_path(path: list[int]) -> list[int]:
     for day in range(MONTH_DAYS):
         result.append(edges[day % len(edges)][1])
     return result
-
-
 def fixed_next_index(path: list[int], index: int) -> int:
     if len(path) < 2:
         return index
@@ -1898,7 +1764,5 @@ def fixed_next_index(path: list[int], index: int) -> int:
     if path[0] == path[-1]:
         return 1
     return index
-
-
 if __name__ == "__main__":
     Planner().play()

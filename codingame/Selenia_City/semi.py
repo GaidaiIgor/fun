@@ -14,8 +14,8 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 2 0 2 0 2 0 2 0 2 0 2 3 6 3 5 3 6 3 2 0 2;POD 2 3 6 3 5 3 6 3 5 3 4 1 4 1 4 1 4 1 4 1 4 1"
-# "TUBE 0 2;TUBE 1 4;TUBE 2 3;TUBE 3 4;TUBE 3 5;TUBE 3 6;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "UPGRADE 1 4;POD 3 3 5 3 6 3 4 1 4 1 4 1 4 1 4 1 4 1 4 3 6 3"
+# "UPGRADE 1 4;POD 3 AUTO"
 FULL_DEBUG = False
 _G = {}
 Pair = tuple[int, int]
@@ -473,6 +473,8 @@ class Planner:
             combined_affordable = False
             if pod_metrics[3].cost <= self.resources:
                 edge = self.best_counter_edge(parent.path_edges, self.cached_simulate(pod_metrics[3]).congestion_by_edge)
+                if edge == (-1, -1):
+                    edge = upgrade_edge
                 if edge != (-1, -1):
                     upgrade_cost = tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * (parent_state.tubes[edge] + 1)
                     if parent_state.cost + upgrade_cost <= self.resources:

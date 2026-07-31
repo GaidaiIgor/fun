@@ -1022,6 +1022,10 @@ class Planner:
                     and not initial_capacity[path]
                     and not self.dispatch_supply_exceeded(assignments | {pod_id: path}, locations, fixed_reservations, result)]
                 if options:
+                    pair = state.pairs.get(pod_id)
+                    paired = [path for path in options if (path.pool, path.destination) == pair]
+                    if paired:
+                        options = paired
                     assignments[pod_id] = options[0]
                     counts[options[0]] += 1
                     uncovered.remove(components[options[0].nodes[0]])
@@ -1045,7 +1049,7 @@ class Planner:
                         load_sizes[path] <= supply_left[path.pool, path.nodes[0]])]
                 if options:
                     pair = state.pairs.get(pod_id)
-                    paired = [path for path in options if (path.pool, path.destination) == pair] if surplus and day == 0 else []
+                    paired = [path for path in options if (path.pool, path.destination) == pair] if day == 0 else []
                     if paired:
                         options = paired
                     priority = min(priorities[path] for path in options)

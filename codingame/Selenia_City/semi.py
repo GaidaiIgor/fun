@@ -14,7 +14,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 15
-OVERRIDE_COMMAND = "POD 3 AUTO;POD 4 AUTO;POD 5 AUTO"
+OVERRIDE_COMMAND = "POD 3 3 5 3 6 3 5 3 2 3 5 3 6 3 5 3 5 3 6 3 5 3;POD 4 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4;POD 5 3 5 3 6 3 5 3 2 3 5 3 6 3 5 3 5 3 6 3 5 3"
 # "POD 3 AUTO;POD 4 AUTO;POD 5 AUTO"
 FULL_DEBUG = False
 _G = {}
@@ -36,10 +36,6 @@ class Building:
     demand: Counter[int] = field(default_factory=Counter)
     order: list[int] = field(default_factory=list)
 @dataclass(slots=True)
-class Pod:
-    id: int
-    path: list[int]
-@dataclass(slots=True)
 class Passenger:
     pad_id: int
     kind: int
@@ -58,18 +54,14 @@ class PathDemand:
         return self.h
 @dataclass(slots=True)
 class PodPlan:
-    id: int
     path: list[int] = field(default_factory=list)
     dynamic: bool = False
-@dataclass(slots=True)
-class PodSpec:
-    pod_id: int
 @dataclass(slots=True)
 class Bundle:
     pool: PoolOwner
     tubes: tuple[Pair, ...] = ()
     teleport: Pair = (-1, -1)
-    pod_specs: tuple[PodSpec, ...] = ()
+    pod_specs: tuple[int, ...] = ()
     upgrades: tuple[Pair, ...] = ()
     label: str = "empty"
     path_edges: tuple[Pair, ...] = ()
@@ -80,7 +72,7 @@ class Bundle:
     debug_chosen: str = ""
     @property
     def fingerprint(self) -> tuple:
-        return self.tubes, self.teleport, tuple(spec.pod_id for spec in self.pod_specs), self.upgrades
+        return self.tubes, self.teleport, self.pod_specs, self.upgrades
 @dataclass(slots=True)
 class PlanState:
     tubes: dict[Pair, int]
@@ -96,9 +88,6 @@ class PlanState:
 @dataclass(slots=True)
 class SimulationResult:
     score: int = 0
-    speed: int = 0
-    diversity: int = 0
-    delivered: int = 0
     speed_by_pool: Counter[Pool] = field(default_factory=Counter)
     delivered_by_pool: Counter[Pool] = field(default_factory=Counter)
     delivery_times: dict[Pool, int] = field(default_factory=dict)
@@ -113,7 +102,6 @@ class SimulationResult:
 class Candidate:
     bundle: Bundle
     pair: PoolOwner
-    number: str
     global_gain: int
     global_cost: int
     @property
@@ -125,7 +113,7 @@ class Planner:
     month: int
     tubes: dict[Pair, int]
     teleports: dict[int, int]
-    pods: dict[int, Pod]
+    pods: dict[int, PodPlan]
     simulation_cache: dict[tuple, SimulationResult]
     def __init__(self):
         self.buildings = {}
@@ -159,7 +147,7 @@ class Planner:
         for _ in range(int(input())):
             values = list(map(int, input().split()))
             pod_id = values[0]
-            self.pods[pod_id] = Pod(pod_id, values[2:])
+            self.pods[pod_id] = PodPlan(values[2:])
         for _ in range(int(input())):
             values = list(map(int, input().split()))
             if values[0] == 0:
@@ -257,13 +245,13 @@ class Planner:
             state.actions.append(f"DESTROY {pod_id}")
         if route_text.startswith("AUTO"):
             state.cost += POD_COST
-            state.pods[pod_id] = PodPlan(pod_id, [], True)
+            state.pods[pod_id] = PodPlan([], True)
             state.pod_slots.append((len(state.actions), pod_id))
             state.actions.append("")
             return
         path = [int(item) for item in route_text.split()]
         state.cost += POD_COST
-        state.pods[pod_id] = PodPlan(pod_id, path)
+        state.pods[pod_id] = PodPlan(path)
         state.actions.append(action)
     def best_candidate(self, selected: list[Bundle], current_state: PlanState, current_result: SimulationResult,
             before_score: int) -> Candidate:
@@ -363,7 +351,7 @@ class Planner:
             debug(f"{text}local gain={local_gain}, global gain={global_gain}({checkpoint_delta:+d}), cost={cost}, "
                 f"efficiency={efficiency:.3f}")
             if global_gain > 0 and result.score > current_result.score:
-                candidate = Candidate(bundle, pair, bundle.debug_id, global_gain, cost)
+                candidate = Candidate(bundle, pair, global_gain, cost)
                 if best is None or (candidate.efficiency, candidate.global_gain, -candidate.global_cost) > \
                         (best.efficiency, best.global_gain, -best.global_cost):
                     best = candidate
@@ -403,7 +391,7 @@ class Planner:
         for base in bases:
             if id(base) in connection_ids:
                 continue
-            key = base.path, base.tubes, tuple(spec.pod_id for spec in base.pod_specs)
+            key = base.path, base.tubes, base.pod_specs
             if key in seen:
                 continue
             seen.add(key)
@@ -457,7 +445,7 @@ class Planner:
             if pod_seed:
                 projected = self.replay_bundle_sequence([*selected, pod_seed])
             else:
-                projected = self.replay_bundle_on_state(parent_state, Bundle(owner, pod_specs=(PodSpec(0),),
+                projected = self.replay_bundle_on_state(parent_state, Bundle(owner, pod_specs=(0,),
                     path_edges=parent.path_edges, destination=parent.destination, path=parent.path))
             pod_bundle = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod")
             pod_bundle.debug_id = f"{round_number}p"
@@ -506,16 +494,16 @@ class Planner:
     def projection_bundle(self, owner: PoolOwner, template: Bundle, before: PlanState, after: PlanState, label: str) -> Bundle:
         tubes = tuple(edge for edge in template.path_edges if edge in after.tubes and edge not in before.tubes)
         upgrades = tuple(edge for edge in sorted(after.tubes) for _ in range(after.tubes[edge] - before.tubes.get(edge, 1)))
-        specs = [PodSpec(pod_id) for pod_id in sorted(set(before.pods) & set(after.pods))
+        specs = [pod_id for pod_id in sorted(set(before.pods) & set(after.pods))
             if after.pods[pod_id].dynamic and (not before.pods[pod_id].dynamic or
                 before.routes[pod_id] != after.routes[pod_id] or before.pairs[pod_id] != after.pairs[pod_id])]
-        specs.extend(PodSpec(0) for _ in set(after.pods) - set(before.pods))
+        specs.extend(0 for _ in set(after.pods) - set(before.pods))
         return Bundle(owner, tubes=tubes, pod_specs=tuple(specs), upgrades=upgrades, label=label, path_edges=template.path_edges,
             destination=template.destination, path_length=template.path_length, path=template.path)
     def connection_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> list[Bundle]:
         path = self.cheapest_connecting_path(group[0], module_ids, state)
         bundles = self.path_bundles(owner, "connect", path, state)
-        if bundles and state.pods and any(not spec.pod_id for spec in bundles[0].pod_specs):
+        if bundles and state.pods and any(not pod_id for pod_id in bundles[0].pod_specs):
             connected = self.pod_connection_bundle(owner, group, module_ids, state)
             if connected:
                 bundles.append(connected)
@@ -543,9 +531,10 @@ class Planner:
                         routes.append((edges, module_id))
             for path_edges, module_id in routes:
                 pair = group, module_id
-                specs = (PodSpec(pod_id),) if pod_id not in state.ops or state.pairs[pod_id] == pair else ()
+                specs = (pod_id,) if pod_id not in state.ops or state.pairs[pod_id] == pair else ()
                 tubes = tuple(edge for edge in path_edges if edge not in state.tubes)
-                cost = self.nominal_cost(tubes, specs, (), state)
+                cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes)
+                cost += REROUTE_COST if specs and pod_id not in state.ops else 0
                 projected_tubes = dict(state.tubes)
                 projected_tubes.update((edge, 1) for edge in path_edges)
                 route = self.shortest_existing_tube_path(group[0], [module_id], projected_tubes)
@@ -585,7 +574,7 @@ class Planner:
         group = owner if isinstance(owner, tuple) else (path[0], self.buildings[owner].kind)
         pair = group, path[-1]
         pod_id = self.closest_pod(path[0], path_edges, state) if tubes else -1
-        specs = (PodSpec(pod_id),) if pod_id >= 0 and (not pod_id or pod_id not in state.ops or state.pairs[pod_id] == pair) else ()
+        specs = (pod_id,) if pod_id >= 0 and (not pod_id or pod_id not in state.ops or state.pairs[pod_id] == pair) else ()
         return [Bundle(owner, tubes=tubes, pod_specs=specs, label=label, path_edges=path_edges,
             destination=path[-1], path_length=len(path) - 1, path=tuple(path))]
     def closest_pod(self, origin_id: int, path_edges: tuple[Pair, ...], state: PlanState) -> int:
@@ -608,33 +597,15 @@ class Planner:
     def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair]) -> Pair:
         candidates = [(counts[edge], edge) for edge in path_edges if counts[edge]]
         return max(candidates, key=lambda item: (item[0], -item[1][0], -item[1][1]))[1] if candidates else (-1, -1)
-    def nominal_cost(self, tubes: tuple[Pair, ...] | list[Pair], specs: tuple[PodSpec, ...] | list[PodSpec],
-            upgrades: tuple[Pair, ...] | list[Pair], state: PlanState) -> int:
-        cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes if route_key(a, b) not in state.tubes)
-        ops = set(state.ops)
-        for spec in specs:
-            if not spec.pod_id:
-                cost += POD_COST
-            elif spec.pod_id not in ops:
-                cost += REROUTE_COST
-                ops.add(spec.pod_id)
-        capacities = dict(state.tubes)
-        for a, b in tubes:
-            capacities.setdefault(route_key(a, b), 1)
-        for edge in upgrades:
-            if edge in capacities:
-                cost += tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * (capacities[edge] + 1)
-                capacities[edge] += 1
-        return cost
     def replay_bundle_on_state(self, state: PlanState, bundle: Bundle) -> PlanState:
-        pods = {pod_id: PodPlan(pod.id, pod.path[:], pod.dynamic) for pod_id, pod in state.pods.items()}
+        pods = {pod_id: PodPlan(pod.path[:], pod.dynamic) for pod_id, pod in state.pods.items()}
         copied = PlanState(dict(state.tubes), dict(state.teleports), pods, list(state.actions), list(state.pod_slots),
             set(state.ops), {pod_id: set(edges) for pod_id, edges in state.routes.items()},
             dict(state.pairs), set(state.new_tubes), state.cost)
         self.apply_bundle(copied, bundle)
         return copied
     def replay_bundle_sequence(self, selected: list[Bundle]) -> PlanState:
-        pods = {pod_id: PodPlan(pod_id, pod.path[:]) for pod_id, pod in self.pods.items()}
+        pods = {pod_id: PodPlan(pod.path[:]) for pod_id, pod in self.pods.items()}
         state = PlanState(dict(self.tubes), dict(self.teleports), pods)
         applied = []
         for bundle in selected:
@@ -675,7 +646,7 @@ class Planner:
     def remove_planned_pod(self, state: PlanState, pod_id: int):
         if pod_id in self.pods:
             state.cost -= REROUTE_COST
-            state.pods[pod_id] = PodPlan(pod_id, self.pods[pod_id].path[:])
+            state.pods[pod_id] = PodPlan(self.pods[pod_id].path[:])
         else:
             state.cost -= POD_COST
             del state.pods[pod_id]
@@ -726,8 +697,7 @@ class Planner:
             state.tubes[edge] += 1
             state.cost += tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * state.tubes[edge]
             state.actions.append(f"UPGRADE {edge[0]} {edge[1]}")
-        for spec in bundle.pod_specs:
-            pod_id = spec.pod_id
+        for pod_id in bundle.pod_specs:
             group = bundle.pool if isinstance(bundle.pool, tuple) else (bundle.path[0], self.buildings[bundle.pool].kind)
             pair = group, bundle.destination
             if pod_id and pod_id in state.ops:
@@ -754,7 +724,7 @@ class Planner:
                 state.actions.append("")
             state.routes[pod_id] = set(bundle.path_edges)
             state.pairs[pod_id] = pair
-            state.pods[pod_id] = PodPlan(pod_id, [], True)
+            state.pods[pod_id] = PodPlan([], True)
     def fill_dynamic_actions(self, state: PlanState, dynamic_paths: dict[int, list[int]]):
         for index, pod_id in state.pod_slots:
             path = dynamic_paths[pod_id]
@@ -771,40 +741,20 @@ class Planner:
             paths = {pod_id: path if len(path) > 1 else normalize_month_path([*fallback]) for pod_id, path in paths.items()}
         fixed_result = self.cached_simulate(self.fixed_dynamic_state(state, paths))
         if keep_dynamic_paths:
-            fixed_result = self.copy_simulation_result(fixed_result)
             fixed_result.dynamic_paths = paths
             fixed_result.table = dynamic_result.table
             fixed_result.reserved = dynamic_result.reserved
         return fixed_result
     def cached_simulate(self, state: PlanState) -> SimulationResult:
         keep_dynamic_paths = any(pod.dynamic for pod in state.pods.values())
-        key = self.simulation_cache_key(state, keep_dynamic_paths)
+        pods = tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items()))
+        key = tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), pods, keep_dynamic_paths
         if key not in self.simulation_cache:
             self.simulation_cache[key] = self.simulate(state, keep_dynamic_paths)
         return self.simulation_cache[key]
-    def simulation_cache_key(self, state: PlanState, keep_dynamic_paths: bool) -> tuple:
-        pods = tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items()))
-        return tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), pods, keep_dynamic_paths
-    def copy_simulation_result(self, result: SimulationResult) -> SimulationResult:
-        copy = SimulationResult(result.score, result.speed, result.diversity, result.delivered)
-        copy.speed_by_pool = Counter(result.speed_by_pool)
-        copy.delivered_by_pool = Counter(result.delivered_by_pool)
-        copy.delivery_times = dict(result.delivery_times)
-        copy.diversity_by_module = Counter(result.diversity_by_module)
-        copy.delivered_by_module = Counter(result.delivered_by_module)
-        copy.delivered_by_pool_module = Counter(result.delivered_by_pool_module)
-        copy.congestion_by_edge = Counter(result.congestion_by_edge)
-        copy.dynamic_paths = {pod_id: path[:] for pod_id, path in result.dynamic_paths.items()}
-        copy.table = result.table[:]
-        copy.reserved = result.reserved
-        return copy
     def fixed_dynamic_state(self, state: PlanState, dynamic_paths: dict[int, list[int]]) -> PlanState:
-        pods = {}
-        for pod_id, pod in state.pods.items():
-            path = dynamic_paths[pod_id][:] if pod.dynamic else pod.path[:]
-            pods[pod_id] = PodPlan(pod.id, path)
-        return PlanState(dict(state.tubes), dict(state.teleports), pods, list(state.actions), list(state.pod_slots), set(state.ops),
-            {pod_id: set(edges) for pod_id, edges in state.routes.items()}, dict(state.pairs), set(state.new_tubes), state.cost)
+        pods = {pod_id: PodPlan(dynamic_paths[pod_id][:] if pod.dynamic else pod.path[:]) for pod_id, pod in state.pods.items()}
+        return PlanState(state.tubes, state.teleports, pods)
     def simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         network_key = tuple(sorted(state.tubes)), tuple(sorted(state.teleports.items()))
         if network_key not in self.fs_cache:
@@ -1441,9 +1391,6 @@ class Planner:
                 diversity = max(0, 50 - arrivals[building_id])
                 score = speed + diversity
                 result.score += score
-                result.speed += speed
-                result.diversity += diversity
-                result.delivered += 1
                 pool = passenger.pad_id, passenger.kind
                 result.speed_by_pool[pool] += speed
                 result.delivered_by_pool[pool] += 1
@@ -1658,9 +1605,6 @@ class Planner:
         module_count = sum(building.kind == kind for building in self.buildings.values())
         balanced_population = (demand + module_count - 1) // module_count
         return sum(max(0, 50 - index) for index in range(balanced_population))
-    def max_diversity(self, kind: int) -> int:
-        demand = sum(pad.demand[kind] for pad in self.landing_pads())
-        return sum(max(0, 50 - index) for index in range(demand))
 def route_key(a: int, b: int) -> Pair:
     return (a, b) if a < b else (b, a)
 def tube_cost(a: Building, b: Building) -> int:

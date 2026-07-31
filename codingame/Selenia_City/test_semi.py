@@ -9,7 +9,7 @@ from pathlib import Path
 if not __package__:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 import Selenia_City.semi as semi
-from Selenia_City.semi import Building, Candidate, Planner, PlanState, Pod, SimulationResult, route_key
+from Selenia_City.semi import Building, Candidate, Planner, PlanState, PodPlan, SimulationResult, route_key
 
 semi.FULL_DEBUG = True
 
@@ -42,7 +42,10 @@ def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
             landings.append(f"landing {pad.id}: {demand_text}")
         iteration = ("Iteration 1",) if label == "before" else ()
         return "\n".join((*landings, "", *iteration, stats))
-    return f"After: speed {result.speed}, diversity {result.diversity}, delivered {result.delivered}/{demand}, " \
+    speed = sum(result.speed_by_pool.values())
+    diversity = sum(result.diversity_by_module.values())
+    delivered = sum(result.delivered_by_pool.values())
+    return f"After: speed {speed}, diversity {diversity}, delivered {delivered}/{demand}, " \
         f"score: {result.score}, resources: {self.resources - cost}\n{stats}"
 
 
@@ -75,6 +78,12 @@ def diversity_debug(self, result: SimulationResult) -> str:
         line = f"diversity pool {building.id}: {result.diversity_by_module[building.id]}/{perfect_diversity}/{max_diversity}, "
         lines.append(f"{line}delivered {result.delivered_by_module[building.id]}")
     return "\n".join(lines)
+
+
+def max_diversity(self, kind: int) -> int:
+    """Calculates the theoretical diversity maximum for kind."""
+    demand = sum(pad.demand[kind] for pad in self.landing_pads())
+    return sum(max(0, 50 - index) for index in range(demand))
 
 
 def state_delta_text(self, before: PlanState, after: PlanState) -> str:
@@ -114,7 +123,7 @@ def selected_debug(self, best: Candidate, state: PlanState, result: SimulationRe
     """Prints the selected branch and resulting grand-total plan."""
     score_gain = result.score - before_score
     path_text = ", ".join(map(str, best.bundle.path))
-    text = f"selected: pair={best.pair}, path=[{path_text}], bundle={best.number}, actions={self.state_action_text(state)}, "
+    text = f"selected: pair={best.pair}, path=[{path_text}], bundle={best.bundle.debug_id}, actions={self.state_action_text(state)}, "
     semi.debug(f"{text}gain={score_gain}, cost={state.cost}, efficiency={score_gain / max(1, state.cost):.3f}, "
         f"resources left={self.resources - state.cost}")
 
@@ -124,6 +133,7 @@ Planner.score_debug = score_debug
 Planner.status_debug = status_debug
 Planner.pool_debug = pool_debug
 Planner.diversity_debug = diversity_debug
+Planner.max_diversity = max_diversity
 Planner.state_delta_text = state_delta_text
 Planner.state_action_text = state_action_text
 Planner.selected_debug = selected_debug
@@ -187,7 +197,7 @@ def parse_turn_state(text: str) -> Planner:
                 planner.teleports[int(parts[1])] = int(parts[2])
             case "pod":
                 pod_id, path = parse_pod_line(line)
-                planner.pods[pod_id] = Pod(pod_id, path)
+                planner.pods[pod_id] = PodPlan(path)
             case _:
                 raise ValueError(f"Unknown turn-state line: {line}")
     return planner

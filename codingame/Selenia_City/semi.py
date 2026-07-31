@@ -473,8 +473,6 @@ class Planner:
             combined_affordable = False
             if pod_metrics[3].cost <= self.resources:
                 edge = self.best_counter_edge(parent.path_edges, self.cached_simulate(pod_metrics[3]).congestion_by_edge)
-                if edge == (-1, -1):
-                    edge = upgrade_edge
                 if edge != (-1, -1):
                     upgrade_cost = tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * (parent_state.tubes[edge] + 1)
                     if parent_state.cost + upgrade_cost <= self.resources:

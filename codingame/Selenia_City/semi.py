@@ -15,7 +15,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 15
-OVERRIDE_COMMAND = "POD 3 3 5 3 6 3 5 3 4 1 4 1 4 3 5 3 6 3 5 3 5 3;POD 4 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4;POD 5 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2"
+OVERRIDE_COMMAND = "POD 3 3 6 3 6 3 6 3 4 1 4 3 6 3 6 3 6 3 6 3 6 3;POD 4 3 5 3 5 3 5 3 2 0 2 3 5 3 5 3 5 3 5 3 5 3;POD 5 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2"
 # "POD 3 AUTO;POD 4 AUTO;POD 5 AUTO"
 FULL_DEBUG = False
 _G = {}
@@ -1049,7 +1049,7 @@ class Planner:
                         load_sizes[path] <= supply_left[path.pool, path.nodes[0]])]
                 if options:
                     pair = state.pairs.get(pod_id)
-                    paired = [path for path in options if (path.pool, path.destination) == pair] if day == 0 else []
+                    paired = [path for path in options if (path.pool, path.destination) == pair]
                     if paired:
                         options = paired
                     priority = min(priorities[path] for path in options)

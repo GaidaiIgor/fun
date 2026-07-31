@@ -460,7 +460,8 @@ class Planner:
             if pod_seed:
                 projected = self.replay_bundle_sequence([*selected, pod_seed])
             else:
-                projected = self.replay_bundle_on_state(parent_state, Bundle(owner, pod_specs=(PodSpec(0),), path_edges=parent.path_edges))
+                projected = self.replay_bundle_on_state(parent_state, Bundle(owner, pod_specs=(PodSpec(0),),
+                    path_edges=parent.path_edges, destination=parent.destination, path=parent.path))
             pod_bundle = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-pod")
             pod_bundle.debug_id = f"{round_number}p"
             pod_metrics = self.bundle_metrics(pod_bundle, selected, before_score)
@@ -525,7 +526,7 @@ class Planner:
     def pod_connection_bundle(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> Bundle:
         best = None
         places = self.pod_locations(state)
-        for pod_id in self.pods:
+        for pod_id in state.pods:
             locations = places[pod_id]
             routes = []
             path = self.cheapest_path_with_hop_limit(group[0], module_ids, MAX_TUBE_HOPS, state, via_nodes=tuple(locations))
@@ -545,14 +546,13 @@ class Planner:
                         routes.append((edges, module_id))
             for path_edges, module_id in routes:
                 pair = group, module_id
-                if pod_id in state.ops and state.pairs[pod_id] != pair:
-                    continue
+                specs = (PodSpec(pod_id),) if pod_id not in state.ops or state.pairs[pod_id] == pair else ()
                 tubes = tuple(edge for edge in path_edges if edge not in state.tubes)
-                cost = self.nominal_cost(tubes, (PodSpec(pod_id),), (), state)
+                cost = self.nominal_cost(tubes, specs, (), state)
                 projected_tubes = dict(state.tubes)
                 projected_tubes.update((edge, 1) for edge in path_edges)
                 route = self.shortest_existing_tube_path(group[0], [module_id], projected_tubes)
-                bundle = Bundle(owner, cost, tubes, pod_specs=(PodSpec(pod_id),), label="connect-pod", path_edges=path_edges,
+                bundle = Bundle(owner, cost, tubes, pod_specs=specs, label="connect-pod", path_edges=path_edges,
                     destination=module_id, path_length=len(route) - 1, path=tuple(route))
                 source = self.buildings[group[0]]
                 target = self.buildings[module_id]
@@ -586,21 +586,20 @@ class Planner:
         tubes = tuple(unique_new_tubes(path, state.tubes))
         path_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
         group = owner if isinstance(owner, tuple) else (path[0], self.buildings[owner].kind)
-        pod_id = self.closest_pod(path[0], path_edges, (group, path[-1]), state) if tubes else -1
-        specs = (PodSpec(pod_id),) if pod_id >= 0 else ()
+        pair = group, path[-1]
+        pod_id = self.closest_pod(path[0], path_edges, state) if tubes else -1
+        specs = (PodSpec(pod_id),) if pod_id >= 0 and (not pod_id or pod_id not in state.ops or state.pairs[pod_id] == pair) else ()
         return [Bundle(owner, self.nominal_cost(tubes, specs, (), state), tubes, pod_specs=specs, label=label, path_edges=path_edges,
             destination=path[-1], path_length=len(path) - 1, path=tuple(path))]
-    def closest_pod(self, origin_id: int, path_edges: tuple[Pair, ...], pair: tuple[Pool, int], state: PlanState) -> int:
-        if not self.pods:
+    def closest_pod(self, origin_id: int, path_edges: tuple[Pair, ...], state: PlanState) -> int:
+        if not state.pods:
             return 0
         tubes = dict(state.tubes)
         tubes.update((edge, 1) for edge in path_edges)
         graph = tube_graph(tubes)
         options = []
         places = self.pod_locations(state)
-        for pod_id in self.pods:
-            if pod_id in state.ops and state.pairs[pod_id] != pair:
-                continue
+        for pod_id in state.pods:
             nodes = places[pod_id]
             dist = min(graph_distance(graph, origin_id, node) for node in nodes)
             options.append((dist, pod_id not in state.ops, pod_id))

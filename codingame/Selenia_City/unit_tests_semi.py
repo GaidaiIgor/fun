@@ -11,6 +11,7 @@ import Selenia_City.semi as semi
 from Selenia_City.test_semi import parse_turn_state
 
 semi.FULL_DEBUG = False
+semi.OVERRIDE_MONTH = -1
 
 MONTH_1_STATE = """
 month 1
@@ -91,6 +92,20 @@ class PlannerScoreTests(unittest.TestCase):
     def test_month_15(self):
         """Checks the current month-fifteen planner baseline."""
         self.assert_turn_score(MONTH_15_STATE, 15690)
+
+    def test_month_15_surplus_auto_pod(self):
+        """Checks final route materialization for a surplus AUTO pod."""
+        planner = parse_turn_state(MONTH_15_STATE)
+        command = semi.OVERRIDE_COMMAND
+        semi.OVERRIDE_MONTH = 15
+        semi.OVERRIDE_COMMAND = "POD 3 AUTO;POD 4 AUTO;POD 5 AUTO"
+        try:
+            actions = planner.choose_actions()
+        finally:
+            semi.OVERRIDE_MONTH = -1
+            semi.OVERRIDE_COMMAND = command
+        result = planner.score_state(planner.override_state(";".join(actions)))
+        self.assertGreaterEqual(result.score, 15095)
 
 
 if __name__ == "__main__":

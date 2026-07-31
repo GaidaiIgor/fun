@@ -13,9 +13,9 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "UPGRADE 1 4;POD 3 3 5 3 6 3 4 1 4 1 4 1 4 1 4 1 4 1 4 3 6 3"
-# "UPGRADE 1 4;POD 3 AUTO"
+OVERRIDE_MONTH = 15
+OVERRIDE_COMMAND = "POD 3 AUTO;POD 4 AUTO;POD 5 AUTO"
+# "POD 3 AUTO;POD 4 AUTO;POD 5 AUTO"
 FULL_DEBUG = False
 _G = {}
 Pair = tuple[int, int]
@@ -764,10 +764,15 @@ class Planner:
         if not any(pod.dynamic for pod in state.pods.values()):
             return self.cached_simulate(state)
         dynamic_result = self.cached_simulate(state)
-        fixed_result = self.cached_simulate(self.fixed_dynamic_state(state, dynamic_result.dynamic_paths))
+        paths = dynamic_result.dynamic_paths
+        if keep_dynamic_paths and any(len(path) < 2 for path in paths.values()):
+            fallback = next((path for path in paths.values() if len(path) > 1),
+                next((pod.path for pod in state.pods.values() if not pod.dynamic and len(pod.path) > 1), min(state.tubes)))
+            paths = {pod_id: path if len(path) > 1 else normalize_month_path([*fallback]) for pod_id, path in paths.items()}
+        fixed_result = self.cached_simulate(self.fixed_dynamic_state(state, paths))
         if keep_dynamic_paths:
             fixed_result = self.copy_simulation_result(fixed_result)
-            fixed_result.dynamic_paths = dynamic_result.dynamic_paths
+            fixed_result.dynamic_paths = paths
             fixed_result.table = dynamic_result.table
             fixed_result.reserved = dynamic_result.reserved
         return fixed_result

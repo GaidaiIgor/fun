@@ -735,10 +735,6 @@ class Planner:
             return self.cached_simulate(state)
         dynamic_result = self.cached_simulate(state)
         paths = dynamic_result.dynamic_paths
-        if keep_dynamic_paths and any(len(path) < 2 for path in paths.values()):
-            fallback = next((path for path in paths.values() if len(path) > 1),
-                next((pod.path for pod in state.pods.values() if not pod.dynamic and len(pod.path) > 1), min(state.tubes)))
-            paths = {pod_id: path if len(path) > 1 else normalize_month_path([*fallback]) for pod_id, path in paths.items()}
         fixed_result = self.cached_simulate(self.fixed_dynamic_state(state, paths))
         if keep_dynamic_paths:
             fixed_result.dynamic_paths = paths
@@ -1027,14 +1023,19 @@ class Planner:
                     break
         remaining = [pod_id for pod_id in pod_ids if pod_id not in assignments]
         unavailable = set()
+        surplus = 0
         while remaining:
-            capacity_blocked = {path for path in dispatchable
+            capacity_blocked = set() if surplus else {path for path in dispatchable
                 if self.path_capacity_excess(path, assignments, state)}
             proposals = {}
             for pod_id in remaining:
                 options = [path for path in preferences[pod_id] if path not in unavailable and path not in capacity_blocked
-                    and not self.dispatch_supply_exceeded(assignments | {pod_id: path}, locations, fixed_reservations, result)]
+                    and (surplus > 1 or not self.dispatch_supply_exceeded(assignments | {pod_id: path}, locations, fixed_reservations, result))]
                 if options:
+                    pair = state.pairs.get(pod_id)
+                    paired = [path for path in options if (path.pool, path.destination) == pair] if surplus and day == 0 else []
+                    if paired:
+                        options = paired
                     priority = min(priorities[path] for path in options)
                     options = [path for path in options if priorities[path] == priority]
                     level = min(counts[path] for path in options)
@@ -1045,12 +1046,16 @@ class Planner:
                 if options:
                     proposals.setdefault(options[0], []).append(pod_id)
             if not proposals:
-                break
+                if surplus == 2:
+                    break
+                surplus += 1
+                unavailable.clear()
+                continue
             for path, pod_options in proposals.items():
                 first_edge = path.nodes[0], path.nodes[1]
                 pod_id = min(pod_options, key=lambda item: (graph_distance(graph, locations[item], path.nodes[0]),
                     pending[item] != first_edge[::-1], pending[item] == (-1, -1) or pending[item][1] != path.nodes[0], item))
-                if self.path_capacity_excess(path, assignments, state) or \
+                if not surplus and self.path_capacity_excess(path, assignments, state) or surplus < 2 and \
                         self.dispatch_supply_exceeded(assignments | {pod_id: path}, locations, fixed_reservations, result):
                     unavailable.add(path)
                     continue

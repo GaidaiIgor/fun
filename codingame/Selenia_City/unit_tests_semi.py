@@ -104,6 +104,8 @@ class PlannerScoreTests(unittest.TestCase):
         finally:
             semi.OVERRIDE_MONTH = -1
             semi.OVERRIDE_COMMAND = command
+        pod_5 = next(action for action in actions if action.startswith("POD 5 "))
+        self.assertEqual(pod_5.split()[2:4], ["2", "0"])
         result = planner.score_state(planner.override_state(";".join(actions)))
         self.assertGreaterEqual(result.score, 15095)
 

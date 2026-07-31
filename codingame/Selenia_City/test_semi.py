@@ -11,6 +11,28 @@ if not __package__:
 import Selenia_City.semi as semi
 from Selenia_City.semi import Building, Candidate, Planner, PlanState, PodPlan, SimulationResult, route_key
 
+TURN_STATE = """
+month 10
+resources 5324
+module 0 1 20 15
+module 1 2 140 15
+landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+landing 3 80 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
+landing 4 120 45 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
+module 5 2 20 75
+module 6 1 140 75
+module 7 3 10 45
+landing 8 150 45 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+tube 0 2 1
+tube 1 4 1
+tube 2 3 1
+tube 3 4 1
+tube 3 5 1
+tube 3 6 1
+pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 5, 3, 4, 1, 4, 3, 5]
+pod id=2, path=[3, 6, 3, 5, 3, 6, 3, 5, 3, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1]
+"""
+
 semi.FULL_DEBUG = True
 
 def table_debug(self, result: SimulationResult, state: PlanState) -> str:
@@ -137,29 +159,6 @@ Planner.max_diversity = max_diversity
 Planner.state_delta_text = state_delta_text
 Planner.state_action_text = state_action_text
 Planner.selected_debug = selected_debug
-
-TURN_STATE = """
-month 15
-resources 50520
-module 0 1 20 15
-module 1 2 140 15
-landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
-landing 3 80 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
-landing 4 120 45 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
-module 5 2 20 75
-module 6 1 140 75
-module 7 3 10 45
-landing 8 150 45 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-tube 0 2 1
-tube 1 4 1
-tube 2 3 1
-tube 3 4 1
-tube 3 5 1
-tube 3 6 1
-teleport 8 7
-pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 5, 3, 6, 3, 2, 0, 2]
-pod id=2, path=[3, 6, 3, 5, 3, 6, 3, 5, 3, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1]
-"""
 
 
 def run_turn_state(text: str) -> str:

@@ -14,7 +14,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 15
-OVERRIDE_COMMAND = "POD 3 3 5 3 6 3 5 3 2 3 5 3 6 3 5 3 5 3 6 3 5 3;POD 4 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4;POD 5 3 5 3 6 3 5 3 2 3 5 3 6 3 5 3 5 3 6 3 5 3"
+OVERRIDE_COMMAND = "POD 3 3 5 3 6 3 5 3 4 1 4 1 4 3 5 3 6 3 5 3 5 3;POD 4 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4 1 4;POD 5 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2"
 # "POD 3 AUTO;POD 4 AUTO;POD 5 AUTO"
 FULL_DEBUG = False
 _G = {}
@@ -1307,7 +1307,8 @@ class Planner:
                         if all(count <= state.tubes[edge] for edge, count in trial.items()):
                             upstream = int(move in reverse[pod_id]) + int(other_move in reverse[other_id])
                             choices.append(((rank + other_rank, -upstream, rank, other_rank), move, other_move))
-                _, selected[pod_id], selected[other_id] = min(choices)
+                if choices:
+                    _, selected[pod_id], selected[other_id] = min(choices)
         requests.update(selected)
         for pod_id, moves in options.items():
             requests.setdefault(pod_id, moves[0])

@@ -465,10 +465,11 @@ class Planner:
                 upgrade_bundle = self.projection_bundle(owner, parent, state, projected, f"{parent.label}-upgrade")
                 upgrade_bundle.debug_id = f"{round_number}u"
                 options.append((upgrade_bundle, self.bundle_metrics(upgrade_bundle, selected, before_score)))
-            combined_affordable = False
+            combined_affordable = pod_metrics[3].cost <= self.resources
             if pod_metrics[3].cost <= self.resources:
                 edge = self.best_counter_edge(parent.path_edges, self.cached_simulate(pod_metrics[3]).congestion_by_edge)
                 if edge != (-1, -1):
+                    combined_affordable = False
                     upgrade_cost = tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * (parent_state.tubes[edge] + 1)
                     if parent_state.cost + upgrade_cost <= self.resources:
                         projected = self.replay_bundle_on_state(pod_metrics[3], Bundle(owner, upgrades=(edge,), path_edges=parent.path_edges))

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import sys
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 
 if not __package__:
@@ -43,8 +45,8 @@ tube 2 3 1
 tube 3 4 1
 tube 3 5 1
 tube 3 6 1
-pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 5, 3, 6, 3, 2, 0, 2]
-pod id=2, path=[3, 6, 3, 5, 3, 6, 3, 5, 3, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1]
+pod id=1, preference=((2, 1), 0), path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 5, 3, 6, 3, 2, 0, 2]
+pod id=2, preference=((4, 2), 1), path=[3, 6, 3, 5, 3, 6, 3, 5, 3, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1]
 """
 
 MONTH_15_STATE = """
@@ -66,8 +68,8 @@ tube 3 4 1
 tube 3 5 1
 tube 3 6 1
 teleport 8 7
-pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 5, 3, 6, 3, 2, 0, 2]
-pod id=2, path=[3, 6, 3, 5, 3, 6, 3, 5, 3, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1]
+pod id=1, preference=((2, 1), 0), path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 5, 3, 6, 3, 2, 0, 2]
+pod id=2, preference=((4, 2), 1), path=[3, 6, 3, 5, 3, 6, 3, 5, 3, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 1]
 """
 
 
@@ -108,6 +110,14 @@ class PlannerScoreTests(unittest.TestCase):
         self.assertEqual(pod_5.split()[2:4], ["2", "0"])
         result = planner.score_state(planner.override_state(";".join(actions)))
         self.assertGreaterEqual(result.score, 15095)
+
+    def test_pod_preferences_round_trip(self):
+        """Checks printed pod preferences can restore planner state."""
+        planner = parse_turn_state(MONTH_15_STATE)
+        output = StringIO()
+        with redirect_stderr(output):
+            planner.print_debug_input()
+        self.assertEqual(parse_turn_state(output.getvalue()).pairs, planner.pairs)
 
 
 if __name__ == "__main__":

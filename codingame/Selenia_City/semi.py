@@ -14,7 +14,7 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = 15
+OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "POD 3 3 6 3 6 3 6 3 4 1 4 3 6 3 6 3 6 3 6 3 6 3;POD 4 3 5 3 5 3 5 3 2 0 2 3 5 3 5 3 5 3 5 3 5 3;POD 5 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2 0 2"
 # "POD 3 AUTO;POD 4 AUTO;POD 5 AUTO"
 FULL_DEBUG = False
@@ -116,6 +116,7 @@ class Planner:
     tubes: dict[Pair, int]
     teleports: dict[int, int]
     pods: dict[int, PodPlan]
+    pairs: dict[int, tuple[Pool, int]]
     simulation_cache: dict[tuple, SimulationResult]
     def __init__(self):
         self.buildings = {}
@@ -124,6 +125,7 @@ class Planner:
         self.tubes = {}
         self.teleports = {}
         self.pods = {}
+        self.pairs = {}
         self.simulation_cache = {}
         self.fs_cache = {}
     def play(self):
@@ -150,6 +152,7 @@ class Planner:
             values = list(map(int, input().split()))
             pod_id = values[0]
             self.pods[pod_id] = PodPlan(values[2:])
+        self.pairs = {pod_id: pair for pod_id, pair in self.pairs.items() if pod_id in self.pods}
         for _ in range(int(input())):
             values = list(map(int, input().split()))
             if values[0] == 0:
@@ -183,6 +186,7 @@ class Planner:
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
+        self.pairs = {pod_id: pair for pod_id, pair in final_state.pairs.items() if pod_id in final_state.pods}
         if FULL_DEBUG:
             debug("\n" + self.table_debug(final_result, final_state))
             debug("\n" + self.score_debug("after", final_result, final_state.cost))
@@ -196,6 +200,7 @@ class Planner:
         final_state = self.override_state(OVERRIDE_COMMAND)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
+        self.pairs = {pod_id: pair for pod_id, pair in final_state.pairs.items() if pod_id in final_state.pods}
         if FULL_DEBUG:
             debug("\n" + self.table_debug(final_result, final_state))
             debug(f"override month {self.month + 1}: {OVERRIDE_COMMAND}")
@@ -608,7 +613,7 @@ class Planner:
         return copied
     def replay_bundle_sequence(self, selected: list[Bundle]) -> PlanState:
         pods = {pod_id: PodPlan(pod.path[:]) for pod_id, pod in self.pods.items()}
-        state = PlanState(dict(self.tubes), dict(self.teleports), pods)
+        state = PlanState(dict(self.tubes), dict(self.teleports), pods, pairs=dict(self.pairs))
         applied = []
         for bundle in selected:
             self.apply_bundle(state, bundle)
@@ -1639,7 +1644,8 @@ class Planner:
             print(f"teleport {a} {b}", file=sys.stderr)
         for pod_id in sorted(self.pods):
             path_text = ", ".join(map(str, self.pods[pod_id].path))
-            print(f"pod id={pod_id}, path=[{path_text}]", file=sys.stderr)
+            preference = self.pairs.get(pod_id, "none")
+            print(f"pod id={pod_id}, preference={preference}, path=[{path_text}]", file=sys.stderr)
     def perfect_diversity(self, kind: int) -> int:
         demand = sum(pad.demand[kind] for pad in self.landing_pads())
         module_count = sum(building.kind == kind for building in self.buildings.values())

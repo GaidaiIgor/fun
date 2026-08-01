@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from ast import literal_eval
 from collections import Counter
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -30,8 +31,8 @@ tube 3 4 1
 tube 3 5 1
 tube 3 6 1
 teleport 8 7
-pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 6, 3, 6, 3, 6, 3, 6]
-pod id=2, path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
+pod id=1, preference=((2, 1), 0), path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 6, 3, 6, 3, 6, 3, 6]
+pod id=2, preference=((4, 2), 1), path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
 """
 
 semi.FULL_DEBUG = True
@@ -196,8 +197,10 @@ def parse_turn_state(text: str) -> Planner:
             case "teleport":
                 planner.teleports[int(parts[1])] = int(parts[2])
             case "pod":
-                pod_id, path = parse_pod_line(line)
+                pod_id, preference, path = parse_pod_line(line)
                 planner.pods[pod_id] = PodPlan(path)
+                if preference:
+                    planner.pairs[pod_id] = preference
             case _:
                 raise ValueError(f"Unknown turn-state line: {line}")
     return planner
@@ -224,10 +227,12 @@ def parse_path(text: str) -> list[int]:
     return [int(item) for item in text.replace(",", " ").split()]
 
 
-def parse_pod_line(line: str) -> tuple[int, list[int]]:
-    """Parses pod id and itinerary from line."""
-    id_text, path_text = line.removeprefix("pod id=").split(", path=[")
-    return int(id_text), parse_path(path_text.removesuffix("]"))
+def parse_pod_line(line: str) -> tuple[int, tuple[tuple[int, int], int], list[int]]:
+    """Parses pod id, preference, and itinerary from line."""
+    id_text, remainder = line.removeprefix("pod id=").split(", preference=")
+    preference_text, path_text = remainder.split(", path=[")
+    preference = None if preference_text == "none" else literal_eval(preference_text)
+    return int(id_text), preference, parse_path(path_text.removesuffix("]"))
 
 
 if __name__ == "__main__":

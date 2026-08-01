@@ -116,7 +116,6 @@ class Planner:
     tubes: dict[Pair, int]
     teleports: dict[int, int]
     pods: dict[int, PodPlan]
-    pairs: dict[int, tuple[Pool, int]]
     simulation_cache: dict[tuple, SimulationResult]
     def __init__(self):
         self.buildings = {}
@@ -125,7 +124,6 @@ class Planner:
         self.tubes = {}
         self.teleports = {}
         self.pods = {}
-        self.pairs = {}
         self.simulation_cache = {}
         self.fs_cache = {}
     def play(self):
@@ -152,7 +150,6 @@ class Planner:
             values = list(map(int, input().split()))
             pod_id = values[0]
             self.pods[pod_id] = PodPlan(values[2:])
-        self.pairs = {pod_id: pair for pod_id, pair in self.pairs.items() if pod_id in self.pods}
         for _ in range(int(input())):
             values = list(map(int, input().split()))
             if values[0] == 0:
@@ -186,7 +183,6 @@ class Planner:
         final_state = self.replay_bundle_sequence(selected)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
-        self.pairs = {pod_id: pair for pod_id, pair in final_state.pairs.items() if pod_id in final_state.pods}
         if FULL_DEBUG:
             debug("\n" + self.table_debug(final_result, final_state))
             debug("\n" + self.score_debug("after", final_result, final_state.cost))
@@ -200,7 +196,6 @@ class Planner:
         final_state = self.override_state(OVERRIDE_COMMAND)
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)
-        self.pairs = {pod_id: pair for pod_id, pair in final_state.pairs.items() if pod_id in final_state.pods}
         if FULL_DEBUG:
             debug("\n" + self.table_debug(final_result, final_state))
             debug(f"override month {self.month + 1}: {OVERRIDE_COMMAND}")
@@ -614,7 +609,7 @@ class Planner:
         return copied
     def replay_bundle_sequence(self, selected: list[Bundle]) -> PlanState:
         pods = {pod_id: PodPlan(pod.path[:]) for pod_id, pod in self.pods.items()}
-        state = PlanState(dict(self.tubes), dict(self.teleports), pods, pairs=dict(self.pairs))
+        state = PlanState(dict(self.tubes), dict(self.teleports), pods)
         applied = []
         for bundle in selected:
             self.apply_bundle(state, bundle)
@@ -752,8 +747,7 @@ class Planner:
     def cached_simulate(self, state: PlanState) -> SimulationResult:
         keep_dynamic_paths = any(pod.dynamic for pod in state.pods.values())
         pods = tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items()))
-        pairs = tuple(sorted(state.pairs.items())) if keep_dynamic_paths else ()
-        key = tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), pods, pairs
+        key = tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), pods
         if key not in self.simulation_cache:
             self.simulation_cache[key] = self.simulate(state, keep_dynamic_paths)
         return self.simulation_cache[key]
@@ -1028,10 +1022,6 @@ class Planner:
                     and not initial_capacity[path]
                     and not self.dispatch_supply_exceeded(assignments | {pod_id: path}, locations, fixed_reservations, result)]
                 if options:
-                    pair = state.pairs.get(pod_id)
-                    paired = [path for path in options if (path.pool, path.destination) == pair]
-                    if paired:
-                        options = paired
                     assignments[pod_id] = options[0]
                     counts[options[0]] += 1
                     uncovered.remove(components[options[0].nodes[0]])
@@ -1039,7 +1029,6 @@ class Planner:
                     break
         remaining = [pod_id for pod_id in pod_ids if pod_id not in assignments]
         unavailable = set()
-        capacity_failures = set()
         surplus = 0
         while remaining:
             capacity_blocked = set() if surplus else {path for path in dispatchable
@@ -1051,17 +1040,10 @@ class Planner:
                     supply_left[path.pool, path.nodes[0]] -= load_sizes[path]
             proposals = {}
             for pod_id in remaining:
-                pair = state.pairs.get(pod_id)
-                paired = [path for path in preferences[pod_id] if (path.pool, path.destination) == pair]
-                if not surplus and paired and all(path in capacity_blocked for path in paired):
-                    capacity_failures.update(route_key(a, b) for a, b in zip(paired[0].nodes, paired[0].nodes[1:]))
                 options = [path for path in preferences[pod_id] if path not in unavailable and path not in capacity_blocked
                     and (surplus > 1 or locations[pod_id] not in (-1, path.nodes[0]) or
                         load_sizes[path] <= supply_left[path.pool, path.nodes[0]])]
                 if options:
-                    paired = [path for path in options if (path.pool, path.destination) == pair]
-                    if paired:
-                        options = paired
                     priority = min(priorities[path] for path in options)
                     options = [path for path in options if priorities[path] == priority]
                     level = min(counts[path] for path in options)
@@ -1088,7 +1070,6 @@ class Planner:
                 assignments[pod_id] = path
                 counts[path] += 1
                 remaining.remove(pod_id)
-        result.congestion_by_edge.update(capacity_failures)
         return assignments, preferences, locations, priorities
     def path_batch_allowed(self, path: PathDemand, preferred_targets: dict[tuple[Pool, int], set[int]],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]]) -> bool:
@@ -1650,7 +1631,7 @@ class Planner:
             print(f"teleport {a} {b}", file=sys.stderr)
         for pod_id in sorted(self.pods):
             path_text = ", ".join(map(str, self.pods[pod_id].path))
-            print("pod id={}, preference={}, path=[{}]".format(pod_id, self.pairs.get(pod_id, "none"), path_text), file=sys.stderr)
+            print(f"pod id={pod_id}, path=[{path_text}]", file=sys.stderr)
     def perfect_diversity(self, kind: int) -> int:
         demand = sum(pad.demand[kind] for pad in self.landing_pads())
         module_count = sum(building.kind == kind for building in self.buildings.values())

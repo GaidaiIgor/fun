@@ -466,7 +466,7 @@ class Planner:
                 upgrade_bundle.debug_id = f"{round_number}u"
                 options.append((upgrade_bundle, self.bundle_metrics(upgrade_bundle, selected, before_score)))
             combined_affordable = pod_metrics[3].cost <= self.resources
-            if pod_metrics[3].cost <= self.resources:
+            if combined_affordable:
                 edge = self.best_counter_edge(parent.path_edges, self.cached_simulate(pod_metrics[3]).congestion_by_edge)
                 if edge != (-1, -1):
                     combined_affordable = False
@@ -1039,6 +1039,7 @@ class Planner:
                     break
         remaining = [pod_id for pod_id in pod_ids if pod_id not in assignments]
         unavailable = set()
+        capacity_failures = set()
         surplus = 0
         while remaining:
             capacity_blocked = set() if surplus else {path for path in dispatchable
@@ -1050,11 +1051,14 @@ class Planner:
                     supply_left[path.pool, path.nodes[0]] -= load_sizes[path]
             proposals = {}
             for pod_id in remaining:
+                pair = state.pairs.get(pod_id)
+                paired = [path for path in preferences[pod_id] if (path.pool, path.destination) == pair]
+                if not surplus and paired and all(path in capacity_blocked for path in paired):
+                    capacity_failures.update(route_key(a, b) for a, b in zip(paired[0].nodes, paired[0].nodes[1:]))
                 options = [path for path in preferences[pod_id] if path not in unavailable and path not in capacity_blocked
                     and (surplus > 1 or locations[pod_id] not in (-1, path.nodes[0]) or
                         load_sizes[path] <= supply_left[path.pool, path.nodes[0]])]
                 if options:
-                    pair = state.pairs.get(pod_id)
                     paired = [path for path in options if (path.pool, path.destination) == pair]
                     if paired:
                         options = paired
@@ -1084,6 +1088,7 @@ class Planner:
                 assignments[pod_id] = path
                 counts[path] += 1
                 remaining.remove(pod_id)
+        result.congestion_by_edge.update(capacity_failures)
         return assignments, preferences, locations, priorities
     def path_batch_allowed(self, path: PathDemand, preferred_targets: dict[tuple[Pool, int], set[int]],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]]) -> bool:
@@ -1645,8 +1650,7 @@ class Planner:
             print(f"teleport {a} {b}", file=sys.stderr)
         for pod_id in sorted(self.pods):
             path_text = ", ".join(map(str, self.pods[pod_id].path))
-            preference = self.pairs.get(pod_id, "none")
-            print(f"pod id={pod_id}, preference={preference}, path=[{path_text}]", file=sys.stderr)
+            print("pod id={}, preference={}, path=[{}]".format(pod_id, self.pairs.get(pod_id, "none"), path_text), file=sys.stderr)
     def perfect_diversity(self, kind: int) -> int:
         demand = sum(pad.demand[kind] for pad in self.landing_pads())
         module_count = sum(building.kind == kind for building in self.buildings.values())

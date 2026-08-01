@@ -438,9 +438,9 @@ class Planner:
             return bundles
         parent = Bundle(owner, label=base.label, path_edges=base.path_edges, destination=base.destination,
             path_length=base.path_length, path=base.path)
-        _, _, efficiency, parent_state = self.bundle_metrics(parent, selected, before_score)
+        _, _, _, parent_state = self.bundle_metrics(parent, selected, before_score)
         pod_seed = base if base.fingerprint != Bundle(owner).fingerprint else None
-        return self.throughput_bundles(owner, group, parent, parent_state, efficiency, selected, state, before_score, 1, pod_seed)
+        return self.throughput_bundles(owner, group, parent, parent_state, -inf, selected, state, before_score, 1, pod_seed)
     def throughput_bundles(self, owner: PoolOwner, group: Pool, parent: Bundle, parent_state: PlanState, parent_efficiency: float,
             selected: list[Bundle], state: PlanState, before_score: int, round_number: int, pod_seed: Bundle = None) -> list[Bundle]:
         bundles = []

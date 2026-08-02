@@ -12,8 +12,8 @@ import Selenia_City.semi as semi
 from Selenia_City.semi import Building, Candidate, Planner, PlanState, PodPlan, SimulationResult, route_key
 
 TURN_STATE = """
-month 15
-resources 50520
+month 10
+resources 5324
 module 0 1 20 15
 module 1 2 140 15
 landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
@@ -29,7 +29,6 @@ tube 2 3 1
 tube 3 4 1
 tube 3 5 1
 tube 3 6 1
-teleport 8 7
 pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 6, 3, 6, 3, 6, 3, 6]
 pod id=2, path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
 """
@@ -128,8 +127,6 @@ def state_delta_text(self, before: PlanState, after: PlanState) -> str:
         actions.append(f"DROP TELEPORT {entrance_id} {before.teleports[entrance_id]}")
     for entrance_id in sorted(set(after.teleports) - set(before.teleports)):
         actions.append(f"TELEPORT {entrance_id} {after.teleports[entrance_id]}")
-    for pod_id in sorted(before.ops - after.ops):
-        actions.append(f"REVERT POD {pod_id}" if pod_id in self.pods else f"DROP POD {pod_id}")
     for pod_id in sorted(after.ops - before.ops):
         actions.append(f"POD {pod_id} AUTO")
     return ";".join(actions) if actions else "WAIT"

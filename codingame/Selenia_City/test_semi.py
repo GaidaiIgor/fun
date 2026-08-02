@@ -127,6 +127,8 @@ def state_delta_text(self, before: PlanState, after: PlanState) -> str:
         actions.append(f"DROP TELEPORT {entrance_id} {before.teleports[entrance_id]}")
     for entrance_id in sorted(set(after.teleports) - set(before.teleports)):
         actions.append(f"TELEPORT {entrance_id} {after.teleports[entrance_id]}")
+    for pod_id in sorted(set(before.pods) - set(after.pods)):
+        actions.append(f"DROP POD {pod_id}")
     for pod_id in sorted(after.ops - before.ops):
         actions.append(f"POD {pod_id} AUTO")
     return ";".join(actions) if actions else "WAIT"
@@ -135,6 +137,7 @@ def state_delta_text(self, before: PlanState, after: PlanState) -> str:
 def state_action_text(self, state: PlanState) -> str:
     """Formats the complete planned infrastructure and pod actions in state."""
     actions = [action for action in state.actions if action and action.split()[0] in ("TUBE", "TELEPORT", "UPGRADE")]
+    actions.extend(f"DROP POD {pod_id}" for pod_id in sorted(set(self.pods) - set(state.pods)))
     actions.extend(f"POD {pod_id} AUTO" for pod_id in sorted(state.ops))
     return ";".join(actions) if actions else "WAIT"
 

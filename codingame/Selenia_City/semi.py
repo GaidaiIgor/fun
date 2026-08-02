@@ -64,6 +64,7 @@ class Bundle:
     tubes: tuple[Pair, ...] = ()
     teleport: Pair = (-1, -1)
     pod_specs: tuple[int, ...] = ()
+    pod_drops: tuple[int, ...] = ()
     upgrades: tuple[Pair, ...] = ()
     label: str = "empty"
     path_edges: tuple[Pair, ...] = ()
@@ -74,7 +75,7 @@ class Bundle:
     debug_chosen: str = ""
     @property
     def fingerprint(self) -> tuple:
-        return self.tubes, self.teleport, self.pod_specs, self.upgrades
+        return self.tubes, self.teleport, self.pod_specs, self.pod_drops, self.upgrades
 @dataclass(slots=True)
 class PlanState:
     tubes: dict[Pair, int]
@@ -311,6 +312,7 @@ class Planner:
             current_result: SimulationResult, before_score: int, bundles: list[Bundle]) -> Candidate:
         best = None
         seen = set()
+        seen_states = set()
         current_pool_score = current_result.speed_by_pool[owner] if isinstance(owner, tuple) else current_result.diversity_by_module[owner]
         plans = []
         for bundle in bundles:
@@ -326,6 +328,12 @@ class Planner:
                 state = self.replay_bundle_sequence([*selected, bundle])
             except ValueError:
                 continue
+            self.afford_with_pod_drops(state, bundle)
+            state_key = tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), \
+                tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items()))
+            if state_key in seen_states:
+                continue
+            seen_states.add(state_key)
             if current_state.tubes == state.tubes and current_state.teleports == state.teleports and current_state.pods == state.pods:
                 continue
             action_text = self.state_delta_text(current_state, state) if FULL_DEBUG else ""
@@ -485,20 +493,37 @@ class Planner:
         return bundles
     def bundle_metrics(self, bundle: Bundle, selected: list[Bundle], before_score: int) -> tuple[int, int, float, PlanState]:
         projected = self.replay_bundle_sequence([*selected, bundle])
+        self.afford_with_pod_drops(projected, bundle)
         cost = projected.cost
         if projected.cost > self.resources:
             return 0, cost, -inf, projected
         result = self.score_state(projected)
         gain = result.score - before_score
         return gain, cost, gain / cost if cost > 0 else inf if gain > 0 else 0, projected
+    def afford_with_pod_drops(self, state: PlanState, bundle: Bundle):
+        if state.cost <= self.resources:
+            return
+        count = (state.cost - self.resources + POD_COST - 1) // POD_COST
+        pod_ids = tuple(sorted(state.ops, reverse=True)[:count])
+        if len(pod_ids) < count:
+            return
+        bundle.pod_drops += pod_ids
+        for pod_id in pod_ids:
+            self.drop_dynamic_pod(state, pod_id)
+    def drop_dynamic_pod(self, state: PlanState, pod_id: int):
+        state.cost -= POD_COST
+        state.ops.remove(pod_id)
+        del state.pods[pod_id]
+        state.pod_slots = [(index, placeholder_id) for index, placeholder_id in state.pod_slots if placeholder_id != pod_id]
     def projection_bundle(self, owner: PoolOwner, template: Bundle, before: PlanState, after: PlanState, label: str) -> Bundle:
         tubes = tuple(edge for edge in template.path_edges if edge in after.tubes and edge not in before.tubes)
         upgrades = tuple(edge for edge in sorted(after.tubes) for _ in range(after.tubes[edge] - before.tubes.get(edge, 1)))
         specs = [pod_id for pod_id in sorted(set(before.pods) & set(after.pods))
             if after.pods[pod_id].dynamic and not before.pods[pod_id].dynamic]
         specs.extend(0 for _ in set(after.pods) - set(before.pods))
-        return Bundle(owner, tubes=tubes, pod_specs=tuple(specs), upgrades=upgrades, label=label, path_edges=template.path_edges,
-            destination=template.destination, path_length=template.path_length, path=template.path)
+        drops = tuple(sorted(set(before.pods) - set(after.pods), reverse=True))
+        return Bundle(owner, tubes=tubes, pod_specs=tuple(specs), pod_drops=drops, upgrades=upgrades, label=label,
+            path_edges=template.path_edges, destination=template.destination, path_length=template.path_length, path=template.path)
     def connection_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> list[Bundle]:
         path = self.cheapest_connecting_path(group[0], module_ids, state)
         bundles = self.path_bundles(owner, "connect", path, state)
@@ -692,6 +717,8 @@ class Planner:
                 state.pod_slots.append((len(state.actions), pod_id))
                 state.actions.append("")
             state.pods[pod_id] = PodPlan([], True)
+        for pod_id in bundle.pod_drops:
+            self.drop_dynamic_pod(state, pod_id)
     def fill_dynamic_actions(self, state: PlanState, dynamic_paths: dict[int, list[int]]):
         for index, pod_id in state.pod_slots:
             path = dynamic_paths[pod_id]

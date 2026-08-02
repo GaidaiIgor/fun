@@ -997,12 +997,11 @@ class Planner:
         for path in active:
             if path.ambiguous:
                 preferred_targets.setdefault((path.pool, path.nodes[0]), set()).add(path.nodes[1])
-        availability = {path: max(0, self.path_remaining(path, result) -
-            reserved_loads[path.pool, path.destination, path.nodes[:2]]) for path in active}
+        boarding = {path: min(POD_CAPACITY, max(0, self.path_remaining(path, result) -
+            reserved_loads[path.pool, path.destination, path.nodes[:2]])) for path in active}
         load_sizes = {path: min(POD_CAPACITY, self.path_remaining(path, result)) for path in active}
-        normal = {path for path in active if availability[path] >= POD_CAPACITY}
         dispatchable = active
-        priorities = {path: int(path not in normal) for path in active}
+        priorities = {path: POD_CAPACITY - boarding[path] for path in active}
         initial_capacity = {path: self.path_capacity_excess(path, {}, state) for path in dispatchable}
         allowed = {path for path in dispatchable if self.path_batch_allowed(path, preferred_targets, queues, wanted_edges)}
         preferences = {}
@@ -1010,9 +1009,8 @@ class Planner:
             candidates = dispatchable if day == 0 else [path for path in dispatchable
                 if graph_distance(graph, locations[pod_id], path.nodes[0]) < INF]
             candidates = [path for path in candidates if path in allowed]
-            preferences[pod_id] = sorted(candidates, key=lambda path: (priorities[path], -min(POD_CAPACITY, availability[path]),
-                *self.path_assignment_key(path, pod_id, initial_capacity[path], locations, result, graph, queues, wanted_edges,
-                    demand)))
+            preferences[pod_id] = sorted(candidates, key=lambda path: (priorities[path],
+                *self.path_assignment_key(path, pod_id, initial_capacity[path], locations, result, graph, queues, wanted_edges, demand)))
         assignments = {}
         counts = Counter()
         if day == 0:
@@ -1105,7 +1103,7 @@ class Planner:
             priorities: dict[PathDemand, int]) -> tuple:
         def reposition(values: dict[int, PathDemand]) -> tuple:
             distances = [[graph_distance(graph, locations[pod_id], path.nodes[0]) for pod_id, path in values.items()
-                if locations[pod_id] != -1 and priorities[path] == priority] for priority in (0, 1)]
+                if locations[pod_id] != -1 and priorities[path] == priority] for priority in sorted(set(priorities.values()))]
             return tuple(value for items in distances for value in (max(items, default=0), sum(items)))
         def evaluate(values: dict[int, PathDemand]) -> tuple[dict[int, DirectedPair], dict[int, DirectedPair]]:
             key = tuple(sorted(values.items()))
@@ -1199,8 +1197,7 @@ class Planner:
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
         blocked = capacity_blocked or \
             self.path_blocks_loaded_pod(path, pod_id, current, graph, queues, wanted_edges, demand, result)
-        return blocked, not path.ambiguous, self.path_remaining(path, result) < POD_CAPACITY, distance, len(path.nodes) - 1, \
-            result.delivered_by_module[path.destination]
+        return blocked, not path.ambiguous, distance, len(path.nodes) - 1, result.delivered_by_module[path.destination]
     def path_blocks_loaded_pod(self, path: PathDemand, pod_id: int, current: dict[int, int], graph: dict[int, list[int]],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
             demand: Counter[DirectedPair], result: SimulationResult) -> bool:

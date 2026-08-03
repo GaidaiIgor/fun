@@ -522,14 +522,17 @@ class Planner:
             branch = self.layout_cache[key]
             return PlanOption(base, next_layouts, key, self.copy_state(branch.state)), branch.efficiency
         state = layout_state
-        if base.tubes:
-            pod_id = self.closest_pod(base.path[0], base.path_edges, state)
+        if base.tubes or not state.pods and self.has_tube_loads(state):
+            pod_id = self.closest_pod(base.path[0], base.path_edges, state) if base.tubes else 0
             base.pod_specs = (pod_id,)
             state = self.replay_bundle_on_state(state, Bundle(base.pool, pod_specs=(pod_id,)))
         option = PlanOption(base, next_layouts, key, state)
         efficiency = self.option_metrics(option, before_score)[2]
         self.layout_cache[key] = LayoutBranch(next_layouts, self.copy_state(state), efficiency)
         return option, efficiency
+    def has_tube_loads(self, state: PlanState) -> bool:
+        distances, module_distances = self.distances_to_targets(state)
+        return bool(self.path_demands(state, distances, module_distances))
     def layout_key(self, state: PlanState) -> LayoutKey:
         return tuple(sorted(state.tubes)), tuple(sorted(state.teleports.items()))
     def connection_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> list[Bundle]:
@@ -589,8 +592,8 @@ class Planner:
         bundles = [Bundle(owner, teleport=(pad_id, module_id), label=f"teleport-{module_id}", destination=module_id,
             path=(pad_id, module_id)) for module_id in sorted(modules, key=lambda item: tube_cost(self.buildings[pad_id], self.buildings[item]))
             if module_id not in used]
-        for index, bundle in enumerate(bundles, 1):
-            bundle.debug_id = "0t" if index == 1 else f"0t{index}"
+        for bundle in bundles:
+            bundle.debug_id = "0"
         return bundles
     def path_bundles(self, owner: PoolOwner, label: str, path: list[int], state: PlanState) -> list[Bundle]:
         if not path:

@@ -599,10 +599,32 @@ class Planner:
     def path_bundles(self, owner: PoolOwner, label: str, path: list[int], state: PlanState) -> list[Bundle]:
         if not path:
             return []
-        tubes = tuple(unique_new_tubes(path, state.tubes))
-        path_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
+        path_edges = self.connected_path_edges(path, state)
+        if not path_edges:
+            return []
+        tubes = tuple(edge for edge in path_edges if edge not in state.tubes)
         return [Bundle(owner, tubes=tubes, label=label, path_edges=path_edges,
             destination=path[-1], path_length=len(path) - 1, path=tuple(path))]
+    def connected_path_edges(self, path: list[int], state: PlanState) -> tuple[Pair, ...]:
+        base_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
+        network_nodes = {node for edge in state.tubes for node in edge}
+        if not network_nodes or network_nodes.intersection(path):
+            return base_edges
+        remaining_hops = MAX_TUBE_HOPS - len(base_edges)
+        best = None
+        for junction_id in path:
+            connector = self.cheapest_path_with_hop_limit(junction_id, list(network_nodes), remaining_hops, state)
+            if not connector:
+                continue
+            edges = tuple(dict.fromkeys((*base_edges, *(route_key(a, b) for a, b in zip(connector, connector[1:])))))
+            tubes = [edge for edge in edges if edge not in state.tubes]
+            if len(edges) > MAX_TUBE_HOPS or not self.can_add_tubes(tubes, state.tubes):
+                continue
+            cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes)
+            order = cost, len(edges), edges
+            if best is None or order < best[0]:
+                best = order, edges
+        return best[1] if best else ()
     def closest_pod(self, origin_id: int, path_edges: tuple[Pair, ...], state: PlanState) -> int:
         if not state.pods:
             return 0

@@ -452,6 +452,8 @@ class Planner:
         if base.tubes:
             parent.bundle.debug_chosen = parent.bundle.debug_id
             parent_efficiency = max(parent_efficiency, self.option_metrics(parent, before_score)[2])
+        else:
+            parent_efficiency = -inf
         result.extend(self.throughput_options(owner, group, parent, parent_efficiency, before_score))
         return result
     def throughput_options(self, owner: PoolOwner, group: Pool, parent: PlanOption, parent_efficiency: float,

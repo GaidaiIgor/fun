@@ -388,11 +388,10 @@ class Planner:
             current_result: SimulationResult, before_score: int) -> list[PlanOption]:
         bases = []
         pad_id = group[0]
-        current_length = INF
+        distances, _ = self.distances_to_targets(state)
+        current_length = distances[group[1]][pad_id]
         allow_shorter = True
         if isinstance(owner, int):
-            distances, _ = self.distances_to_targets(state)
-            current_length = distances[group[1]][pad_id]
             allow_shorter = self.speed_destination_eligible(group, module_ids[0], current_result)
         existing_path = self.shortest_existing_tube_path(pad_id, module_ids, state.tubes)
         if not existing_path:
@@ -410,6 +409,8 @@ class Planner:
         if isinstance(owner, int):
             bases = [bundle for bundle in bases
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
+        else:
+            bases = [bundle for bundle in bases if bundle.path_length <= current_length]
         options = []
         connections = [base for base in bases if base.label == "connect"]
         if connections:

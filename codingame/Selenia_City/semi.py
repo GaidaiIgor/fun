@@ -463,7 +463,8 @@ class Planner:
             pod_bundle.debug_id = f"{round_number}p"
             pod_option = PlanOption(pod_bundle, parent.layouts, parent.layout_key, self.replay_bundle_on_state(parent.state, pod_bundle))
             pod_metrics = self.option_metrics(pod_option, before_score)
-            options.append((pod_option, pod_metrics))
+            if len(parent.state.pods) < sum(parent.state.tubes.values()):
+                options.append((pod_option, pod_metrics))
             upgrade_edge = self.best_counter_edge(parent.bundle.path_edges, simulation.congestion_by_edge)
             if upgrade_edge != (-1, -1):
                 upgrade_bundle = Bundle(owner, upgrades=(upgrade_edge,), label=f"{parent.bundle.label}-upgrade",

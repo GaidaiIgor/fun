@@ -349,13 +349,15 @@ class Planner:
                 continue
             action_text = self.state_action_text(state) if FULL_DEBUG else ""
             plans.append((option, action_text))
-        path = ()
+        branch = None
         for option, action_text in plans:
             bundle, state = option.bundle, option.state
-            if bundle.path != path:
-                path = bundle.path
-                path_text = ", ".join(map(str, path))
-                debug(f"    Considering path=[{path_text}]:")
+            next_branch = bundle.teleport != (-1, -1), bundle.path
+            if next_branch != branch:
+                branch = next_branch
+                path_text = ", ".join(map(str, bundle.path))
+                mode = "teleport" if next_branch[0] else "path"
+                debug(f"    Considering {mode}=[{path_text}]:")
             prefix = "-> " if bundle.debug_chosen else ""
             text = f"      {prefix}{bundle.debug_id}: action={action_text}, "
             if state.cost > self.resources:

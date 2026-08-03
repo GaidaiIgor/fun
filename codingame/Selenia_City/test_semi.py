@@ -108,36 +108,9 @@ def max_diversity(self, kind: int) -> int:
     return sum(max(0, 50 - index) for index in range(demand))
 
 
-def state_delta_text(self, before: PlanState, after: PlanState) -> str:
-    """Formats infrastructure and pod changes between before and after."""
-    actions = []
-    for edge in sorted(before.new_tubes - after.new_tubes):
-        actions.append(f"DROP TUBE {edge[0]} {edge[1]}")
-    new_edges = sorted(after.new_tubes - before.new_tubes)
-    for edge in new_edges:
-        actions.append(f"TUBE {edge[0]} {edge[1]}")
-    for edge in new_edges:
-        actions.extend(f"UPGRADE {edge[0]} {edge[1]}" for _ in range(after.tubes[edge] - 1))
-    for edge in sorted(set(before.tubes) & set(after.tubes)):
-        for _ in range(after.tubes[edge] - before.tubes[edge]):
-            actions.append(f"UPGRADE {edge[0]} {edge[1]}")
-        for _ in range(before.tubes[edge] - after.tubes[edge]):
-            actions.append(f"DROP UPGRADE {edge[0]} {edge[1]}")
-    for entrance_id in sorted(set(before.teleports) - set(after.teleports)):
-        actions.append(f"DROP TELEPORT {entrance_id} {before.teleports[entrance_id]}")
-    for entrance_id in sorted(set(after.teleports) - set(before.teleports)):
-        actions.append(f"TELEPORT {entrance_id} {after.teleports[entrance_id]}")
-    for pod_id in sorted(set(before.pods) - set(after.pods)):
-        actions.append(f"DROP POD {pod_id}")
-    for pod_id in sorted(after.ops - before.ops):
-        actions.append(f"POD {pod_id} AUTO")
-    return ";".join(actions) if actions else "WAIT"
-
-
 def state_action_text(self, state: PlanState) -> str:
     """Formats the complete planned infrastructure and pod actions in state."""
     actions = [action for action in state.actions if action and action.split()[0] in ("TUBE", "TELEPORT", "UPGRADE")]
-    actions.extend(f"DROP POD {pod_id}" for pod_id in sorted(set(self.pods) - set(state.pods)))
     actions.extend(f"POD {pod_id} AUTO" for pod_id in sorted(state.ops))
     return ";".join(actions) if actions else "WAIT"
 
@@ -157,7 +130,6 @@ Planner.status_debug = status_debug
 Planner.pool_debug = pool_debug
 Planner.diversity_debug = diversity_debug
 Planner.max_diversity = max_diversity
-Planner.state_delta_text = state_delta_text
 Planner.state_action_text = state_action_text
 Planner.selected_debug = selected_debug
 

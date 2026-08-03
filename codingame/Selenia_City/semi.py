@@ -26,10 +26,7 @@ Pool = tuple[int, int]
 PoolOwner = Pool | int
 PathKey = tuple[int, ...]
 LoadKey = tuple[Pool, int, PathKey]
-MapKey = tuple[tuple[Pair, ...], tuple[tuple[int, int], ...]]
-LayoutId = tuple[bool, PathKey]
-LayoutKey = tuple[MapKey, LayoutId]
-PodConfiguration = tuple[int, tuple[Pair, ...]]
+LayoutKey = tuple[tuple[Pair, ...], tuple[tuple[int, int], ...]]
 def debug(text: str):
     if FULL_DEBUG:
         print(text, file=sys.stderr)
@@ -94,14 +91,14 @@ class LayoutBranch:
     layouts: tuple[Bundle, ...]
     state: PlanState
     efficiency: float
-    parent_result: "SimulationResult"
+    parent_score: int
 @dataclass(slots=True)
 class PlanOption:
     bundle: Bundle
     layouts: tuple[Bundle, ...]
     layout_key: LayoutKey
     state: PlanState
-    parent_result: "SimulationResult"
+    parent_score: int
 @dataclass(slots=True)
 class SimulationResult:
     score: int = 0
@@ -124,7 +121,7 @@ class Candidate:
     layouts: tuple[Bundle, ...]
     layout_key: LayoutKey
     state: PlanState
-    parent_result: SimulationResult
+    parent_score: int
     @property
     def efficiency(self) -> float:
         return self.global_gain / self.global_cost if self.global_cost > 0 else inf
@@ -137,7 +134,6 @@ class Planner:
     pods: dict[int, PodPlan]
     simulation_cache: dict[tuple, SimulationResult]
     layout_cache: dict[LayoutKey, LayoutBranch]
-    layout_progress: dict[LayoutId, tuple[PodConfiguration, PodConfiguration]]
     turn_start_result: SimulationResult
     def __init__(self):
         self.buildings = {}
@@ -149,7 +145,6 @@ class Planner:
         self.simulation_cache = {}
         self.fs_cache = {}
         self.layout_cache = {}
-        self.layout_progress = {}
     def play(self):
         while True:
             try:
@@ -185,7 +180,6 @@ class Planner:
         self.simulation_cache = {}
         self.fs_cache = {}
         self.cap_cache = {}
-        self.layout_progress = {}
         _G.clear()
         if self.month + 1 == OVERRIDE_MONTH:
             return self.override_actions()
@@ -194,8 +188,8 @@ class Planner:
         current_result = self.score_state(current_state)
         self.turn_start_result = current_result
         before_score = current_result.score
-        current_key = self.layout_key(current_state), (False, ())
-        self.layout_cache = {current_key: LayoutBranch(layouts, current_state, -inf, None)}
+        current_key = self.layout_key(current_state)
+        self.layout_cache = {current_key: LayoutBranch(layouts, current_state, -inf, -1)}
         if FULL_DEBUG:
             debug("\n" + self.score_debug("before", current_result, current_state.cost))
         iteration = 1
@@ -205,7 +199,7 @@ class Planner:
                 break
             layouts, current_key, current_state = best.layouts, best.layout_key, best.state
             current_result = self.score_state(current_state)
-            self.layout_cache[current_key] = LayoutBranch(layouts, current_state, best.efficiency, best.parent_result)
+            self.layout_cache[current_key] = LayoutBranch(layouts, current_state, best.efficiency, best.parent_score)
             if FULL_DEBUG:
                 self.selected_debug(best, current_state, current_result, before_score)
                 iteration += 1
@@ -379,13 +373,13 @@ class Planner:
                 self.turn_start_result.diversity_by_module[owner]
             local_gain = pool_score - start_pool_score
             global_gain = result.score - before_score
-            checkpoint = "" if option.parent_result is None else f"({result.score - option.parent_result.score:+d})"
+            checkpoint = "" if option.parent_score < 0 else f"({result.score - option.parent_score:+d})"
             efficiency = global_gain / state.cost if state.cost > 0 else inf
             debug(f"{text}local gain={local_gain}, global gain={global_gain}{checkpoint}, cost={state.cost}, "
                 f"efficiency={efficiency:.3f}")
             if global_gain > 0 and result.score > current_result.score:
                 candidate = Candidate(bundle, pair, global_gain, state.cost, option.layouts, option.layout_key, state,
-                    option.parent_result)
+                    option.parent_score)
                 if best is None or (candidate.efficiency, candidate.global_gain, -candidate.global_cost) > \
                         (best.efficiency, best.global_gain, -best.global_cost):
                     best = candidate
@@ -473,11 +467,11 @@ class Planner:
             if simulation.delivery_times.get(group, INF) == parent.bundle.path_length:
                 break
             options = []
-            parent_result = self.score_state(parent.state)
+            parent_score = self.score_state(parent.state).score
             pod_bundle = Bundle(owner, pod_specs=(0,), label=f"{parent.bundle.label}-pod", path_edges=parent.bundle.path_edges,
                 destination=parent.bundle.destination, path_length=parent.bundle.path_length, path=parent.bundle.path)
             pod_option = PlanOption(pod_bundle, parent.layouts, parent.layout_key,
-                self.replay_bundle_on_state(parent.state, pod_bundle), parent_result)
+                self.replay_bundle_on_state(parent.state, pod_bundle), parent_score)
             pod_bundle.debug_id = self.bundle_debug_id(pod_option.state)
             pod_metrics = self.option_metrics(pod_option, before_score)
             if len(parent.state.pods) < sum(parent.state.tubes.values()):
@@ -488,7 +482,7 @@ class Planner:
                     path_edges=parent.bundle.path_edges, destination=parent.bundle.destination, path_length=parent.bundle.path_length,
                     path=parent.bundle.path)
                 upgrade_option = PlanOption(upgrade_bundle, parent.layouts, parent.layout_key,
-                    self.replay_bundle_on_state(parent.state, upgrade_bundle), parent_result)
+                    self.replay_bundle_on_state(parent.state, upgrade_bundle), parent_score)
                 upgrade_bundle.debug_id = self.bundle_debug_id(upgrade_option.state)
                 options.append((upgrade_option, self.option_metrics(upgrade_option, before_score)))
             combined_affordable = pod_option.state.cost <= self.resources
@@ -502,7 +496,7 @@ class Planner:
                             path_edges=parent.bundle.path_edges, destination=parent.bundle.destination,
                             path_length=parent.bundle.path_length, path=parent.bundle.path)
                         combined_option = PlanOption(combined, parent.layouts, parent.layout_key,
-                            self.replay_bundle_on_state(parent.state, combined), parent_result)
+                            self.replay_bundle_on_state(parent.state, combined), parent_score)
                         combined.debug_id = self.bundle_debug_id(combined_option.state)
                         combined_metrics = self.option_metrics(combined_option, before_score)
                         options.append((combined_option, combined_metrics))
@@ -516,11 +510,7 @@ class Planner:
             if efficiency <= parent_efficiency or not combined_affordable:
                 break
             next_parent.bundle.debug_chosen = next_parent.bundle.debug_id
-            self.layout_progress[self.bundle_layout_id(parent.bundle)] = self.pod_configuration(next_parent.state), \
-                self.pod_configuration(parent.state)
             parent, parent_efficiency = next_parent, efficiency
-            self.layout_cache[parent.layout_key] = LayoutBranch(parent.layouts, self.copy_state(parent.state), efficiency,
-                parent.parent_result)
         return result
     def option_metrics(self, option: PlanOption, before_score: int) -> tuple[int, int, float]:
         cost = option.state.cost
@@ -535,53 +525,31 @@ class Planner:
                 destination=base.destination, path_length=base.path_length, path=base.path)
             next_layouts = (*layouts, layout)
         layout_state = self.replay_bundle_sequence(next_layouts)
-        layout_id = self.bundle_layout_id(base)
-        key = self.layout_key(layout_state), layout_id
+        key = self.layout_key(layout_state)
         if key in self.layout_cache:
             branch = self.layout_cache[key]
             state = self.copy_state(branch.state)
             base.debug_id = self.bundle_debug_id(state)
-            return PlanOption(base, next_layouts, key, state, branch.parent_result), branch.efficiency
+            return PlanOption(base, next_layouts, key, state, branch.parent_score), branch.efficiency
         state = layout_state
-        parent_result = None
-        if layout_id in self.layout_progress:
-            configuration, parent_configuration = self.layout_progress[layout_id]
-            state = self.replay_pod_configuration(layout_state, base, configuration)
-            parent_result = self.score_state(self.replay_pod_configuration(layout_state, base, parent_configuration)) \
-                if parent_configuration is not None else None
-        elif base.tubes or not state.pods and self.has_tube_loads(state):
+        parent_score = -1
+        if base.tubes or not state.pods and self.has_tube_loads(state):
             pod_id = self.closest_pod(base.path[0], base.path_edges, state) if base.tubes else 0
             base.pod_specs = (pod_id,)
-            parent_result = self.score_state(layout_state)
+            parent_score = self.score_state(layout_state).score
             state = self.replay_bundle_on_state(state, Bundle(base.pool, pod_specs=(pod_id,)))
-            self.layout_progress[layout_id] = self.pod_configuration(state), self.pod_configuration(layout_state)
-        else:
-            self.layout_progress[layout_id] = self.pod_configuration(state), None
         base.debug_id = self.bundle_debug_id(state)
-        option = PlanOption(base, next_layouts, key, state, parent_result)
+        option = PlanOption(base, next_layouts, key, state, parent_score)
         efficiency = self.option_metrics(option, before_score)[2]
-        self.layout_cache[key] = LayoutBranch(next_layouts, self.copy_state(state), efficiency, parent_result)
+        self.layout_cache[key] = LayoutBranch(next_layouts, self.copy_state(state), efficiency, parent_score)
         return option, efficiency
-    def bundle_layout_id(self, bundle: Bundle) -> LayoutId:
-        return bundle.teleport != (-1, -1), bundle.path
-    def pod_configuration(self, state: PlanState) -> PodConfiguration:
-        upgrades = tuple(edge for edge, capacity in sorted(state.tubes.items())
-            for _ in range(capacity - self.tubes.get(edge, 1)))
-        return len(state.ops), upgrades
-    def replay_pod_configuration(self, layout_state: PlanState, base: Bundle, configuration: PodConfiguration) -> PlanState:
-        state = layout_state
-        pod_count, upgrades = configuration
-        for index in range(pod_count):
-            pod_id = self.closest_pod(base.path[0], base.path_edges, state) if index == 0 and base.path_edges and state.pods else 0
-            state = self.replay_bundle_on_state(state, Bundle(base.pool, pod_specs=(pod_id,)))
-        return self.replay_bundle_on_state(state, Bundle(base.pool, upgrades=upgrades)) if upgrades else state
     def bundle_debug_id(self, state: PlanState) -> str:
         upgrades = sum(capacity - self.tubes.get(edge, 1) for edge, capacity in state.tubes.items())
         return f"{len(state.ops)}p{upgrades}u"
     def has_tube_loads(self, state: PlanState) -> bool:
         distances, module_distances = self.distances_to_targets(state)
         return bool(self.path_demands(state, distances, module_distances))
-    def layout_key(self, state: PlanState) -> MapKey:
+    def layout_key(self, state: PlanState) -> LayoutKey:
         return tuple(sorted(state.tubes)), tuple(sorted(state.teleports.items()))
     def connection_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> list[Bundle]:
         path = self.cheapest_connecting_path(group[0], module_ids, state)

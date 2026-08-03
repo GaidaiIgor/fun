@@ -404,7 +404,7 @@ class Planner:
             bases = [bundle for bundle in bases
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
         options = []
-        connections = [base for base in bases if base.label in ("connect", "connect-pod")]
+        connections = [base for base in bases if base.label == "connect"]
         if connections:
             options.extend(self.connection_option_stack(owner, group, connections, layouts, before_score))
         connection_ids = {id(base) for base in connections}
@@ -428,7 +428,7 @@ class Planner:
         result = []
         options = []
         for base in bases:
-            base.debug_id = "0c" if base.label == "connect-pod" else "0"
+            base.debug_id = "0"
             option, parent_efficiency = self.base_option(base, layouts, before_score)
             metrics = self.option_metrics(option, before_score)
             result.append(option)
@@ -442,7 +442,7 @@ class Planner:
         return result
     def path_option_stack(self, owner: PoolOwner, group: Pool, base: Bundle, layouts: tuple[Bundle, ...],
             before_score: int) -> list[PlanOption]:
-        base.debug_id = "0c" if base.label == "connect-pod" else "0"
+        base.debug_id = "0"
         parent, parent_efficiency = self.base_option(base, layouts, before_score)
         result = [parent]
         if parent.state.cost > self.resources:
@@ -534,54 +534,44 @@ class Planner:
         return tuple(sorted(state.tubes)), tuple(sorted(state.teleports.items()))
     def connection_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> list[Bundle]:
         path = self.cheapest_connecting_path(group[0], module_ids, state)
-        bundles = self.path_bundles(owner, "connect", path, state)
-        fixed_state = PlanState(state.tubes, state.teleports,
-            {pod_id: PodPlan(pod.path[:]) for pod_id, pod in self.pods.items()})
-        if bundles and fixed_state.pods:
-            base = bundles[0]
-            projected = dict(fixed_state.tubes)
-            projected.update((edge, 1) for edge in base.path_edges)
-            connected = self.pod_connection_bundle(owner, group, module_ids, fixed_state) \
-                if self.closest_pod(base.path[0], base.path_edges, PlanState(projected, fixed_state.teleports, fixed_state.pods)) == 0 else None
-            if connected:
-                bundles.append(connected)
-        return bundles
-    def pod_connection_bundle(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> Bundle:
+        network_nodes = {node for edge in state.tubes for node in edge}
+        if not network_nodes or network_nodes.intersection(path):
+            return self.path_bundles(owner, "connect", path, state)
+        connected = self.network_connection_bundle(owner, group, module_ids, state, network_nodes)
+        return [connected] if connected else []
+    def network_connection_bundle(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState,
+            network_nodes: set[int]) -> Bundle:
         best = None
-        places = self.pod_locations(state)
-        for pod_id in state.pods:
-            locations = places[pod_id]
-            routes = []
-            path = self.cheapest_path_with_hop_limit(group[0], module_ids, MAX_TUBE_HOPS, state, via_nodes=tuple(locations))
-            if path:
-                routes.append((tuple(route_key(a, b) for a, b in zip(path, path[1:])), path[-1]))
-            for module_id in module_ids:
-                base_path = self.cheapest_connecting_path(group[0], [module_id], state)
-                base_edges = tuple(route_key(a, b) for a, b in zip(base_path, base_path[1:]))
-                for junction_id in base_path:
-                    remaining_hops = MAX_TUBE_HOPS - len(base_edges)
-                    connector = [junction_id] if junction_id in locations else \
-                        self.cheapest_path_with_hop_limit(junction_id, list(locations), remaining_hops, state)
-                    if not connector:
-                        continue
-                    edges = tuple(dict.fromkeys((*base_edges, *(route_key(a, b) for a, b in zip(connector, connector[1:])))))
-                    if len(edges) <= MAX_TUBE_HOPS and self.can_add_tubes([edge for edge in edges if edge not in state.tubes], state.tubes):
-                        routes.append((edges, module_id))
-            for path_edges, module_id in routes:
-                tubes = tuple(edge for edge in path_edges if edge not in state.tubes)
-                cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes)
-                cost += REROUTE_COST
-                projected_tubes = dict(state.tubes)
-                projected_tubes.update((edge, 1) for edge in path_edges)
-                route = self.shortest_existing_tube_path(group[0], [module_id], projected_tubes)
-                bundle = Bundle(owner, tubes=tubes, label="connect-pod", path_edges=path_edges,
-                    destination=module_id, path_length=len(route) - 1, path=tuple(route))
-                source = self.buildings[group[0]]
-                target = self.buildings[module_id]
-                distance = (source.x - target.x) * (source.x - target.x) + (source.y - target.y) * (source.y - target.y)
-                order = cost, distance, len(route), path_edges, pod_id
-                if best is None or order < best[0]:
-                    best = order, bundle
+        routes = []
+        path = self.cheapest_path_with_hop_limit(group[0], module_ids, MAX_TUBE_HOPS, state, via_nodes=tuple(network_nodes))
+        if path:
+            routes.append((tuple(route_key(a, b) for a, b in zip(path, path[1:])), path[-1]))
+        for module_id in module_ids:
+            base_path = self.cheapest_connecting_path(group[0], [module_id], state)
+            base_edges = tuple(route_key(a, b) for a, b in zip(base_path, base_path[1:]))
+            for junction_id in base_path:
+                remaining_hops = MAX_TUBE_HOPS - len(base_edges)
+                connector = [junction_id] if junction_id in network_nodes else \
+                    self.cheapest_path_with_hop_limit(junction_id, list(network_nodes), remaining_hops, state)
+                if not connector:
+                    continue
+                edges = tuple(dict.fromkeys((*base_edges, *(route_key(a, b) for a, b in zip(connector, connector[1:])))))
+                if len(edges) <= MAX_TUBE_HOPS and self.can_add_tubes([edge for edge in edges if edge not in state.tubes], state.tubes):
+                    routes.append((edges, module_id))
+        for path_edges, module_id in routes:
+            tubes = tuple(edge for edge in path_edges if edge not in state.tubes)
+            cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes)
+            projected_tubes = dict(state.tubes)
+            projected_tubes.update((edge, 1) for edge in path_edges)
+            route = self.shortest_existing_tube_path(group[0], [module_id], projected_tubes)
+            bundle = Bundle(owner, tubes=tubes, label="connect", path_edges=path_edges,
+                destination=module_id, path_length=len(route) - 1, path=tuple(route))
+            source = self.buildings[group[0]]
+            target = self.buildings[module_id]
+            distance = (source.x - target.x) * (source.x - target.x) + (source.y - target.y) * (source.y - target.y)
+            order = cost, distance, len(route), path_edges
+            if best is None or order < best[0]:
+                best = order, bundle
         return best[1] if best else None
     def shortest_route_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], route_length: int,
             state: PlanState) -> list[Bundle]:

@@ -65,6 +65,7 @@ class Bundle:
     tubes: tuple[Pair, ...] = ()
     teleport: Pair = (-1, -1)
     pod_specs: tuple[int, ...] = ()
+    pod_drops: tuple[int, ...] = ()
     upgrades: tuple[Pair, ...] = ()
     label: str = "empty"
     path_edges: tuple[Pair, ...] = ()
@@ -75,7 +76,7 @@ class Bundle:
     debug_chosen: str = ""
     @property
     def fingerprint(self) -> tuple:
-        return self.tubes, self.teleport, self.pod_specs, self.upgrades
+        return self.tubes, self.teleport, self.pod_specs, self.pod_drops, self.upgrades
 @dataclass(slots=True)
 class PlanState:
     tubes: dict[Pair, int]
@@ -199,7 +200,7 @@ class Planner:
                 break
             layouts, current_key, current_state = best.layouts, best.layout_key, best.state
             current_result = self.score_state(current_state)
-            self.layout_cache[current_key] = LayoutBranch(layouts, current_state, best.efficiency, best.parent_score)
+            self.layout_cache = {current_key: LayoutBranch(layouts, current_state, best.efficiency, best.parent_score)}
             if FULL_DEBUG:
                 self.selected_debug(best, current_state, current_result, before_score)
                 iteration += 1
@@ -414,7 +415,7 @@ class Planner:
         options = []
         connections = [base for base in bases if base.label == "connect"]
         if connections:
-            options.extend(self.connection_option_stack(owner, group, connections, layouts, before_score))
+            options.extend(self.connection_option_stack(owner, group, connections, layouts, state, before_score))
         connection_ids = {id(base) for base in connections}
         seen = set()
         for base in bases:
@@ -424,19 +425,19 @@ class Planner:
             if key in seen:
                 continue
             seen.add(key)
-            options.extend(self.path_option_stack(owner, group, base, layouts, before_score))
+            options.extend(self.path_option_stack(owner, group, base, layouts, state, before_score))
         teleports = self.teleport_bundles(owner, group, module_ids, state)
         if isinstance(owner, int):
             teleports = [bundle for bundle in teleports
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
-        options.extend(self.base_option(bundle, layouts, before_score)[0] for bundle in teleports)
+        options.extend(self.base_option(bundle, layouts, state, before_score)[0] for bundle in teleports)
         return options
     def connection_option_stack(self, owner: PoolOwner, group: Pool, bases: list[Bundle], layouts: tuple[Bundle, ...],
-            before_score: int) -> list[PlanOption]:
+            inherited_state: PlanState, before_score: int) -> list[PlanOption]:
         result = []
         options = []
         for base in bases:
-            option, parent_efficiency = self.base_option(base, layouts, before_score)
+            option, parent_efficiency = self.base_option(base, layouts, inherited_state, before_score)
             metrics = self.option_metrics(option, before_score)
             result.append(option)
             if option.state.cost <= self.resources:
@@ -448,8 +449,8 @@ class Planner:
         result.extend(self.throughput_options(owner, group, parent, max(efficiency, parent_efficiency), before_score))
         return result
     def path_option_stack(self, owner: PoolOwner, group: Pool, base: Bundle, layouts: tuple[Bundle, ...],
-            before_score: int) -> list[PlanOption]:
-        parent, parent_efficiency = self.base_option(base, layouts, before_score)
+            inherited_state: PlanState, before_score: int) -> list[PlanOption]:
+        parent, parent_efficiency = self.base_option(base, layouts, inherited_state, before_score)
         result = [parent]
         if parent.state.cost > self.resources:
             return result
@@ -473,6 +474,7 @@ class Planner:
                 destination=parent.bundle.destination, path_length=parent.bundle.path_length, path=parent.bundle.path)
             pod_option = PlanOption(pod_bundle, parent.layouts, parent.layout_key,
                 self.replay_bundle_on_state(parent.state, pod_bundle), parent_score)
+            self.afford_with_pod_drops(pod_option.state, pod_bundle)
             pod_bundle.debug_id = self.bundle_debug_id(pod_option.state)
             pod_metrics = self.option_metrics(pod_option, before_score)
             if len(parent.state.pods) < sum(parent.state.tubes.values()):
@@ -484,6 +486,7 @@ class Planner:
                     path=parent.bundle.path)
                 upgrade_option = PlanOption(upgrade_bundle, parent.layouts, parent.layout_key,
                     self.replay_bundle_on_state(parent.state, upgrade_bundle), parent_score)
+                self.afford_with_pod_drops(upgrade_option.state, upgrade_bundle)
                 upgrade_bundle.debug_id = self.bundle_debug_id(upgrade_option.state)
                 options.append((upgrade_option, self.option_metrics(upgrade_option, before_score)))
             combined_affordable = pod_option.state.cost <= self.resources
@@ -491,17 +494,16 @@ class Planner:
                 edge = self.best_counter_edge(parent.bundle.path_edges, self.cached_simulate(pod_option.state).congestion_by_edge)
                 if edge != (-1, -1):
                     combined_affordable = False
-                    upgrade_cost = tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * (parent.state.tubes[edge] + 1)
-                    if parent.state.cost + POD_COST + upgrade_cost <= self.resources:
-                        combined = Bundle(owner, pod_specs=(0,), upgrades=(edge,), label=f"{parent.bundle.label}-pod-upgrade",
-                            path_edges=parent.bundle.path_edges, destination=parent.bundle.destination,
-                            path_length=parent.bundle.path_length, path=parent.bundle.path)
-                        combined_option = PlanOption(combined, parent.layouts, parent.layout_key,
-                            self.replay_bundle_on_state(parent.state, combined), parent_score)
-                        combined.debug_id = self.bundle_debug_id(combined_option.state)
-                        combined_metrics = self.option_metrics(combined_option, before_score)
-                        options.append((combined_option, combined_metrics))
-                        combined_affordable = combined_option.state.cost <= self.resources
+                    combined = Bundle(owner, pod_specs=(0,), upgrades=(edge,), label=f"{parent.bundle.label}-pod-upgrade",
+                        path_edges=parent.bundle.path_edges, destination=parent.bundle.destination,
+                        path_length=parent.bundle.path_length, path=parent.bundle.path)
+                    combined_option = PlanOption(combined, parent.layouts, parent.layout_key,
+                        self.replay_bundle_on_state(parent.state, combined), parent_score)
+                    self.afford_with_pod_drops(combined_option.state, combined)
+                    combined.debug_id = self.bundle_debug_id(combined_option.state)
+                    combined_metrics = self.option_metrics(combined_option, before_score)
+                    options.append((combined_option, combined_metrics))
+                    combined_affordable = combined_option.state.cost <= self.resources
             result.extend(option for option, _ in options)
             affordable = [(metrics[2], metrics[0], -metrics[1], option) for option, metrics in options
                 if option.state.cost <= self.resources]
@@ -519,7 +521,8 @@ class Planner:
             return 0, cost, -inf
         gain = self.score_state(option.state).score - before_score
         return gain, cost, gain / cost if cost > 0 else inf if gain > 0 else 0
-    def base_option(self, base: Bundle, layouts: tuple[Bundle, ...], before_score: int) -> tuple[PlanOption, float]:
+    def base_option(self, base: Bundle, layouts: tuple[Bundle, ...], inherited_state: PlanState,
+            before_score: int) -> tuple[PlanOption, float]:
         next_layouts = layouts
         if base.tubes or base.teleport != (-1, -1):
             layout = Bundle(base.pool, tubes=base.tubes, teleport=base.teleport, label=base.label, path_edges=base.path_edges,
@@ -532,18 +535,42 @@ class Planner:
             state = self.copy_state(branch.state)
             base.debug_id = self.bundle_debug_id(state)
             return PlanOption(base, next_layouts, key, state, branch.parent_score), branch.efficiency
-        state = layout_state
+        state = self.inherit_pods(layout_state, inherited_state, base.pool)
         parent_score = -1
         if base.tubes or not state.pods and self.has_tube_loads(state):
             pod_id = self.closest_pod(base.path[0], base.path_edges, state) if base.tubes else 0
             base.pod_specs = (pod_id,)
-            parent_score = self.score_state(layout_state).score
+            parent_score = self.score_state(state).score
             state = self.replay_bundle_on_state(state, Bundle(base.pool, pod_specs=(pod_id,)))
+        self.afford_with_pod_drops(state, base)
         base.debug_id = self.bundle_debug_id(state)
         option = PlanOption(base, next_layouts, key, state, parent_score)
         efficiency = self.option_metrics(option, before_score)[2]
         self.layout_cache[key] = LayoutBranch(next_layouts, self.copy_state(state), efficiency, parent_score)
         return option, efficiency
+    def inherit_pods(self, state: PlanState, inherited_state: PlanState, owner: PoolOwner) -> PlanState:
+        for pod_id in sorted(set(self.pods) - set(inherited_state.pods)):
+            state.cost -= POD_REFUND
+            del state.pods[pod_id]
+            state.actions.append(f"DESTROY {pod_id}")
+        for pod_id in sorted(inherited_state.ops):
+            self.apply_bundle(state, Bundle(owner, pod_specs=(pod_id if pod_id in self.pods else 0,)))
+        return state
+    def afford_with_pod_drops(self, state: PlanState, bundle: Bundle):
+        if state.cost <= self.resources:
+            return
+        count = (state.cost - self.resources + POD_COST - 1) // POD_COST
+        pod_ids = tuple(sorted(state.ops, reverse=True)[:count])
+        if len(pod_ids) < count:
+            return
+        bundle.pod_drops += pod_ids
+        for pod_id in pod_ids:
+            self.drop_dynamic_pod(state, pod_id)
+    def drop_dynamic_pod(self, state: PlanState, pod_id: int):
+        state.cost -= POD_COST
+        state.ops.remove(pod_id)
+        del state.pods[pod_id]
+        state.pod_slots = [(index, placeholder_id) for index, placeholder_id in state.pod_slots if placeholder_id != pod_id]
     def bundle_debug_id(self, state: PlanState) -> str:
         upgrades = sum(capacity - self.tubes.get(edge, 1) for edge, capacity in state.tubes.items())
         return f"{len(state.ops)}p{upgrades}u"
@@ -760,6 +787,8 @@ class Planner:
                 state.pod_slots.append((len(state.actions), pod_id))
                 state.actions.append("")
             state.pods[pod_id] = PodPlan([], True)
+        for pod_id in bundle.pod_drops:
+            self.drop_dynamic_pod(state, pod_id)
     def fill_dynamic_actions(self, state: PlanState, dynamic_paths: dict[int, list[int]]):
         for index, pod_id in state.pod_slots:
             path = dynamic_paths[pod_id]

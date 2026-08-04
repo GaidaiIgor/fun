@@ -101,6 +101,7 @@ def max_diversity(self, kind: int) -> int:
 def state_action_text(self, state: PlanState) -> str:
     """Formats the complete planned infrastructure and pod actions in state."""
     actions = [action for action in state.actions if action and action.split()[0] in ("TUBE", "TELEPORT", "UPGRADE")]
+    actions.extend(f"DROP POD {pod_id}" for pod_id in sorted(set(self.pods) - set(state.pods)))
     actions.extend(f"POD {pod_id} AUTO" for pod_id in sorted(state.ops))
     return ";".join(actions) if actions else "WAIT"
 

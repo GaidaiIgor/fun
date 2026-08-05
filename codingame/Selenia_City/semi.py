@@ -362,8 +362,9 @@ class Planner:
                 debug(f"    Considering {mode}=[{path_text}]:")
             prefix = "-> " if bundle.debug_chosen else ""
             text = f"      {prefix}{bundle.debug_id}: action={action_text}, "
+            cost_text = f"{state.cost}({state.cost - current_state.cost:+d})"
             if state.cost > self.resources:
-                debug(f"{text}local gain=-, global gain=-, cost={state.cost}, efficiency=-")
+                debug(f"{text}local gain=-, global gain=-, cost={cost_text}, efficiency=-")
                 continue
             result = self.score_state(state)
             pool_score = result.speed_by_pool[owner] if isinstance(owner, tuple) else result.diversity_by_module[owner]
@@ -373,7 +374,7 @@ class Planner:
             global_gain = result.score - before_score
             checkpoint = f"({result.score - current_result.score:+d})"
             efficiency = global_gain / state.cost if state.cost > 0 else inf
-            debug(f"{text}local gain={local_gain}, global gain={global_gain}{checkpoint}, cost={state.cost}, "
+            debug(f"{text}local gain={local_gain}, global gain={global_gain}{checkpoint}, cost={cost_text}, "
                 f"efficiency={efficiency:.3f}")
             if global_gain > 0 and result.score > current_result.score:
                 candidate = Candidate(bundle, pair, global_gain, state.cost, option.layouts, option.layout_key, state)

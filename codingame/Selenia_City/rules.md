@@ -19,20 +19,28 @@
 
 - Assignments are recalculated every day. Partially transferred groups become separate loads with their remaining paths.
 - Fixed pod routes reserve passengers by day. Reserved passengers are excluded from would-be-boarding counts for dynamic pods.
-Before conflict resolution, assign dynamic pods to loads using this priority order:
+- Before conflict resolution, assign dynamic pods to loads sequentially using this priority order:
 
-0. Respect assignment capacity
-1. Prefer higher-priority loads
-2. Prefer uniform allocation: no load receives X+1 pods while an equal-priority load has fewer than X
-3. Prefer more non-reserved passengers that would board immediately, capped at 10
-4. Prefer shorter distance to the load origin
-5. Prefer shorter remaining path
-6. Prefer the target module with fewer delivered passengers
-7. Prefer larger total remaining load
-8. Prefer the smaller load ID
+1. Respect assignment capacity
+2. Prefer higher-priority loads
+3. Prefer uniform allocation: no load receives X+1 pods while an equal-priority load has fewer than X
+4. Prefer more non-reserved passengers that would board immediately, capped at 10
+5. Prefer shorter distance to the load origin
+6. Prefer shorter remaining path
+7. Prefer the target module with fewer delivered passengers
+8. Prefer larger total remaining load
+9. Prefer the smaller load ID
 
 - If assignments exceed an edge capacity, resolve conflicts as follows:
   - Swap assignments of pods moving in opposite directions when the swap resolves the conflict
   - Otherwise, try pods in ascending ID order and give each the first later load from the same priority order that produces a conflict-free move
   - Repeat until no conflict remains; if no reassignment works, keep the original conflicting assignment
-- Conflict resolution has no other special cases.
+
+## Ambiguous Loads And High-Priority Assignments
+
+- A passenger group is ambiguous at a node when the same passengers have equally short remaining paths to multiple matching modules.
+- The diversity planner divides an ambiguous group among one or more destinations to maximize diversity score. Each enabled destination becomes a load capped at its allocated passenger count; other destinations are not active loads.
+- An enabled ambiguous load is high priority while its destination remains unresolved and its cap has not been reached.
+- Moving along a path shared by multiple enabled destinations does not resolve ambiguity. After paths diverge, the resulting partial load has a unique destination and normal priority.
+- High priority is considered after assignment capacity and before uniformity, as specified by the dispatcher priority list.
+- Loads sharing passengers also share their available supply. Assigning a pod reserves its would-be-boarding passengers, so another pod or direction can use only the remaining passengers.

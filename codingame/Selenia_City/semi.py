@@ -361,11 +361,12 @@ class Planner:
                 mode = "teleport" if next_branch[0] else "path"
                 debug(f"    Considering {mode}=[{path_text}]:")
                 round_number = -1
-            if bundle.round_number != round_number:
+            if not next_branch[0] and bundle.round_number != round_number:
                 round_number = bundle.round_number
                 debug(f"      Round {round_number}:")
             prefix = "-> " if bundle.debug_chosen else ""
-            text = f"        {prefix}{bundle.debug_id}: action={action_text}, "
+            indent = "      " if next_branch[0] else "        "
+            text = f"{indent}{prefix}{bundle.debug_id}: action={action_text}, "
             cost_text = f"{state.cost}({state.cost - current_state.cost:+d})"
             if state.cost > self.resources:
                 debug(f"{text}local gain=-, global gain=-, cost={cost_text}, efficiency=-")

@@ -1,34 +1,16 @@
 # Selenia City Rules
 
-## Bundle Generation
+## Pod Bundle Generation
 
-### Layouts
-
-- Bundle generation follows the hierarchy pool, paired pool, layout, and pod round.
-- A tube layout represents a particular source-to-destination path. More expensive tube layouts are considered only when they shorten the path.
-- A teleport is a separate layout and has only round 0. It has no pod or upgrade rounds.
-- A new layout inherits the pod configuration from the currently selected bundle. The pod configuration does not start from scratch.
-- Candidate actions are relative to the currently selected bundle. The final selected line shows the complete resulting bundle.
-
-### Round 0
-
-- Round 0 builds the tubes required by the considered path, when necessary, and otherwise keeps the currently selected pod configuration.
-- On the first iteration, where no pod configuration can be inherited, round 0 reroutes one eligible existing pod. If no pod exists, it builds one.
-- Rerouting prefers the closest eligible pod and prefers a pod that is already dynamic. Every pod tied after those criteria produces a separate round-0 candidate; pod ID is not a selection tiebreaker.
-- The most efficient affordable round-0 candidate becomes the parent of round 1.
-
-### Pod Rounds
-
-- Each round after round 0 starts from the winner of the previous round and may generate these candidates:
-  - `+pod`, if the resulting number of pods does not exceed the layout's total tube capacity.
-  - `+upgrade`, if the winner of the previous round has tube congestion.
-  - `+pod+upgrade`, if temporarily adding the pod creates tube congestion. Upgrade eligibility for this candidate is based on the `+pod` probe, not on the previous winner.
-- The `+pod` probe is still performed when a standalone `+pod` bundle would exceed current tube capacity, because the simultaneous upgrade may make the combined bundle valid.
-- The winner of a round is its affordable candidate with the greatest marginal efficiency.
-- Another round is generated only when the current winner has greater marginal efficiency than the winner of the previous round.
-- The final candidate for the layout is the bundle with the greatest marginal efficiency across all generated rounds, not necessarily the winner of the last round.
-
-### Cost And Labels
-
-- Marginal efficiency is marginal global score gain divided by marginal cost, both measured against the currently selected bundle.
-- Bundle labels use `{X}p{Y}u{Z}r`: `X` is the number of newly built pods, `Y` is the number of upgrades, and `Z` is the number of reroutes.
+- Pod bundles are considered in rounds. Each round consists of one or more bundles related to pods, upgrades and reroutes
+- Round 0 is just tube construction for the considered path (if necessary) + pod configuration copied from the currently selected bundle
+  - For iteration 1, since there is nothing to inherit, round 0 considers reroute of 1 pod, or construction if no pods exist
+  - Round 0 should consider all reroute choices
+- Each subsequent round considers the following bundles
+  - Previous round's winner +1 pod (if layout capacity allows more pods)
+  - Previous round's winner +1 upgrade (if congestion exists in previous round's winner)
+  - Previous round's winner +1 pod +1 upgrade (if congestion exists in the +pod bundle)
+- The winner in each round is chosen based on the largest marginal efficiency
+- New rounds are generated if last round's winner's efficiency was greater than the one in the round before
+- Largest efficiency bundle in all rounds is selected as final
+- Teleports should be round-0 only

@@ -696,42 +696,28 @@ class Planner:
     def replay_bundle_sequence(self, selected: tuple[Bundle, ...]) -> PlanState:
         pods = {pod_id: PodPlan(pod.path[:]) for pod_id, pod in self.pods.items()}
         state = PlanState(dict(self.tubes), dict(self.teleports), pods)
-        applied = []
         for bundle in selected:
             self.apply_bundle(state, bundle)
-            applied.append(bundle)
-            self.prune_uncommitted_infrastructure(state, applied)
+            self.prune_uncommitted_infrastructure(state)
         return state
-    def prune_uncommitted_infrastructure(self, state: PlanState, selected: list[Bundle]):
-        active = set()
-        freed = set()
-        routes = {}
-        for bundle in selected:
-            if bundle.path_edges or bundle.teleport != (-1, -1):
-                edges = set(bundle.path_edges)
-                group = bundle.pool if isinstance(bundle.pool, tuple) else (bundle.path[0], self.buildings[bundle.pool].kind)
-                pair = group if isinstance(bundle.pool, tuple) else (group, bundle.destination)
-                if bundle.teleport != (-1, -1):
-                    freed.update(routes.get(pair, ()))
-                routes[pair] = edges
-        for edges in routes.values():
-            active.update(edges)
-        if state.new_tubes - active:
+    def prune_uncommitted_infrastructure(self, state: PlanState):
+        upgrades = [(index, route_key(int(parts[1]), int(parts[2]))) for index, action in enumerate(state.actions)
+            if (parts := action.split()) and parts[0] == "UPGRADE"]
+        used = set()
+        if state.new_tubes or upgrades:
             distances, module_distances = self.distances_to_targets(state)
             for demand in self.path_demands(state, distances, module_distances):
-                active.update(route_key(a, b) for a, b in zip(demand.nodes, demand.nodes[1:]))
-        for index, action in enumerate(state.actions):
-            parts = action.split()
-            if parts and parts[0] == "UPGRADE":
-                edge = route_key(int(parts[1]), int(parts[2]))
-                if edge not in active:
-                    state.cost -= tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * state.tubes[edge]
-                    state.tubes[edge] -= 1
-                    state.actions[index] = ""
-        for edge in sorted(state.new_tubes - active):
+                used.update(route_key(a, b) for a, b in zip(demand.nodes, demand.nodes[1:]))
+        for index, edge in upgrades:
+            if edge not in used:
+                state.cost -= tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * state.tubes[edge]
+                state.tubes[edge] -= 1
+                state.actions[index] = ""
+        for edge in sorted(state.new_tubes - used):
             remaining = dict(state.tubes)
             del remaining[edge]
-            if edge in freed or graph_distance(tube_graph(remaining), *edge) < INF:
+            graph = tube_graph(remaining)
+            if edge[0] not in graph or edge[1] not in graph or graph_distance(graph, *edge) < INF:
                 self.remove_planned_tube(state, edge)
     def remove_planned_tube(self, state: PlanState, edge: Pair):
         capacity = state.tubes[edge]

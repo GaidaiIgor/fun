@@ -469,7 +469,6 @@ class Planner:
                 destination=parent.bundle.destination, path_length=parent.bundle.path_length, path=parent.bundle.path)
             pod_option = PlanOption(pod_bundle, parent.layouts, parent.layout_key,
                 self.replay_bundle_on_state(parent.state, pod_bundle))
-            self.afford_with_pod_drops(pod_option.state, pod_bundle)
             pod_bundle.debug_id = self.bundle_debug_id(pod_option.state)
             pod_metrics = self.option_metrics(pod_option, before_score)
             pod_added = len(pod_option.state.pods) > len(parent.state.pods)
@@ -482,7 +481,6 @@ class Planner:
                     path=parent.bundle.path)
                 upgrade_option = PlanOption(upgrade_bundle, parent.layouts, parent.layout_key,
                     self.replay_bundle_on_state(parent.state, upgrade_bundle))
-                self.afford_with_pod_drops(upgrade_option.state, upgrade_bundle)
                 upgrade_bundle.debug_id = self.bundle_debug_id(upgrade_option.state)
                 options.append((upgrade_option, self.option_metrics(upgrade_option, before_score)))
             combined_affordable = pod_added and pod_option.state.cost <= self.resources
@@ -495,7 +493,6 @@ class Planner:
                         path_length=parent.bundle.path_length, path=parent.bundle.path)
                     combined_option = PlanOption(combined, parent.layouts, parent.layout_key,
                         self.replay_bundle_on_state(parent.state, combined))
-                    self.afford_with_pod_drops(combined_option.state, combined)
                     combined.debug_id = self.bundle_debug_id(combined_option.state)
                     combined_metrics = self.option_metrics(combined_option, before_score)
                     combined_valid = len(combined_option.state.pods) > len(parent.state.pods)

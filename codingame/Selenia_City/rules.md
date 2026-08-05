@@ -19,16 +19,18 @@
 
 - Assignments are recalculated every day. Partially transferred groups become separate loads with their remaining paths.
 - Fixed pod routes reserve passengers by day. Reserved passengers are excluded from would-be-boarding counts for dynamic pods.
-- Before conflict resolution, assign dynamic pods to loads using this priority order:
-  0. Respect assignment capacity
-  1. Prefer higher-priority loads
-  2. Prefer uniform allocation: no load receives X+1 pods while an equal-priority load has fewer than X
-  3. Prefer more non-reserved passengers that would board immediately, capped at 10
-  4. Prefer shorter distance to the load origin
-  5. Prefer shorter remaining path
-  6. Prefer the target module with fewer delivered passengers
-  7. Prefer larger total remaining load
-  8. Prefer the smaller load ID
+Before conflict resolution, assign dynamic pods to loads using this priority order:
+
+0. Respect assignment capacity
+1. Prefer higher-priority loads
+2. Prefer uniform allocation: no load receives X+1 pods while an equal-priority load has fewer than X
+3. Prefer more non-reserved passengers that would board immediately, capped at 10
+4. Prefer shorter distance to the load origin
+5. Prefer shorter remaining path
+6. Prefer the target module with fewer delivered passengers
+7. Prefer larger total remaining load
+8. Prefer the smaller load ID
+
 - If assignments exceed an edge capacity, resolve conflicts as follows:
   - Swap assignments of pods moving in opposite directions when the swap resolves the conflict
   - Otherwise, try pods in ascending ID order and give each the first later load from the same priority order that produces a conflict-free move

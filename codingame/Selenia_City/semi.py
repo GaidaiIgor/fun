@@ -573,7 +573,8 @@ class Planner:
         state.pod_slots = [(index, placeholder_id) for index, placeholder_id in state.pod_slots if placeholder_id != pod_id]
     def bundle_debug_id(self, state: PlanState) -> str:
         upgrades = sum(capacity - self.tubes.get(edge, 1) for edge, capacity in state.tubes.items())
-        return f"{len(state.ops)}p{upgrades}u"
+        reroutes = sum(pod_id in self.pods for pod_id in state.ops)
+        return f"{len(state.ops) - reroutes}p{upgrades}u{reroutes}r"
     def has_tube_loads(self, state: PlanState) -> bool:
         distances, module_distances = self.distances_to_targets(state)
         return bool(self.path_demands(state, distances, module_distances))

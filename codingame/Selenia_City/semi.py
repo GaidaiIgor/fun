@@ -493,10 +493,7 @@ class Planner:
             pod_added = len(pod_option.state.pods) > len(parent.state.pods)
             if pod_added and len(parent.state.pods) < sum(parent.state.tubes.values()):
                 options.append((pod_option, pod_metrics))
-            upgrade_edge = (-1, -1)
-            if pod_added and pod_option.state.cost <= self.resources:
-                upgrade_edge = self.best_counter_edge(parent.bundle.path_edges,
-                    self.cached_simulate(pod_option.state).congestion_by_edge)
+            upgrade_edge = self.best_counter_edge(parent.bundle.path_edges, simulation.congestion_by_edge)
             if upgrade_edge != (-1, -1):
                 upgrade_bundle = Bundle(owner, upgrades=(upgrade_edge,), label=f"{parent.bundle.label}-upgrade",
                     path_edges=parent.bundle.path_edges, destination=parent.bundle.destination, path_length=parent.bundle.path_length,
@@ -505,7 +502,12 @@ class Planner:
                     self.replay_bundle_on_state(parent.state, upgrade_bundle))
                 upgrade_bundle.debug_id = self.bundle_debug_id(upgrade_option.state)
                 options.append((upgrade_option, self.option_metrics(upgrade_option, checkpoint_score, checkpoint_cost)))
-                combined = Bundle(owner, pod_specs=(0,), upgrades=(upgrade_edge,), label=f"{parent.bundle.label}-pod-upgrade",
+            combined_edge = (-1, -1)
+            if pod_added and pod_option.state.cost <= self.resources:
+                combined_edge = self.best_counter_edge(parent.bundle.path_edges,
+                    self.cached_simulate(pod_option.state).congestion_by_edge)
+            if combined_edge != (-1, -1):
+                combined = Bundle(owner, pod_specs=(0,), upgrades=(combined_edge,), label=f"{parent.bundle.label}-pod-upgrade",
                     path_edges=parent.bundle.path_edges, destination=parent.bundle.destination,
                     path_length=parent.bundle.path_length, path=parent.bundle.path, round_number=round_number)
                 combined_option = PlanOption(combined, parent.layouts, parent.layout_key,

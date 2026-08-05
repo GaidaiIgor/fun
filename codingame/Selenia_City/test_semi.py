@@ -98,8 +98,26 @@ def max_diversity(self, kind: int) -> int:
     return sum(max(0, 50 - index) for index in range(demand))
 
 
-def state_action_text(self, state: PlanState) -> str:
-    """Formats the complete planned infrastructure and pod actions in state."""
+def state_action_text(self, state: PlanState, base: PlanState = None) -> str:
+    """Formats planned actions in state completely, or as changes relative to base."""
+    if base is not None:
+        actions = [f"DROP TUBE {edge[0]} {edge[1]}" for edge in sorted(set(base.tubes) - set(state.tubes))]
+        actions.extend(f"DROP TELEPORT {source} {target}" for source, target in sorted(base.teleports.items())
+            if state.teleports.get(source) != target)
+        for edge in sorted(set(state.tubes) - set(base.tubes)):
+            actions.append(f"TUBE {edge[0]} {edge[1]}")
+            actions.extend(f"UPGRADE {edge[0]} {edge[1]}" for _ in range(state.tubes[edge] - 1))
+        actions.extend(f"TELEPORT {source} {target}" for source, target in sorted(state.teleports.items())
+            if base.teleports.get(source) != target)
+        for edge in sorted(set(state.tubes) & set(base.tubes)):
+            difference = state.tubes[edge] - base.tubes[edge]
+            command = "UPGRADE" if difference > 0 else "DROP UPGRADE"
+            actions.extend(f"{command} {edge[0]} {edge[1]}" for _ in range(abs(difference)))
+        actions.extend(f"DROP POD {pod_id}" for pod_id in sorted(set(base.pods) - set(state.pods)))
+        actions.extend(f"REVERT POD {pod_id}" for pod_id in sorted((base.ops - state.ops) & set(state.pods)))
+        actions.extend(f"REVERT POD {pod_id}" for pod_id in sorted((set(state.pods) - set(base.pods)) - state.ops))
+        actions.extend(f"POD {pod_id} AUTO" for pod_id in sorted(state.ops - base.ops))
+        return ";".join(actions) if actions else "WAIT"
     actions = [action for action in state.actions if action and action.split()[0] in ("TUBE", "TELEPORT", "UPGRADE")]
     actions.extend(f"DROP POD {pod_id}" for pod_id in sorted(set(self.pods) - set(state.pods)))
     actions.extend(f"POD {pod_id} AUTO" for pod_id in sorted(state.ops))

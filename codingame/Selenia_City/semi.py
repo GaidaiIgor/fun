@@ -349,7 +349,7 @@ class Planner:
             seen_states.add(state_key)
             if current_state.tubes == state.tubes and current_state.teleports == state.teleports and current_state.pods == state.pods:
                 continue
-            action_text = self.state_action_text(state) if FULL_DEBUG else ""
+            action_text = self.state_action_text(state, current_state) if FULL_DEBUG else ""
             plans.append((option, action_text))
         branch = None
         for option, action_text in plans:

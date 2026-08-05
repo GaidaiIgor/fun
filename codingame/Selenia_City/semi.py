@@ -385,8 +385,9 @@ class Planner:
             current_result: SimulationResult, before_score: int) -> list[PlanOption]:
         bases = []
         pad_id = group[0]
-        distances, _ = self.distances_to_targets(state)
+        distances, module_distances = self.distances_to_targets(state)
         current_length = distances[group[1]][pad_id]
+        same_destination = module_distances[module_ids[0]][pad_id] == current_length
         allow_shorter = True
         if isinstance(owner, int):
             allow_shorter = self.speed_destination_eligible(group, module_ids[0], current_result)
@@ -406,6 +407,8 @@ class Planner:
         if isinstance(owner, int):
             bases = [bundle for bundle in bases
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
+        elif same_destination:
+            bases = [bundle for bundle in bases if bundle.path_length <= current_length]
         else:
             bases = [bundle for bundle in bases if bundle.path_length < current_length]
         options = []
@@ -426,6 +429,8 @@ class Planner:
         if isinstance(owner, int):
             teleports = [bundle for bundle in teleports
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
+        elif not same_destination:
+            teleports = [bundle for bundle in teleports if bundle.path_length < current_length]
         options.extend(self.base_option(bundle, layouts, state, before_score)[0] for bundle in teleports)
         return options
     def connection_option_stack(self, owner: PoolOwner, group: Pool, bases: list[Bundle], layouts: tuple[Bundle, ...],

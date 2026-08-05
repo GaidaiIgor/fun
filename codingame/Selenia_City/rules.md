@@ -38,9 +38,8 @@
 
 ## Ambiguous Loads And High-Priority Assignments
 
-- A passenger group is ambiguous at a node when the same passengers have equally short remaining paths to multiple matching modules.
-- The diversity planner divides an ambiguous group among one or more destinations to maximize diversity score. Each enabled destination becomes a load capped at its allocated passenger count; other destinations are not active loads.
-- An enabled ambiguous load is high priority while its destination remains unresolved and its cap has not been reached.
-- Moving along a path shared by multiple enabled destinations does not resolve ambiguity. After paths diverge, the resulting partial load has a unique destination and normal priority.
-- High priority is considered after assignment capacity and before uniformity, as specified by the dispatcher priority list.
-- Loads sharing passengers also share their available supply. Assigning a pod reserves its would-be-boarding passengers, so another pod or direction can use only the remaining passengers.
+- A passenger group is ambiguous when it has equally short remaining paths to multiple matching modules.
+- The pod dispatcher divides ambiguous groups among their tied destinations in a way that equilibrates the total number of inbound passengers at each module from all groups.
+- A passenger group is considered inbound to a target module if the distance to that module is the shortest and no other modules have the same distance.
+- Directions toward modules that received non-zero planned passenger counts from ambiguous groups are set to high priority. Other ambiguous directions are set to low-priority.
+- For each edge corresponding to a high priority load, the dispatcher inspects the actual would-be-boarding passengers in that direction. If the number of would-be-boarding passengers for whom that direction is low priority is greater than the number of passengers for whom that direction is high priority, then priority of that load is set to low.

@@ -716,6 +716,10 @@ class Planner:
                 routes[pair] = edges
         for edges in routes.values():
             active.update(edges)
+        if state.new_tubes - active:
+            distances, module_distances = self.distances_to_targets(state)
+            for demand in self.path_demands(state, distances, module_distances):
+                active.update(route_key(a, b) for a, b in zip(demand.nodes, demand.nodes[1:]))
         for index, action in enumerate(state.actions):
             parts = action.split()
             if parts and parts[0] == "UPGRADE":
@@ -1002,7 +1006,7 @@ class Planner:
                     inbound[module_id] += 1
             for module_id, cap in caps.items():
                 path = self.concrete_path(pool[0], module_id, state)
-                for run in self.tube_path_runs(path, state.tubes):
+                for run in self.tube_path_runs(path, state):
                     demands.append(PathDemand(pool, module_id, run, cap, len(options) > 1))
         return demands
     def concrete_path(self, start_id: int, finish_id: int, state: PlanState) -> PathKey:
@@ -1024,11 +1028,15 @@ class Planner:
             for target_id, edge_cost in sorted(edges.get(node, [])):
                 heappush(queue, (cost + edge_cost, (*path, target_id), target_id))
         return ()
-    def tube_path_runs(self, path: PathKey, tubes: dict[Pair, int]) -> list[PathKey]:
+    def tube_path_runs(self, path: PathKey, state: PlanState) -> list[PathKey]:
         runs = []
         run = []
         for a, b in zip(path, path[1:]):
-            if route_key(a, b) in tubes:
+            if state.teleports.get(a) == b:
+                if run:
+                    runs.append(tuple(run))
+                    run = []
+            elif route_key(a, b) in state.tubes:
                 if not run:
                     run.append(a)
                 run.append(b)

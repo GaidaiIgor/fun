@@ -407,7 +407,7 @@ class Planner:
             bases = [bundle for bundle in bases
                 if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
         else:
-            bases = [bundle for bundle in bases if bundle.path_length <= current_length]
+            bases = [bundle for bundle in bases if bundle.path_length < current_length]
         options = []
         connections = [base for base in bases if base.label == "connect"]
         if connections:

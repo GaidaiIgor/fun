@@ -710,7 +710,7 @@ class Planner:
             if bundle.path_edges or bundle.teleport != (-1, -1):
                 edges = set(bundle.path_edges)
                 group = bundle.pool if isinstance(bundle.pool, tuple) else (bundle.path[0], self.buildings[bundle.pool].kind)
-                pair = group, bundle.destination
+                pair = group if isinstance(bundle.pool, tuple) else (group, bundle.destination)
                 if bundle.teleport != (-1, -1):
                     freed.update(routes.get(pair, ()))
                 routes[pair] = edges

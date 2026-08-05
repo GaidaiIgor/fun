@@ -129,7 +129,7 @@ def selected_debug(self, best: Candidate, state: PlanState, result: SimulationRe
     score_gain = result.score - before_score
     path_text = ", ".join(map(str, best.bundle.path))
     text = f"selected: pair={best.pair}, path=[{path_text}], bundle={best.bundle.debug_id}, actions={self.state_action_text(state)}, "
-    semi.debug(f"{text}gain={score_gain}, cost={state.cost}, efficiency={score_gain / max(1, state.cost):.3f}, "
+    semi.debug(f"{text}gain={score_gain}, cost={state.cost}, efficiency={best.efficiency:.3f}, "
         f"resources left={self.resources - state.cost}")
 
 

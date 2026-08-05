@@ -472,7 +472,8 @@ class Planner:
             self.afford_with_pod_drops(pod_option.state, pod_bundle)
             pod_bundle.debug_id = self.bundle_debug_id(pod_option.state)
             pod_metrics = self.option_metrics(pod_option, before_score)
-            if len(parent.state.pods) < sum(parent.state.tubes.values()):
+            pod_added = len(pod_option.state.pods) > len(parent.state.pods)
+            if pod_added and len(parent.state.pods) < sum(parent.state.tubes.values()):
                 options.append((pod_option, pod_metrics))
             upgrade_edge = self.best_counter_edge(parent.bundle.path_edges, simulation.congestion_by_edge)
             if upgrade_edge != (-1, -1):
@@ -484,7 +485,7 @@ class Planner:
                 self.afford_with_pod_drops(upgrade_option.state, upgrade_bundle)
                 upgrade_bundle.debug_id = self.bundle_debug_id(upgrade_option.state)
                 options.append((upgrade_option, self.option_metrics(upgrade_option, before_score)))
-            combined_affordable = pod_option.state.cost <= self.resources
+            combined_affordable = pod_added and pod_option.state.cost <= self.resources
             if combined_affordable:
                 edge = self.best_counter_edge(parent.bundle.path_edges, self.cached_simulate(pod_option.state).congestion_by_edge)
                 if edge != (-1, -1):
@@ -497,8 +498,10 @@ class Planner:
                     self.afford_with_pod_drops(combined_option.state, combined)
                     combined.debug_id = self.bundle_debug_id(combined_option.state)
                     combined_metrics = self.option_metrics(combined_option, before_score)
-                    options.append((combined_option, combined_metrics))
-                    combined_affordable = combined_option.state.cost <= self.resources
+                    combined_valid = len(combined_option.state.pods) > len(parent.state.pods)
+                    if combined_valid:
+                        options.append((combined_option, combined_metrics))
+                    combined_affordable = combined_valid and combined_option.state.cost <= self.resources
             result.extend(option for option, _ in options)
             affordable = [(metrics[2], metrics[0], -metrics[1], option) for option, metrics in options
                 if option.state.cost <= self.resources]

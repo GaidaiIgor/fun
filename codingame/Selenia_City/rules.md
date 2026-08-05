@@ -41,5 +41,7 @@
 - A passenger group is ambiguous when it has equally short remaining paths to multiple matching modules.
 - The pod dispatcher divides ambiguous groups among their tied destinations in a way that equilibrates the total number of inbound passengers at each module from all groups.
 - A passenger group is considered inbound to a target module if the distance to that module is the shortest and no other modules have the same distance.
-- Directions toward modules that received non-zero planned passenger counts from ambiguous groups are set to high priority. Other ambiguous directions are set to low-priority.
-- For each edge corresponding to a high priority load, the dispatcher inspects the actual would-be-boarding passengers in that direction. If the number of would-be-boarding passengers for whom that direction is low priority is greater than the number of passengers for whom that direction is high priority, then priority of that load is set to low.
+- Directions toward modules that received non-zero planned passenger counts from ambiguous groups are set to high priority on that day.
+  - Other ambiguous directions (that received 0 planned passenger counts) from the same node are set to low priority on that day.
+- For each edge corresponding to a high priority direction, the dispatcher inspects the actual would-be-boarding passengers in that direction (batch). If the number of passengers in that batch for whom that direction is low priority is greater than the number of passengers for whom that direction is high priority, then priority of that direction is set to low on that day.
+  - Batches reserved by lower id pods should not be inspected again by higher id pods considering the same node.

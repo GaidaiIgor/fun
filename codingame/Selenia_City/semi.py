@@ -15,7 +15,7 @@ TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 2 5;POD 1 2 0 2 0 2 0 2 0 2 5 2 5 2 0 2 0 2 5 2 0 2;POD 2 3 2 3 2 3 2 3 2 3 2 0 2 3 4 1 4 3 4 3 4 1"
 # "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
 FULL_DEBUG = False
 _G = {}
@@ -1064,7 +1064,6 @@ class Planner:
             state: PlanState, graph: dict[int, list[int]]) -> tuple[dict[int, PathDemand], dict[int, list[PathDemand]]]:
         assignments = {}
         preferences = {}
-        counts = Counter()
         reserved = set(reserved_passengers)
         for pod_id, _ in dynamic_pods:
             options = [path for path in active if current[pod_id] == -1 or graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
@@ -1078,13 +1077,12 @@ class Planner:
                     if levels[-1] > levels[1]:
                         priority = -1
                 evaluated.append(replace(path, priority=priority))
-            preferences[pod_id] = sorted(evaluated, key=lambda path: self.path_assignment_key(
-                path, pod_id, counts, len(batches[path]), current, delivered, graph))
+            preferences[pod_id] = sorted(evaluated,
+                key=lambda path: self.path_assignment_key(path, pod_id, len(batches[path]), current, delivered, graph))
             if preferences[pod_id]:
                 assignments[pod_id] = preferences[pod_id][0]
-                counts[assignments[pod_id]] += 1
                 reserved.update(passenger.id for passenger in batches[assignments[pod_id]])
-        self.limit_load_capacity(assignments, preferences, current, state, graph)
+        self.fix_load_assignments(assignments, preferences, current, state, graph)
         return assignments, preferences
     def boarding_batch(self, edge: DirectedPair, queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], reserved: set[int]) -> list[Passenger]:
@@ -1142,34 +1140,32 @@ class Planner:
             else:
                 unresolved.add(edge)
         return assignments, requests, self.allocate_tube_capacity(requests, state, result, False)
-    def path_assignment_key(self, path: PathDemand, pod_id: int, counts: Counter[PathDemand], boarding: int,
-            current: dict[int, int], delivered: Counter[int], graph: dict[int, list[int]]) -> tuple:
+    def path_assignment_key(self, path: PathDemand, pod_id: int, boarding: int, current: dict[int, int],
+            delivered: Counter[int], graph: dict[int, list[int]]) -> tuple:
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
-        return -path.priority, counts[path], -boarding, distance, len(path.nodes) - 1, delivered[path.destination], \
+        return -path.priority, -boarding, distance, len(path.nodes) - 1, delivered[path.destination], \
             -path.cap, path.pool, path.destination, path.nodes
-    def limit_load_capacity(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
+    def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             current: dict[int, int], state: PlanState, graph: dict[int, list[int]]):
         def capacity(path: PathDemand) -> int:
             return (len(path.nodes) - 1) * min(state.tubes[route_key(a, b)] for a, b in zip(path.nodes, path.nodes[1:]))
-        blocked = set()
+        indices = {pod_id: 0 for pod_id in assignments}
         while True:
             counts = Counter(assignments.values())
-            overloaded = next((path for path in sorted(counts, key=lambda item: (item.pool, item.destination, item.nodes))
-                if counts[path] > capacity(path) and path not in blocked), None)
-            if overloaded is None:
-                return
-            pods = sorted((pod_id for pod_id, path in assignments.items() if path == overloaded),
-                key=lambda pod_id: (0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], overloaded.nodes[0]), pod_id))
-            changed = False
-            for pod_id in pods[capacity(overloaded):]:
-                index = preferences[pod_id].index(assignments[pod_id]) + 1
-                if index < len(preferences[pod_id]):
-                    assignments[pod_id] = preferences[pod_id][index]
-                    changed = True
-            if changed:
-                blocked.clear()
+            for path in sorted(counts, key=lambda item: (item.pool, item.destination, item.nodes)):
+                pods = [pod_id for pod_id, assigned in assignments.items() if assigned == path and indices[pod_id] + 1 < len(preferences[pod_id])]
+                if not pods:
+                    continue
+                uneven = any(any(candidate.priority == assignments[pod_id].priority and counts[candidate] < counts[path] - 1
+                    for candidate in preferences[pod_id][indices[pod_id] + 1:]) for pod_id in pods)
+                if counts[path] <= capacity(path) and not uneven:
+                    continue
+                pod_id = max(pods, key=lambda item: (0 if current[item] == -1 else graph_distance(graph, current[item], path.nodes[0]), item))
+                indices[pod_id] += 1
+                assignments[pod_id] = preferences[pod_id][indices[pod_id]]
+                break
             else:
-                blocked.add(overloaded)
+                return
     def path_pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
             pod_positions: dict[int, int], current: dict[int, int], pending: dict[int, DirectedPair], assignments: dict[int, PathDemand],
             graph: dict[int, list[int]]) -> dict[int, DirectedPair]:

@@ -1,5 +1,16 @@
 # Selenia City Rules
 
+## Layout Bundle Generation
+
+1. Layout bundles are generated for each eligible source-destination pair.
+2. Start with the existing tube route. If none exists, use the cheapest constructible route that also connects to the existing tube network.
+3. If the starting route has N edges, also consider the cheapest constructible route with N-1, N-2, ..., 1 edges for each eligible destination.
+4. A newly constructed tube route may use at most 4 edges and must remain connected to the existing tube network.
+5. For a speed pool, its current destination may use an equal-length route, while another destination requires a shorter route.
+Diversity pools use their rerouting and balance eligibility rules.
+6. A direct teleporter to each eligible destination is considered as a separate layout when both endpoints are available.
+7. An alternative layout may drop an uncommitted tube only when it becomes unused and its removal does not disconnect the tube network.
+
 ## Pod Bundle Generation
 
 1. Pod bundles are considered in rounds. Each round consists of one or more bundles related to pods, upgrades and reroutes

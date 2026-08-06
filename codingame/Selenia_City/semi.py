@@ -14,9 +14,9 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 MAX_TUBE_HOPS = 4
 INF = 10 ** 9
-OVERRIDE_MONTH = 1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 2 5;POD 1 2 0 2 0 2 0 2 0 2 5 2 5 2 0 2 0 2 5 2 0 2;POD 2 3 2 3 2 3 2 3 2 3 2 0 2 3 4 1 4 3 4 3 4 1"
-# "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 2 5;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_MONTH = -1
+OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;DESTROY 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 5 3 5 3 4 8 4 3 2"
+# "TUBE 2 7;TUBE 4 8;POD 2 AUTO"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -477,11 +477,21 @@ class Planner:
             checkpoint_score: int, checkpoint_cost: int) -> list[PlanOption]:
         result = []
         round_number = 1
+        allow_reroute = True
         while parent.state.cost <= self.resources:
             simulation = self.cached_simulate(parent.state)
             if simulation.delivery_times.get(group, INF) == parent.bundle.path_length:
                 break
             options = []
+            reroute_id = self.closest_fixed_pod(group[0], parent.state) if allow_reroute else None
+            if reroute_id is not None:
+                reroute_bundle = Bundle(owner, pod_specs=(reroute_id,), label=f"{parent.bundle.label}-reroute",
+                    path_edges=parent.bundle.path_edges, destination=parent.bundle.destination,
+                    path_length=parent.bundle.path_length, path=parent.bundle.path, round_number=round_number)
+                reroute_option = PlanOption(reroute_bundle, parent.layouts, parent.layout_key,
+                    self.replay_bundle_on_state(parent.state, reroute_bundle))
+                reroute_bundle.debug_id = self.bundle_debug_id(reroute_option.state)
+                options.append((reroute_option, self.option_metrics(reroute_option, checkpoint_score, checkpoint_cost)))
             pod_bundle = Bundle(owner, pod_specs=(0,), label=f"{parent.bundle.label}-pod", path_edges=parent.bundle.path_edges,
                 destination=parent.bundle.destination, path_length=parent.bundle.path_length, path=parent.bundle.path,
                 round_number=round_number)
@@ -523,6 +533,8 @@ class Planner:
             next_parent.bundle.debug_chosen = next_parent.bundle.debug_id
             if efficiency <= parent_efficiency:
                 break
+            if len(next_parent.state.pods) > len(parent.state.pods):
+                allow_reroute = False
             parent, parent_efficiency = next_parent, efficiency
             round_number += 1
         return result
@@ -546,19 +558,11 @@ class Planner:
         else:
             state = self.inherit_pods(layout_state, inherited_state, base.pool)
             self.layout_cache[key] = LayoutBranch(self.copy_state(state))
-        pod_ids = [None]
-        if not state.ops and self.has_tube_loads(state):
-            pod_ids = self.closest_pods(base.path[0], base.path_edges, state)
-        result = []
-        for pod_id in pod_ids:
-            bundle = replace(base, pod_specs=() if pod_id is None else (pod_id,))
-            option_state = self.copy_state(state) if pod_id is None else \
-                self.replay_bundle_on_state(state, Bundle(base.pool, pod_specs=(pod_id,)))
-            self.afford_with_pod_drops(option_state, bundle)
-            bundle.debug_id = self.bundle_debug_id(option_state)
-            option = PlanOption(bundle, next_layouts, key, option_state)
-            result.append((option, self.option_metrics(option, checkpoint_score, checkpoint_cost)[2]))
-        return result
+        bundle = replace(base)
+        self.afford_with_pod_drops(state, bundle)
+        bundle.debug_id = self.bundle_debug_id(state)
+        option = PlanOption(bundle, next_layouts, key, state)
+        return [(option, self.option_metrics(option, checkpoint_score, checkpoint_cost)[2])]
     def inherit_pods(self, state: PlanState, inherited_state: PlanState, owner: PoolOwner) -> PlanState:
         for pod_id in sorted(set(self.pods) - set(inherited_state.pods)):
             state.cost -= POD_REFUND
@@ -586,9 +590,6 @@ class Planner:
         upgrades = sum(capacity - self.tubes.get(edge, 1) for edge, capacity in state.tubes.items())
         reroutes = sum(pod_id in self.pods for pod_id in state.ops)
         return f"{len(state.ops) - reroutes}p{upgrades}u{reroutes}r"
-    def has_tube_loads(self, state: PlanState) -> bool:
-        distances, module_distances = self.distances_to_targets(state)
-        return bool(self.path_demands(state, distances, module_distances))
     def layout_key(self, state: PlanState) -> LayoutKey:
         return tuple(sorted(state.tubes)), tuple(sorted(state.teleports.items()))
     def connection_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> list[Bundle]:
@@ -678,23 +679,19 @@ class Planner:
             if best is None or order < best[0]:
                 best = order, edges
         return best[1] if best else ()
-    def closest_pods(self, origin_id: int, path_edges: tuple[Pair, ...], state: PlanState) -> list[int]:
-        if not state.pods:
-            return [0]
-        tubes = dict(state.tubes)
-        tubes.update((edge, 1) for edge in path_edges)
-        graph = tube_graph(tubes)
+    def closest_fixed_pod(self, origin_id: int, state: PlanState) -> int:
+        graph = tube_graph(state.tubes)
         options = []
-        places = self.pod_locations(state)
-        for pod_id in state.pods:
-            nodes = places[pod_id]
-            dist = min(graph_distance(graph, origin_id, node) for node in nodes)
-            options.append((dist, pod_id not in state.ops, pod_id))
-        best = min(option[:2] for option in options)
-        return [option[2] for option in options if option[:2] == best] if best[0] < INF else [0]
-    def pod_locations(self, state: PlanState) -> dict[int, set[int]]:
-        dynamic_paths = self.score_state(state, True).dynamic_paths if state.ops else {}
-        return {pod_id: set(dynamic_paths.get(pod_id) or pod.path) for pod_id, pod in state.pods.items()}
+        for pod_id, pod in state.pods.items():
+            if pod_id in state.ops:
+                continue
+            index = 0
+            distance = 0
+            for _ in range(MONTH_DAYS):
+                distance += graph_distance(graph, pod.path[index], origin_id)
+                index = fixed_next_index(pod.path, index)
+            options.append((distance, pod_id))
+        return min(options)[1] if options else None
     def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair]) -> Pair:
         candidates = [(counts[edge], edge) for edge in path_edges if counts[edge]]
         return max(candidates, key=lambda item: (item[0], -item[1][0], -item[1][1]))[1] if candidates else (-1, -1)

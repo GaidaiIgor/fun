@@ -3,13 +3,14 @@
 ## Pod Bundle Generation
 
 1. Pod bundles are considered in rounds. Each round consists of one or more bundles related to pods, upgrades and reroutes
-2. Round 0 is just tube construction for the considered path (if necessary) + pod configuration copied from the currently selected bundle
-   1. For iteration 1, since there is nothing to inherit, round 0 considers reroute of 1 pod, or construction if no pods exist
-   2. Round 0 should consider all reroute choices
+2. Round 0 constructs necessary tubes for the considered path and copies pod configuration from the currently selected bundle
 3. Each subsequent round considers the following bundles
-   1. Previous round's winner +1 pod (if layout capacity allows more pods)
-   2. Previous round's winner +1 upgrade (if congestion exists in previous round's winner)
-   3. Previous round's winner +1 pod +1 upgrade (if congestion exists in the +pod bundle)
+   1. Previous round winner +1 reroute of a fixed pod
+      1. The pod with the minimum average monthly distance to load's origin is considered for reroute
+      2. Once a bundle with +pod has been selected in a given round, future rounds of that iteration no longer consider +reroute bundles.
+   2. Previous round winner +1 pod (if layout capacity allows more pods)
+   3. Previous round winner +1 upgrade (if congestion exists in previous round's winner)
+   4. Previous round winner +1 pod +1 upgrade (if congestion exists in the +pod bundle)
 4. The winner in each round is chosen based on the largest marginal efficiency
 5. New rounds are generated if last round's winner's efficiency was greater than the one in the round before
 6. Largest efficiency bundle in all rounds is selected as final
@@ -30,7 +31,8 @@ Pods fulfill assigned loads.
    5. Loads leading to a target module with fewer delivered passengers
    6. Loads with larger total remaining passengers
    7. Loads with smaller ID
-4. If initial assignments are such that capacity of a given load is exceeded or assignments are non-uniform, fix this by considering lower priority assignments for some of the pods violating these rules in the order of their preference list.
+4. If initial assignments are such that capacity of a given load is exceeded or assignments are non-uniform, fix this by considering lower priority assignments
+for some of the pods violating these rules in the order of their preference list.
 When deciding which pods should remain assigned:
    1. Prefer pods closer to the load's origin
    2. Prefer pods with lower id
@@ -45,9 +47,12 @@ Try to re-assign loads to resolve edge conflict as follows:
 ### Ambiguous Loads
 
 1. A passenger group is ambiguous when it has equally short remaining paths to multiple matching modules.
-2. The pod dispatcher divides ambiguous groups among their tied destinations in a way that equilibrates the total number of inbound passengers at each module from all groups.
+2. The pod dispatcher divides ambiguous groups among their tied destinations in a way that equilibrates the total number of inbound passengers at each module
+from all groups.
 3. A passenger group is considered inbound to a target module if the distance to that module is the shortest and no other modules have the same distance.
 4. Directions toward modules that received non-zero planned passenger counts from ambiguous groups are set to high priority on that day.
    1. Other ambiguous directions (that received 0 planned passenger counts) from the same node are set to low priority on that day.
-5. For each edge corresponding to a high priority direction, the dispatcher inspects the actual would-be-boarding passengers in that direction (batch). If the number of passengers in that batch for whom that direction is low priority is greater than the number of passengers for whom that direction is high priority, then priority of that direction is set to low on that day.
+5. For each edge corresponding to a high priority direction, the dispatcher inspects the actual would-be-boarding passengers in that direction (batch).
+If the number of passengers in that batch for whom that direction is low priority is greater than the number of passengers for whom that direction is high
+priority, then priority of that direction is set to low on that day.
    1. Batches reserved by lower id pods should not be inspected again by higher id pods considering the same node.

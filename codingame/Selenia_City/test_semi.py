@@ -12,8 +12,8 @@ import Selenia_City.semi as semi
 from Selenia_City.semi import Building, Candidate, Planner, PlanState, PodPlan, SimulationResult, route_key
 
 TURN_STATE = """
-month 10
-resources 5324
+month 15
+resources 50520
 module 0 1 20 15
 module 1 2 140 15
 landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
@@ -29,6 +29,7 @@ tube 2 3 1
 tube 3 4 1
 tube 3 5 1
 tube 3 6 1
+teleport 8 7
 pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 6, 3, 6, 3, 6, 3, 6]
 pod id=2, path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
 """

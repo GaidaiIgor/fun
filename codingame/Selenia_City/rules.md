@@ -28,7 +28,7 @@ Pods fulfill assigned loads.
    3. Loads where more passengers would board, capped at 10
    4. Loads with shorter distance to load's origin
    5. Loads with shorter remaining path length
-   6. Loads leading to a target module with fewer inbound passengers
+   6. Loads leading to a target module with fewer delivered passengers
    7. Loads with larger total remaining passengers
    8. Loads with smaller ID
 4. If initial assignments assigned the number of pods exceeding capacity of a given load, some of the assigned pods are reassigned to the next load from their preference list.

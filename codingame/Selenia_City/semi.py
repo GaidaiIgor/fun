@@ -849,7 +849,7 @@ class Planner:
             reserved_passengers = set()
             for _, reservations in fixed_schedule[day:]:
                 reserved_passengers.update(reservations)
-            active, passenger_priorities, inbound = self.daily_loads(state, queues, module_distances, result, reserved_passengers)
+            active, passenger_priorities = self.daily_loads(state, queues, module_distances, result, reserved_passengers)
             if not active:
                 break
             if not dynamic_pods:
@@ -860,7 +860,7 @@ class Planner:
                 continue
             fixed_assignments, _, _ = self.fixed_load_assignments(fixed_pods, pod_positions, active, queues, wanted_edges)
             assignments, preferences = self.dispatch_dynamic_paths(active, dynamic_pods, dynamic_current, queues,
-                wanted_edges, passenger_priorities, reserved_passengers, inbound, state, graph)
+                wanted_edges, passenger_priorities, reserved_passengers, result.delivered_by_module, state, graph)
             assignments, requests, moves = self.resolve_dispatch_congestion(assignments, preferences, fixed_pods, dynamic_pods,
                 pod_positions, dynamic_current, dynamic_pending, graph, result, state)
             if keep_dynamic_paths:
@@ -904,7 +904,7 @@ class Planner:
             self.settle(day, queues, arrivals, result)
             for passengers in queues.values():
                 passengers.sort(key=BY_ID)
-            active, _, _ = self.daily_loads(state, queues, module_distances, result, set())
+            active, _ = self.daily_loads(state, queues, module_distances, result, set())
             assignments, reservations, claimed = self.fixed_load_assignments(fixed_pods, positions, active, queues, wanted_edges)
             schedule.append((assignments, reservations, claimed))
             if not active:
@@ -965,7 +965,7 @@ class Planner:
         return assignments, reservations, claimed
     def daily_loads(self, state: PlanState, queues: dict[int, list[Passenger]], module_distances: dict[int, dict[int, int]],
             result: SimulationResult, reserved: set[int]) \
-            -> tuple[list[PathDemand], dict[tuple[Pool, int, int], int], Counter[int]]:
+            -> tuple[list[PathDemand], dict[tuple[Pool, int, int], int]]:
         counts = Counter(((passenger.pad_id, passenger.kind), node_id)
             for node_id, passengers in queues.items() for passenger in passengers)
         reserved_counts = Counter(((passenger.pad_id, passenger.kind), node_id)
@@ -1008,7 +1008,7 @@ class Planner:
         for (_, source_id, target_id), priority in own_priorities.items():
             direction_priorities[source_id, target_id] = max(direction_priorities.get((source_id, target_id), -1), priority)
         prioritized = [path if path.reserved else replace(path, priority=direction_priorities[path.nodes[:2]]) for path in loads]
-        return prioritized, own_priorities, inbound
+        return prioritized, own_priorities
     def path_demands(self, state: PlanState, distances: dict[int, dict[int, int]],
             module_distances: dict[int, dict[int, int]]) -> list[PathDemand]:
         demands = []
@@ -1060,7 +1060,7 @@ class Planner:
         return runs
     def dispatch_dynamic_paths(self, active: list[PathDemand], dynamic_pods: list[tuple[int, PodPlan]], current: dict[int, int],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
-            passenger_priorities: dict[tuple[Pool, int, int], int], reserved_passengers: set[int], inbound: Counter[int],
+            passenger_priorities: dict[tuple[Pool, int, int], int], reserved_passengers: set[int], delivered: Counter[int],
             state: PlanState, graph: dict[int, list[int]]) -> tuple[dict[int, PathDemand], dict[int, list[PathDemand]]]:
         assignments = {}
         preferences = {}
@@ -1079,7 +1079,7 @@ class Planner:
                         priority = -1
                 evaluated.append(replace(path, priority=priority))
             preferences[pod_id] = sorted(evaluated, key=lambda path: self.path_assignment_key(
-                path, pod_id, counts, len(batches[path]), current, inbound, graph))
+                path, pod_id, counts, len(batches[path]), current, delivered, graph))
             if preferences[pod_id]:
                 assignments[pod_id] = preferences[pod_id][0]
                 counts[assignments[pod_id]] += 1
@@ -1143,9 +1143,9 @@ class Planner:
                 unresolved.add(edge)
         return assignments, requests, self.allocate_tube_capacity(requests, state, result, False)
     def path_assignment_key(self, path: PathDemand, pod_id: int, counts: Counter[PathDemand], boarding: int,
-            current: dict[int, int], inbound: Counter[int], graph: dict[int, list[int]]) -> tuple:
+            current: dict[int, int], delivered: Counter[int], graph: dict[int, list[int]]) -> tuple:
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
-        return -path.priority, counts[path], -boarding, distance, len(path.nodes) - 1, inbound[path.destination], \
+        return -path.priority, counts[path], -boarding, distance, len(path.nodes) - 1, delivered[path.destination], \
             -path.cap, path.pool, path.destination, path.nodes
     def limit_load_capacity(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             current: dict[int, int], state: PlanState, graph: dict[int, list[int]]):

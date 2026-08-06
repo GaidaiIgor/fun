@@ -2,30 +2,42 @@
 
 ## Layout Bundle Generation
 
-1. Layout bundles are generated for each eligible source-destination pair.
-2. Start with the existing tube route. If none exists, use the cheapest constructible route that also connects to the existing tube network.
-3. If the starting route has N edges, also consider the cheapest constructible route with N-1, N-2, ..., 1 edges for each eligible destination.
-4. A newly constructed tube route may use at most 4 edges and must remain connected to the existing tube network.
-5. For a speed pool, its current destination may use an equal-length route, while another destination requires a shorter route.
-Diversity pools use their rerouting and balance eligibility rules.
-6. A direct teleporter to each eligible destination is considered as a separate layout when both endpoints are available.
-7. An alternative layout may drop an uncommitted tube only when it becomes unused and its removal does not disconnect the tube network.
+1. Layout bundles are generated iteratively. New bundles are applied on top of the previously selected layout.
+2. On each iteration, we first select the main considered pool as the pool with the largest number of missing points.
+   1. A pool is either an astronaut group (speed pool) or a target module (diversity pool).
+   2. For diversity pools the number of missing points is calculated relative to the perfect balance distribution.
+3. For the main considered pool, we consider all eligible pairs.
+   1. A pair is a target module for a speed pool or an astronaut group for a diversity pool of matching type.
+   2. An eligible pair for a speed pool is either a currently active pair or a pair to which a path shorter than active can be constructed.
+   An eligible pair for a diversity pool is a pair such that its partial or complete reroute from their active destination(s) to this module
+   creates a net positive change in diversity score.
+      1. When evaluating partial reroutes assume perfect balance between all active pairs. Do not do full simulation.
+4. For all eligible pairs, we consider all eligible paths.
+   1. For a speed pool, a path is eligible if it's active or shorter than active.
+   For a diversity pool, in case of a complete reroute, a path is eligible if it's shorter than active.
+   For a partial reroute, a path is eligible if it's the same length as active.
+      1. Among all paths with the same number of edges, only the cheapest one is eligible.
+5. Once a specific path is determined, it results in a layout bundle that constructs it, if it does not exist.
+After that the generated layout is passed to the pod bundle generator.
+   1. Other than the selected path, the bundle also constructs the cheapest necessary tubes to maintain connectivity with the rest of the graph,
+   except for teleport paths.
+   2. After a shorter than active path is built between the main pool and its pair, no longer used planned edges are dropped.
 
 ## Pod Bundle Generation
 
-1. Pod bundles are considered in rounds. Each round consists of one or more bundles related to pods, upgrades and reroutes
-2. Round 0 constructs necessary tubes for the considered path and copies pod configuration from the currently selected bundle
-3. Each subsequent round considers the following bundles
-   1. Previous round winner +1 reroute of a fixed pod
-      1. The pod with the minimum average monthly distance to load's origin is considered for reroute
+1. Pod bundles are considered in rounds. Each round consists of one or more bundles related to pods, upgrades and reroutes.
+2. Round 0 constructs necessary tubes for the considered path and copies pod configuration from the currently selected bundle.
+3. Each subsequent round considers the following bundles.
+   1. Previous round winner +1 reroute of a fixed pod.
+      1. The pod with the minimum average monthly distance to load's origin is considered for reroute.
       2. Once a bundle with +pod has been selected in a given round, future rounds of that iteration no longer consider +reroute bundles.
-   2. Previous round winner +1 pod (if layout capacity allows more pods)
-   3. Previous round winner +1 upgrade (if congestion exists in previous round's winner)
-   4. Previous round winner +1 pod +1 upgrade (if congestion exists in the +pod bundle)
-4. The winner in each round is chosen based on the largest marginal efficiency
-5. New rounds are generated if last round's winner's efficiency was greater than the one in the round before
-6. Largest efficiency bundle in all rounds is selected as final
-7. Teleports should be round-0 only
+   2. Previous round winner +1 pod (if layout capacity allows more pods).
+   3. Previous round winner +1 upgrade (if congestion exists in previous round's winner).
+   4. Previous round winner +1 pod +1 upgrade (if congestion exists in the +pod bundle).
+4. The winner in each round is chosen based on the largest marginal efficiency.
+5. New rounds are generated if last round's winner's efficiency was greater than the one in the round before.
+6. Largest efficiency bundle in all rounds is selected as final.
+7. Teleports should be round-0 only.
 
 ## Pod Dispatcher Rules
 
@@ -34,24 +46,24 @@ Those passengers are considered reserved by the fixed pods.
 Demand generated by reserved passengers is given a low priority.
 2. Dynamic pod routes are resolved by running the full month simulation where dispatcher assigns pods to loads on each day.
 Pods fulfill assigned loads.
-3. Initially, each pod is assigned a load according to the following individual list of preferences
-   1. Loads with higher priority
-   2. Loads where more passengers would board, capped at 10
-   3. Loads with shorter distance to load's origin
-   4. Loads with shorter remaining path length
-   5. Loads leading to a target module with fewer delivered passengers
-   6. Loads with larger total remaining passengers
-   7. Loads with smaller ID
+3. Initially, each pod is assigned a load according to the following individual list of preferences.
+   1. Loads with higher priority.
+   2. Loads where more passengers would board, capped at 10.
+   3. Loads with shorter distance to load's origin.
+   4. Loads with shorter remaining path length.
+   5. Loads leading to a target module with fewer delivered passengers.
+   6. Loads with larger total remaining passengers.
+   7. Loads with smaller ID.
 4. If initial assignments are such that capacity of a given load is exceeded or assignments are non-uniform, fix this by considering lower priority assignments
 for some of the pods violating these rules in the order of their preference list.
 When deciding which pods should remain assigned:
-   1. Prefer pods closer to the load's origin
-   2. Prefer pods with lower id
+   1. Prefer pods closer to the load's origin.
+   2. Prefer pods with lower id.
 5. If pods' movement due to currently selected assignments exceeds capacity of some edge E, record congestion event at that edge.
 Try to re-assign loads to resolve edge conflict as follows:
-   1. If a pair of pods is trying to move in opposite directions through E, swap their assignments
-   2. Otherwise, pick the pod with lower id, and assign the next load from its preference list that resolves the conflict
-   3. If such load is not found, try the other conflicting pod
+   1. If a pair of pods is trying to move in opposite directions through E, swap their assignments.
+   2. Otherwise, pick the pod with lower id, and assign the next load from its preference list that resolves the conflict.
+   3. If such load is not found, try the other conflicting pod.
    4. If such load is still not found, give up and keep the original assignment.
    5. Repeat until no resolvable conflict remains.
 

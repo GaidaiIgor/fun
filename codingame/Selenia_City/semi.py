@@ -12,7 +12,6 @@ POD_COST = 1000
 POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
-MAX_TUBE_HOPS = 4
 INF = 10 ** 9
 OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;DESTROY 2;POD 2 4 1 4 1 4 1 4 1 4 1 4 3 5 3 5 3 4 8 4 3 2"
@@ -75,6 +74,7 @@ class Bundle:
     debug_id: str = ""
     debug_chosen: str = ""
     round_number: int = 0
+    prune_unused: bool = False
     @property
     def fingerprint(self) -> tuple:
         return self.tubes, self.teleport, self.pod_specs, self.pod_drops, self.upgrades
@@ -130,6 +130,7 @@ class Planner:
     teleports: dict[int, int]
     pods: dict[int, PodPlan]
     simulation_cache: dict[tuple, SimulationResult]
+    path_cache: dict[tuple, dict[int, list[int]]]
     layout_cache: dict[LayoutKey, LayoutBranch]
     turn_start_result: SimulationResult
     def __init__(self):
@@ -140,6 +141,7 @@ class Planner:
         self.teleports = {}
         self.pods = {}
         self.simulation_cache = {}
+        self.path_cache = {}
         self.fs_cache = {}
         self.layout_cache = {}
     def play(self):
@@ -175,6 +177,7 @@ class Planner:
         self.print_debug_input()
     def choose_actions(self) -> list[str]:
         self.simulation_cache = {}
+        self.path_cache = {}
         self.fs_cache = {}
         _G.clear()
         if self.month + 1 == OVERRIDE_MONTH:
@@ -278,57 +281,87 @@ class Planner:
     def best_candidate(self, layouts: tuple[Bundle, ...], current_state: PlanState, current_result: SimulationResult,
             before_score: int) -> Candidate:
         pools = []
-        distances, _ = self.distances_to_targets(current_state)
+        distances, module_distances = self.distances_to_targets(current_state)
         for pool in self.speed_pools():
             missing = self.buildings[pool[0]].demand[pool[1]] * 50 - current_result.speed_by_pool[pool]
             if missing > 0:
-                modules = sorted(building.id for building in self.buildings.values()
-                    if building.kind == pool[1] and self.speed_destination_eligible(pool, building.id, current_result))
-                pools.append((missing, (0, pool[0], pool[1]), pool, [(module_id, pool, [module_id]) for module_id in modules]))
+                pairs = []
+                for module in sorted(self.buildings.values(), key=BY_ID):
+                    if module.kind != pool[1]:
+                        continue
+                    eligibility = self.layout_path_eligibility(pool, module.id, current_state, current_result, distances,
+                        module_distances, False)
+                    if any(eligibility):
+                        pairs.append((module.id, pool, [module.id], eligibility))
+                pools.append((missing, (0, pool[0], pool[1]), pool, pairs))
         for module in sorted(self.buildings.values(), key=lambda item: item.id):
             if module.kind <= 0:
                 continue
             missing = self.perfect_diversity(module.kind) - current_result.diversity_by_module[module.id]
             if missing <= 0:
                 continue
-            groups = [pool for pool in self.speed_pools()
-                if pool[1] == module.kind and self.diversity_group_eligible(pool, module.id, current_state, current_result, distances)]
-            if groups:
-                pools.append((missing, (1, module.id), module.id, [(group, group, [module.id]) for group in groups]))
+            pairs = []
+            for group in self.speed_pools():
+                if group[1] != module.kind:
+                    continue
+                eligibility = self.layout_path_eligibility(group, module.id, current_state, current_result, distances,
+                    module_distances, True)
+                if any(eligibility):
+                    pairs.append((group, group, [module.id], eligibility))
+            pools.append((missing, (1, module.id), module.id, pairs))
         pools.sort(key=lambda item: (-item[0], item[1]))
-        for _, _, owner, pairs in pools:
-            debug(f"Considering {owner}:")
-            best = None
-            for pair, group, module_ids in pairs:
-                debug(f"  Considering {pair}:")
-                options = self.generate_options(owner, group, module_ids, layouts, current_state, current_result)
-                candidate = self.next_candidate(owner, pair, group, current_state, current_result, before_score, options)
-                if candidate and (best is None or (candidate.efficiency, candidate.marginal_gain, -candidate.marginal_cost) >
-                        (best.efficiency, best.marginal_gain, -best.marginal_cost)):
-                    best = candidate
-            if best:
-                return best
-        return None
-    def speed_destination_eligible(self, pool: Pool, module_id: int, result: SimulationResult) -> bool:
-        modules = [building for building in self.buildings.values() if building.kind == pool[1]]
-        before = sum(result.diversity_by_module[module.id] for module in modules)
-        populations = Counter({module.id: result.delivered_by_module[module.id] for module in modules})
-        for (delivered_pool, delivered_module_id), count in result.delivered_by_pool_module.items():
-            if delivered_pool == pool:
-                populations[delivered_module_id] -= count
-        populations[module_id] += self.buildings[pool[0]].demand[pool[1]]
-        after = sum(sum(max(0, 50 - index) for index in range(populations[module.id])) for module in modules)
-        return after >= before
-    def diversity_group_eligible(self, group: Pool, module_id: int, state: PlanState, result: SimulationResult,
-            distances: dict[int, dict[int, int]]) -> bool:
-        if result.delivered_by_pool_module[group, module_id]:
-            return False
+        if not pools:
+            return None
+        _, _, owner, pairs = pools[0]
+        debug(f"Considering {owner}:")
+        best = None
+        for pair, group, module_ids, eligibility in pairs:
+            debug(f"  Considering {pair}:")
+            options = self.generate_options(owner, group, module_ids, layouts, current_state, current_result, eligibility)
+            candidate = self.next_candidate(owner, pair, group, current_state, current_result, before_score, options)
+            if candidate and (best is None or (candidate.efficiency, candidate.marginal_gain, -candidate.marginal_cost) >
+                    (best.efficiency, best.marginal_gain, -best.marginal_cost)):
+                best = candidate
+        return best
+    def layout_path_eligibility(self, group: Pool, module_id: int, state: PlanState, result: SimulationResult,
+            distances: dict[int, dict[int, int]], module_distances: dict[int, dict[int, int]], diversity: bool) \
+            -> tuple[bool, bool]:
         current_length = distances[group[1]][group[0]]
-        if current_length <= MAX_TUBE_HOPS and self.cheapest_hop_path(group[0], [module_id], current_length, state):
-            return True
-        hop_limit = min(max(0, current_length - 1), MAX_TUBE_HOPS)
-        return self.speed_destination_eligible(group, module_id, result) and \
-            bool(hop_limit and self.cheapest_path_with_hop_limit(group[0], [module_id], hop_limit, state))
+        active = current_length < INF and module_distances[module_id][group[0]] == current_length
+        equal_gain, shorter_gain = self.diversity_reroute_eligibility(group, module_id, result, module_distances) \
+            if diversity else (active, True)
+        equal = equal_gain and current_length < INF and bool(self.cheapest_hop_path(group[0], [module_id], current_length, state))
+        hop_limit = len(self.buildings) - 1 if current_length >= INF else min(current_length - 1, len(self.buildings) - 1)
+        shorter = shorter_gain and hop_limit > 0 and bool(self.cheapest_path_with_hop_limit(group[0], [module_id], hop_limit, state))
+        used = self.teleport_used_buildings(state.teleports)
+        shorter |= shorter_gain and current_length > 0 and group[0] not in used and module_id not in used
+        return equal, shorter
+    def diversity_reroute_eligibility(self, group: Pool, module_id: int, result: SimulationResult,
+            module_distances: dict[int, dict[int, int]]) -> tuple[bool, bool]:
+        modules = sorted((building for building in self.buildings.values() if building.kind == group[1]), key=BY_ID)
+        current_length = min(module_distances[module.id][group[0]] for module in modules)
+        active = [module.id for module in modules if current_length < INF and module_distances[module.id][group[0]] == current_length]
+        if not active:
+            return False, False
+        populations = Counter({module.id: result.delivered_by_module[module.id] for module in modules})
+        for (delivered_group, delivered_module_id), count in result.delivered_by_pool_module.items():
+            if delivered_group == group:
+                populations[delivered_module_id] -= count
+        allocations = Counter()
+        for index in range(self.buildings[group[0]].demand[group[1]]):
+            allocations[active[index % len(active)]] += 1
+        populations.update(allocations)
+        losses = []
+        for source_id, count in allocations.items():
+            if source_id != module_id:
+                losses.extend(max(0, 51 - populations[source_id] + offset) for offset in range(count))
+        losses.sort()
+        delta = 0
+        partial = False
+        for moved, loss in enumerate(losses, 1):
+            delta += max(0, 51 - populations[module_id] - moved) - loss
+            partial |= moved < len(losses) and delta > 0
+        return partial, bool(losses and delta > 0)
     def next_candidate(self, owner: PoolOwner, pair: PoolOwner, group: Pool, current_state: PlanState,
             current_result: SimulationResult, before_score: int, options: list[PlanOption]) -> Candidate:
         best = None
@@ -338,7 +371,7 @@ class Planner:
             bundle, state = option.bundle, option.state
             if bundle.fingerprint == Bundle(owner).fingerprint and not bundle.path_edges:
                 continue
-            if bundle.path_edges and current_result.delivery_times.get(group, INF) == bundle.path_length:
+            if isinstance(owner, tuple) and bundle.path_edges and current_result.delivery_times.get(group, INF) == bundle.path_length:
                 continue
             state_key = tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), \
                 tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items()))
@@ -389,75 +422,33 @@ class Planner:
                     best = candidate
         return best
     def generate_options(self, owner: PoolOwner, group: Pool, module_ids: list[int], layouts: tuple[Bundle, ...], state: PlanState,
-            current_result: SimulationResult) -> list[PlanOption]:
+            current_result: SimulationResult, eligibility: tuple[bool, bool]) -> list[PlanOption]:
         bases = []
         pad_id = group[0]
-        distances, module_distances = self.distances_to_targets(state)
+        distances, _ = self.distances_to_targets(state)
         current_length = distances[group[1]][pad_id]
-        same_destination = module_distances[module_ids[0]][pad_id] == current_length
-        allow_shorter = True
-        if isinstance(owner, int):
-            allow_shorter = self.speed_destination_eligible(group, module_ids[0], current_result)
-        existing_path = self.shortest_existing_tube_path(pad_id, module_ids, state.tubes)
-        if not existing_path:
-            connections = self.connection_bundles(owner, group, module_ids, state)
-            bases.extend(connections)
-            route_length = connections[0].path_length if connections else 1
-        else:
-            route_length = len(existing_path) - 1
-            bases.extend(self.path_bundles(owner, "existing", existing_path, state))
-        bases.extend(self.shortest_route_bundles(owner, group, module_ids, route_length, state))
-        if isinstance(owner, int) and current_length <= MAX_TUBE_HOPS:
+        allow_equal, allow_shorter = eligibility
+        if allow_equal:
             equal_path = self.cheapest_hop_path(pad_id, module_ids, current_length, state)
-            if equal_path and tuple(equal_path) not in {bundle.path for bundle in bases}:
-                bases.extend(self.path_bundles(owner, f"equal-{current_length}", equal_path, state))
-        if isinstance(owner, int):
-            bases = [bundle for bundle in bases
-                if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
-        elif same_destination:
-            bases = [bundle for bundle in bases if bundle.path_length <= current_length]
-        else:
-            bases = [bundle for bundle in bases if bundle.path_length < current_length]
+            bases.extend(self.path_bundles(owner, f"equal-{current_length}", equal_path, state))
+        if allow_shorter:
+            hop_limit = len(self.buildings) - 1 if current_length >= INF else min(current_length - 1, len(self.buildings) - 1)
+            bases.extend(self.shortest_route_bundles(owner, group, module_ids, hop_limit, state))
+        for base in bases:
+            base.prune_unused = base.path_length < current_length
         options = []
-        connections = [base for base in bases if base.label == "connect"]
-        if connections:
-            options.extend(self.connection_option_stack(owner, group, connections, layouts, state, current_result.score, state.cost))
-        connection_ids = {id(base) for base in connections}
         seen = set()
         for base in bases:
-            if id(base) in connection_ids:
-                continue
             key = base.path, base.tubes, base.pod_specs
             if key in seen:
                 continue
             seen.add(key)
             options.extend(self.path_option_stack(owner, group, base, layouts, state, current_result.score, state.cost))
-        teleports = self.teleport_bundles(owner, group, module_ids, state)
-        if isinstance(owner, int):
-            teleports = [bundle for bundle in teleports
-                if bundle.path_length == current_length or allow_shorter and bundle.path_length < current_length]
-        elif not same_destination:
-            teleports = [bundle for bundle in teleports if bundle.path_length < current_length]
-        for bundle in teleports:
-            options.extend(option for option, _ in self.base_options(bundle, layouts, state, current_result.score, state.cost))
+        if allow_shorter:
+            for bundle in self.teleport_bundles(owner, group, module_ids, state):
+                bundle.prune_unused = True
+                options.extend(option for option, _ in self.base_options(bundle, layouts, state, current_result.score, state.cost))
         return options
-    def connection_option_stack(self, owner: PoolOwner, group: Pool, bases: list[Bundle], layouts: tuple[Bundle, ...],
-            inherited_state: PlanState, checkpoint_score: int, checkpoint_cost: int) -> list[PlanOption]:
-        result = []
-        options = []
-        for base in bases:
-            for option, parent_efficiency in self.base_options(base, layouts, inherited_state, checkpoint_score, checkpoint_cost):
-                metrics = self.option_metrics(option, checkpoint_score, checkpoint_cost)
-                result.append(option)
-                if option.state.cost <= self.resources:
-                    options.append((metrics[2], metrics[0], -metrics[1], option, parent_efficiency))
-        if not options:
-            return result
-        efficiency, _, _, parent, parent_efficiency = max(options, key=lambda item: item[:3])
-        parent.bundle.debug_chosen = parent.bundle.debug_id
-        result.extend(self.throughput_options(owner, group, parent, max(efficiency, parent_efficiency), checkpoint_score,
-            checkpoint_cost))
-        return result
     def path_option_stack(self, owner: PoolOwner, group: Pool, base: Bundle, layouts: tuple[Bundle, ...],
             inherited_state: PlanState, checkpoint_score: int, checkpoint_cost: int) -> list[PlanOption]:
         base_options = self.base_options(base, layouts, inherited_state, checkpoint_score, checkpoint_cost)
@@ -480,7 +471,7 @@ class Planner:
         allow_reroute = True
         while parent.state.cost <= self.resources:
             simulation = self.cached_simulate(parent.state)
-            if simulation.delivery_times.get(group, INF) == parent.bundle.path_length:
+            if isinstance(owner, tuple) and simulation.delivery_times.get(group, INF) == parent.bundle.path_length:
                 break
             options = []
             reroute_id = self.closest_fixed_pod(group[0], parent.state) if allow_reroute else None
@@ -547,9 +538,9 @@ class Planner:
     def base_options(self, base: Bundle, layouts: tuple[Bundle, ...], inherited_state: PlanState,
             checkpoint_score: int, checkpoint_cost: int) -> list[tuple[PlanOption, float]]:
         next_layouts = layouts
-        if base.tubes or base.teleport != (-1, -1):
+        if base.tubes or base.teleport != (-1, -1) or base.prune_unused:
             layout = Bundle(base.pool, tubes=base.tubes, teleport=base.teleport, label=base.label, path_edges=base.path_edges,
-                destination=base.destination, path_length=base.path_length, path=base.path)
+                destination=base.destination, path_length=base.path_length, path=base.path, prune_unused=base.prune_unused)
             next_layouts = (*layouts, layout)
         layout_state = self.replay_bundle_sequence(next_layouts)
         key = self.layout_key(layout_state)
@@ -592,54 +583,12 @@ class Planner:
         return f"{len(state.ops) - reroutes}p{upgrades}u{reroutes}r"
     def layout_key(self, state: PlanState) -> LayoutKey:
         return tuple(sorted(state.tubes)), tuple(sorted(state.teleports.items()))
-    def connection_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState) -> list[Bundle]:
-        path = self.cheapest_connecting_path(group[0], module_ids, state)
-        network_nodes = {node for edge in state.tubes for node in edge}
-        if not network_nodes or network_nodes.intersection(path):
-            return self.path_bundles(owner, "connect", path, state)
-        connected = self.network_connection_bundle(owner, group, module_ids, state, network_nodes)
-        return [connected] if connected else []
-    def network_connection_bundle(self, owner: PoolOwner, group: Pool, module_ids: list[int], state: PlanState,
-            network_nodes: set[int]) -> Bundle:
-        best = None
-        routes = []
-        path = self.cheapest_path_with_hop_limit(group[0], module_ids, MAX_TUBE_HOPS, state, via_nodes=tuple(network_nodes))
-        if path:
-            routes.append((tuple(route_key(a, b) for a, b in zip(path, path[1:])), path[-1]))
-        for module_id in module_ids:
-            base_path = self.cheapest_connecting_path(group[0], [module_id], state)
-            base_edges = tuple(route_key(a, b) for a, b in zip(base_path, base_path[1:]))
-            for junction_id in base_path:
-                remaining_hops = MAX_TUBE_HOPS - len(base_edges)
-                connector = [junction_id] if junction_id in network_nodes else \
-                    self.cheapest_path_with_hop_limit(junction_id, list(network_nodes), remaining_hops, state)
-                if not connector:
-                    continue
-                edges = tuple(dict.fromkeys((*base_edges, *(route_key(a, b) for a, b in zip(connector, connector[1:])))))
-                if len(edges) <= MAX_TUBE_HOPS and self.can_add_tubes([edge for edge in edges if edge not in state.tubes], state.tubes):
-                    routes.append((edges, module_id))
-        for path_edges, module_id in routes:
-            tubes = tuple(edge for edge in path_edges if edge not in state.tubes)
-            cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes)
-            projected_tubes = dict(state.tubes)
-            projected_tubes.update((edge, 1) for edge in path_edges)
-            route = self.shortest_existing_tube_path(group[0], [module_id], projected_tubes)
-            bundle = Bundle(owner, tubes=tubes, label="connect", path_edges=path_edges,
-                destination=module_id, path_length=len(route) - 1, path=tuple(route))
-            source = self.buildings[group[0]]
-            target = self.buildings[module_id]
-            distance = (source.x - target.x) * (source.x - target.x) + (source.y - target.y) * (source.y - target.y)
-            order = cost, distance, len(route), path_edges
-            if best is None or order < best[0]:
-                best = order, bundle
-        return best[1] if best else None
-    def shortest_route_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], route_length: int,
+    def shortest_route_bundles(self, owner: PoolOwner, group: Pool, module_ids: list[int], hop_limit: int,
             state: PlanState) -> list[Bundle]:
         bundles = []
-        for hop_count in range(route_length - 1, 0, -1):
-            for module_id in module_ids:
-                path = self.cheapest_hop_path(group[0], [module_id], hop_count, state)
-                bundles.extend(self.path_bundles(owner, f"short-{hop_count}", path, state))
+        paths = self.cheapest_paths_by_hop(group[0], module_ids, hop_limit, state)
+        for hop_count in range(hop_limit, 0, -1):
+            bundles.extend(self.path_bundles(owner, f"short-{hop_count}", paths.get(hop_count, []), state))
         return bundles
     def teleport_bundles(self, owner: PoolOwner, group: Pool, modules: list[int], state: PlanState) -> list[Bundle]:
         pad_id = group[0]
@@ -664,7 +613,8 @@ class Planner:
         network_nodes = {node for edge in state.tubes for node in edge}
         if not network_nodes or network_nodes.intersection(path):
             return base_edges
-        remaining_hops = MAX_TUBE_HOPS - len(base_edges)
+        max_edges = len(self.buildings) - 1
+        remaining_hops = max_edges - len(base_edges)
         best = None
         for junction_id in path:
             connector = self.cheapest_path_with_hop_limit(junction_id, list(network_nodes), remaining_hops, state)
@@ -672,7 +622,7 @@ class Planner:
                 continue
             edges = tuple(dict.fromkeys((*base_edges, *(route_key(a, b) for a, b in zip(connector, connector[1:])))))
             tubes = [edge for edge in edges if edge not in state.tubes]
-            if len(edges) > MAX_TUBE_HOPS or not self.can_add_tubes(tubes, state.tubes):
+            if len(edges) > max_edges or not self.can_add_tubes(tubes, state.tubes):
                 continue
             cost = sum(tube_cost(self.buildings[a], self.buildings[b]) for a, b in tubes)
             order = cost, len(edges), edges
@@ -708,21 +658,15 @@ class Planner:
         state = PlanState(dict(self.tubes), dict(self.teleports), pods)
         for bundle in selected:
             self.apply_bundle(state, bundle)
-            self.prune_uncommitted_infrastructure(state)
+            if bundle.prune_unused:
+                self.prune_uncommitted_infrastructure(state)
         return state
     def prune_uncommitted_infrastructure(self, state: PlanState):
-        upgrades = [(index, route_key(int(parts[1]), int(parts[2]))) for index, action in enumerate(state.actions)
-            if (parts := action.split()) and parts[0] == "UPGRADE"]
         used = set()
-        if state.new_tubes or upgrades:
+        if state.new_tubes:
             distances, module_distances = self.distances_to_targets(state)
             for demand in self.path_demands(state, distances, module_distances):
                 used.update(route_key(a, b) for a, b in zip(demand.nodes, demand.nodes[1:]))
-        for index, edge in upgrades:
-            if edge not in used:
-                state.cost -= tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * state.tubes[edge]
-                state.tubes[edge] -= 1
-                state.actions[index] = ""
         for edge in sorted(state.new_tubes - used):
             remaining = dict(state.tubes)
             del remaining[edge]
@@ -1352,67 +1296,43 @@ class Planner:
                 dynamic_pending[pod_id] = (-1, -1)
             if onboard.get(pod_id):
                 queues.setdefault(target_id, []).extend(onboard[pod_id])
-    def shortest_existing_tube_path(self, start_id: int, targets: list[int], tubes: dict[Pair, int]) -> list[int]:
-        graph = tube_graph(tubes)
-        queue = deque([start_id])
-        parent = {start_id: start_id}
-        target_set = set(targets)
-        while queue:
-            building_id = queue.popleft()
-            if building_id in target_set and building_id != start_id:
-                return unwind_path(parent, start_id, building_id)
-            for neighbor_id in graph.get(building_id, []):
-                if neighbor_id not in parent:
-                    parent[neighbor_id] = building_id
-                    queue.append(neighbor_id)
-        return []
-    def cheapest_connecting_path(self, start_id: int, targets: list[int], state: PlanState) -> list[int]:
-        return self.cheapest_path_with_hop_limit(start_id, targets, MAX_TUBE_HOPS, state)
     def cheapest_hop_path(self, start_id: int, targets: list[int], hop_count: int, state: PlanState) -> list[int]:
-        path = self.cheapest_path_with_hop_limit(start_id, targets, hop_count, state, exact_hops=True)
-        return path
-    def cheapest_path_with_hop_limit(self, start_id: int, targets: list[int], hop_limit: int, state: PlanState,
-            exact_hops: bool = False, via_nodes: tuple[int, ...] = ()) -> list[int]:
+        return self.cheapest_paths_by_hop(start_id, targets, hop_count, state).get(hop_count, [])
+    def cheapest_path_with_hop_limit(self, start_id: int, targets: list[int], hop_limit: int,
+            state: PlanState) -> list[int]:
+        paths = self.cheapest_paths_by_hop(start_id, targets, hop_limit, state)
+        return min(paths.values(), key=lambda path: (sum(0 if route_key(a, b) in state.tubes else
+            tube_cost(self.buildings[a], self.buildings[b]) for a, b in zip(path, path[1:])), path), default=[])
+    def cheapest_paths_by_hop(self, start_id: int, targets: list[int], hop_limit: int,
+            state: PlanState) -> dict[int, list[int]]:
+        cache_key = tuple(sorted(state.tubes)), start_id, tuple(sorted(targets)), hop_limit
+        if cache_key in self.path_cache:
+            return self.path_cache[cache_key]
         target_set = set(targets)
-        via_set = set(via_nodes)
         edge_graph = self.build_candidate_edge_graph(state.tubes)
-        start_key = start_id, 0, not via_set or start_id in via_set
-        costs = {start_key: 0}
-        parents = {}
-        queue = deque([start_key])
-        while queue:
-            building_id, hops, visited_via = queue.popleft()
-            if hops >= hop_limit:
-                continue
-            for neighbor_id, edge_cost in edge_graph.get(building_id, []):
-                next_hops = hops + 1
-                cost = costs[building_id, hops, visited_via] + edge_cost
-                key = neighbor_id, next_hops, visited_via or neighbor_id in via_set
-                if cost >= costs.get(key, INF):
+        bit = {building_id: 1 << index for index, building_id in enumerate(sorted(self.buildings))}
+        states = {start_id: (0, (start_id,), bit[start_id])}
+        result = {}
+        for hops in range(1, hop_limit + 1):
+            next_states = {}
+            for building_id, (cost, path, mask) in states.items():
+                if building_id in target_set:
                     continue
-                costs[key] = cost
-                parents[key] = building_id, hops, visited_via
-                queue.append(key)
-        best_key = None
-        for target_id in target_set:
-            for hops in range(1, hop_limit + 1):
-                key = target_id, hops, True
-                if exact_hops and hops != hop_limit or key not in costs:
-                    continue
-                candidate_order = costs[key], tube_cost(self.buildings[start_id], self.buildings[target_id])
-                best_order = (INF, INF) if best_key is None else (costs[best_key], tube_cost(self.buildings[start_id], self.buildings[best_key[0]]))
-                if candidate_order < best_order:
-                    best_key = key
-        if best_key is None:
-            return []
-        path = []
-        key = best_key
-        while key in parents:
-            path.append(key[0])
-            key = parents[key]
-        path.append(start_id)
-        path.reverse()
-        return path if self.can_add_tubes(unique_new_tubes(path, state.tubes), state.tubes) else []
+                for neighbor_id, edge_cost in edge_graph.get(building_id, []):
+                    if mask & bit[neighbor_id]:
+                        continue
+                    candidate = cost + edge_cost, (*path, neighbor_id), mask | bit[neighbor_id]
+                    if neighbor_id not in next_states or candidate[:2] < next_states[neighbor_id][:2]:
+                        next_states[neighbor_id] = candidate
+            states = next_states
+            candidates = [(cost, tube_cost(self.buildings[start_id], self.buildings[target_id]), path)
+                for target_id, (cost, path, _) in states.items() if target_id in target_set]
+            if candidates:
+                path = list(min(candidates)[2])
+                if self.can_add_tubes(unique_new_tubes(path, state.tubes), state.tubes):
+                    result[hops] = path
+        self.path_cache[cache_key] = result
+        return result
     def build_candidate_edge_graph(self, tubes: dict[Pair, int]) -> dict[int, list[tuple[int, int]]]:
         graph = {building_id: [] for building_id in self.buildings}
         building_ids = sorted(self.buildings)
@@ -1566,12 +1486,6 @@ def next_step(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int
     while parent[step] != start_id:
         step = parent[step]
     return step
-def unwind_path(parent: dict[int, int], start_id: int, finish_id: int) -> list[int]:
-    path = [finish_id]
-    while path[-1] != start_id:
-        path.append(parent[path[-1]])
-    path.reverse()
-    return path
 def normalize_month_path(path: list[int]) -> list[int]:
     if len(path) >= MONTH_DAYS + 1:
         return path[:MONTH_DAYS + 1]

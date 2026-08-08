@@ -64,7 +64,6 @@ class Bundle:
     tubes: tuple[Pair, ...] = ()
     teleport: Pair = (-1, -1)
     pod_specs: tuple[int, ...] = ()
-    pod_drops: tuple[int, ...] = ()
     upgrades: tuple[Pair, ...] = ()
     label: str = "empty"
     path_edges: tuple[Pair, ...] = ()
@@ -77,7 +76,7 @@ class Bundle:
     prune_unused: bool = False
     @property
     def fingerprint(self) -> tuple:
-        return self.tubes, self.teleport, self.pod_specs, self.pod_drops, self.upgrades
+        return self.tubes, self.teleport, self.pod_specs, self.upgrades
 @dataclass(slots=True)
 class PlanState:
     tubes: dict[Pair, int]
@@ -318,7 +317,7 @@ class Planner:
         for pair, group, module_ids, eligibility in pairs:
             debug(f"  Considering {pair}:")
             options = self.generate_options(owner, group, module_ids, layouts, current_state, current_result, eligibility)
-            candidate = self.next_candidate(owner, pair, group, current_state, current_result, before_score, options)
+            candidate = self.next_candidate(owner, pair, current_state, current_result, before_score, options)
             if candidate and (best is None or (candidate.efficiency, candidate.marginal_gain, -candidate.marginal_cost) >
                     (best.efficiency, best.marginal_gain, -best.marginal_cost)):
                 best = candidate
@@ -362,16 +361,14 @@ class Planner:
             delta += max(0, 51 - populations[module_id] - moved) - loss
             partial |= moved < len(losses) and delta > 0
         return partial, bool(losses and delta > 0)
-    def next_candidate(self, owner: PoolOwner, pair: PoolOwner, group: Pool, current_state: PlanState,
-            current_result: SimulationResult, before_score: int, options: list[PlanOption]) -> Candidate:
+    def next_candidate(self, owner: PoolOwner, pair: PoolOwner, current_state: PlanState, current_result: SimulationResult,
+            before_score: int, options: list[PlanOption]) -> Candidate:
         best = None
         seen_states = set()
         plans = []
         for option in options:
             bundle, state = option.bundle, option.state
             if bundle.fingerprint == Bundle(owner).fingerprint and not bundle.path_edges:
-                continue
-            if isinstance(owner, tuple) and bundle.path_edges and current_result.delivery_times.get(group, INF) == bundle.path_length:
                 continue
             state_key = tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), \
                 tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items()))
@@ -475,8 +472,6 @@ class Planner:
         allow_reroute = True
         while parent.state.cost <= self.resources:
             simulation = self.cached_simulate(parent.state)
-            if isinstance(owner, tuple) and simulation.delivery_times.get(group, INF) == parent.bundle.path_length:
-                break
             options = []
             reroute_id = self.closest_fixed_pod(group[0], parent.state) if allow_reroute else None
             if reroute_id is not None:
@@ -551,36 +546,18 @@ class Planner:
         if key in self.layout_cache:
             state = self.copy_state(self.layout_cache[key].state)
         else:
-            state = self.inherit_pods(layout_state, inherited_state, base.pool)
+            state = self.inherit_operations(layout_state, inherited_state, base.pool)
             self.layout_cache[key] = LayoutBranch(self.copy_state(state))
         bundle = replace(base)
-        self.afford_with_pod_drops(state, bundle)
         bundle.debug_id = self.bundle_debug_id(state)
         option = PlanOption(bundle, next_layouts, key, state)
         return [(option, self.option_metrics(option, checkpoint_score, checkpoint_cost)[2])]
-    def inherit_pods(self, state: PlanState, inherited_state: PlanState, owner: PoolOwner) -> PlanState:
-        for pod_id in sorted(set(self.pods) - set(inherited_state.pods)):
-            state.cost -= POD_REFUND
-            del state.pods[pod_id]
-            state.actions.append(f"DESTROY {pod_id}")
-        for pod_id in sorted(inherited_state.ops):
-            self.apply_bundle(state, Bundle(owner, pod_specs=(pod_id if pod_id in self.pods else 0,)))
+    def inherit_operations(self, state: PlanState, inherited_state: PlanState, owner: PoolOwner) -> PlanState:
+        upgrades = tuple(edge for edge, capacity in sorted(inherited_state.tubes.items())
+            for _ in range(capacity - state.tubes.get(edge, capacity)))
+        pod_specs = tuple(pod_id if pod_id in self.pods else 0 for pod_id in sorted(inherited_state.ops))
+        self.apply_bundle(state, Bundle(owner, pod_specs=pod_specs, upgrades=upgrades))
         return state
-    def afford_with_pod_drops(self, state: PlanState, bundle: Bundle):
-        if state.cost <= self.resources:
-            return
-        count = (state.cost - self.resources + POD_COST - 1) // POD_COST
-        pod_ids = tuple(sorted(state.ops, reverse=True)[:count])
-        if len(pod_ids) < count:
-            return
-        bundle.pod_drops += pod_ids
-        for pod_id in pod_ids:
-            self.drop_dynamic_pod(state, pod_id)
-    def drop_dynamic_pod(self, state: PlanState, pod_id: int):
-        state.cost -= POD_COST
-        state.ops.remove(pod_id)
-        del state.pods[pod_id]
-        state.pod_slots = [(index, placeholder_id) for index, placeholder_id in state.pod_slots if placeholder_id != pod_id]
     def bundle_debug_id(self, state: PlanState) -> str:
         upgrades = sum(capacity - self.tubes.get(edge, 1) for edge, capacity in state.tubes.items())
         reroutes = sum(pod_id in self.pods for pod_id in state.ops)
@@ -734,8 +711,6 @@ class Planner:
                 state.pod_slots.append((len(state.actions), pod_id))
                 state.actions.append("")
             state.pods[pod_id] = PodPlan([], True)
-        for pod_id in bundle.pod_drops:
-            self.drop_dynamic_pod(state, pod_id)
     def fill_dynamic_actions(self, state: PlanState, dynamic_paths: dict[int, list[int]]):
         for index, pod_id in state.pod_slots:
             path = dynamic_paths[pod_id]

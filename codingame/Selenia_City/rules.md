@@ -23,6 +23,9 @@ After that the generated layout is passed to the pod bundle generator.
    1. Other than the selected path, the bundle also constructs the cheapest necessary tubes to maintain connectivity with the rest of the graph,
    except for teleport paths.
    2. After a shorter than active path is built between the main pool and its pair, no longer used planned edges are dropped.
+   3. Upgrades, new pods and reroutes planned during previous iterations may be cancelled to afford a layout bundle.
+      1. Cancellation happens in order of increasing efficiency of the bundles in which the cancelled feature was planned.
+         1. If tied, prefer features with larger cost.
 
 ## Pod Bundle Generation
 
@@ -35,10 +38,12 @@ After that the generated layout is passed to the pod bundle generator.
    2. Previous round winner +1 pod (if layout capacity allows more pods).
    3. Previous round winner +1 upgrade (if congestion exists in previous round's winner).
    4. Previous round winner +1 pod +1 upgrade (if congestion exists in the +pod bundle).
-4. The winner in each round is chosen based on the largest marginal efficiency.
-5. New rounds are generated if last round's winner's efficiency was greater than the one in the round before.
-6. Largest efficiency bundle in all rounds is selected as final.
-7. Teleports have round-0 only.
+4. Upgrades planned during previous iterations may be cancelled to afford a pod bundle.
+   1. Cancellation order is the same as for the layout bundles.
+5. The winner in each round is chosen based on the largest marginal efficiency.
+6. New rounds are generated if last round's winner's efficiency was greater than the one in the round before.
+7. Largest efficiency bundle in all rounds is selected as final.
+8. Teleports have round-0 only.
 
 ## Pod Dispatcher Rules
 

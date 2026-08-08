@@ -25,6 +25,7 @@ Pool = tuple[int, int]
 PoolOwner = Pool | int
 PathKey = tuple[int, ...]
 LayoutKey = tuple[tuple[Pair, ...], tuple[tuple[int, int], ...]]
+Feature = tuple[str, Pair | int, int, float, bool]
 def debug(text: str):
     if FULL_DEBUG:
         print(text, file=sys.stderr)
@@ -87,6 +88,7 @@ class PlanState:
     ops: set[int] = field(default_factory=set)
     new_tubes: set[Pair] = field(default_factory=set)
     cost: int = 0
+    features: list[Feature] = field(default_factory=list)
 @dataclass(slots=True)
 class LayoutBranch:
     state: PlanState
@@ -196,6 +198,8 @@ class Planner:
             if best is None:
                 break
             layouts, current_key, current_state = best.layouts, best.layout_key, best.state
+            current_state.features = [(kind, key, cost, best.efficiency, False) if pending else feature
+                for feature in current_state.features for kind, key, cost, _, pending in (feature,)]
             current_result = self.score_state(current_state)
             self.layout_cache = {current_key: LayoutBranch(current_state)}
             if FULL_DEBUG:
@@ -371,7 +375,7 @@ class Planner:
             if bundle.fingerprint == Bundle(owner).fingerprint and not bundle.path_edges:
                 continue
             state_key = tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), \
-                tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items()))
+                tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items())), tuple(state.features)
             if state_key in seen_states:
                 continue
             seen_states.add(state_key)
@@ -548,15 +552,23 @@ class Planner:
         else:
             state = self.inherit_operations(layout_state, inherited_state, base.pool)
             self.layout_cache[key] = LayoutBranch(self.copy_state(state))
+        self.cancel_features(state, False)
         bundle = replace(base)
         bundle.debug_id = self.bundle_debug_id(state)
         option = PlanOption(bundle, next_layouts, key, state)
         return [(option, self.option_metrics(option, checkpoint_score, checkpoint_cost)[2])]
     def inherit_operations(self, state: PlanState, inherited_state: PlanState, owner: PoolOwner) -> PlanState:
-        upgrades = tuple(edge for edge, capacity in sorted(inherited_state.tubes.items())
-            for _ in range(capacity - state.tubes.get(edge, capacity)))
-        pod_specs = tuple(pod_id if pod_id in self.pods else 0 for pod_id in sorted(inherited_state.ops))
-        self.apply_bundle(state, Bundle(owner, pod_specs=pod_specs, upgrades=upgrades))
+        features = []
+        for feature in inherited_state.features:
+            kind, key, _, _, _ = feature
+            if kind == "upgrade":
+                if key not in state.tubes:
+                    continue
+                self.apply_bundle(state, Bundle(owner, upgrades=(key,)))
+            else:
+                self.add_dynamic_pod(state, key, kind == "reroute", False)
+            features.append(feature)
+        state.features = features
         return state
     def bundle_debug_id(self, state: PlanState) -> str:
         upgrades = sum(capacity - self.tubes.get(edge, 1) for edge, capacity in state.tubes.items())
@@ -629,11 +641,46 @@ class Planner:
     def replay_bundle_on_state(self, state: PlanState, bundle: Bundle) -> PlanState:
         copied = self.copy_state(state)
         self.apply_bundle(copied, bundle)
+        self.cancel_features(copied, True)
         return copied
     def copy_state(self, state: PlanState) -> PlanState:
         pods = {pod_id: PodPlan(pod.path[:], pod.dynamic) for pod_id, pod in state.pods.items()}
         return PlanState(dict(state.tubes), dict(state.teleports), pods, list(state.actions), list(state.pod_slots),
-            set(state.ops), set(state.new_tubes), state.cost)
+            set(state.ops), set(state.new_tubes), state.cost, list(state.features))
+    def cancel_features(self, state: PlanState, upgrades_only: bool):
+        """Cancels prior features in state until affordable; upgrades_only restricts eligible kinds."""
+        eligible = [feature for feature in state.features if not feature[4] and (not upgrades_only or feature[0] == "upgrade")]
+        for feature in sorted(eligible, key=lambda item: (item[3], -item[2], item[0], str(item[1]))):
+            if state.cost <= self.resources:
+                break
+            self.cancel_feature(state, feature)
+    def cancel_feature(self, state: PlanState, feature: Feature):
+        """Cancels feature from state and refunds its effective current cost."""
+        kind, key, _, _, _ = feature
+        if kind == "upgrade":
+            edge = key
+            capacity = state.tubes[edge]
+            state.cost -= tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * capacity
+            state.tubes[edge] -= 1
+            action = f"UPGRADE {edge[0]} {edge[1]}"
+            index = max(index for index, current in enumerate(state.actions) if current == action)
+            state.actions[index] = ""
+        else:
+            pod_id = key
+            slot = max(index for index, (_, current_id) in enumerate(state.pod_slots) if current_id == pod_id)
+            action_index, _ = state.pod_slots.pop(slot)
+            state.actions[action_index] = ""
+            state.ops.remove(pod_id)
+            if kind == "pod":
+                state.cost -= POD_COST
+                del state.pods[pod_id]
+            else:
+                state.cost -= REROUTE_COST
+                state.pods[pod_id] = PodPlan(self.pods[pod_id].path[:])
+                action = f"DESTROY {pod_id}"
+                index = max(index for index, current in enumerate(state.actions) if current == action)
+                state.actions[index] = ""
+        state.features.remove(feature)
     def replay_bundle_sequence(self, selected: tuple[Bundle, ...]) -> PlanState:
         pods = {pod_id: PodPlan(pod.path[:]) for pod_id, pod in self.pods.items()}
         state = PlanState(dict(self.tubes), dict(self.teleports), pods)
@@ -691,26 +738,31 @@ class Planner:
             if edge not in state.tubes:
                 raise ValueError("missing upgrade tube")
             state.tubes[edge] += 1
-            state.cost += tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * state.tubes[edge]
+            cost = tube_cost(self.buildings[edge[0]], self.buildings[edge[1]]) * state.tubes[edge]
+            state.cost += cost
             state.actions.append(f"UPGRADE {edge[0]} {edge[1]}")
+            state.features.append(("upgrade", edge, cost, 0, True))
         for pod_id in bundle.pod_specs:
             if pod_id and pod_id in state.ops:
                 continue
             if pod_id:
                 if pod_id not in state.pods:
                     raise ValueError("missing reroute pod")
-                state.cost += REROUTE_COST
-                state.actions.append(f"DESTROY {pod_id}")
-                state.ops.add(pod_id)
-                state.pod_slots.append((len(state.actions), pod_id))
-                state.actions.append("")
             else:
                 pod_id = self.next_pod_id(state.pods)
-                state.cost += POD_COST
-                state.ops.add(pod_id)
-                state.pod_slots.append((len(state.actions), pod_id))
-                state.actions.append("")
-            state.pods[pod_id] = PodPlan([], True)
+            self.add_dynamic_pod(state, pod_id, pod_id in self.pods)
+    def add_dynamic_pod(self, state: PlanState, pod_id: int, reroute: bool, track: bool = True):
+        """Adds pod_id to dynamic state; reroute controls replacement cost and track records cancellation provenance."""
+        cost = REROUTE_COST if reroute else POD_COST
+        state.cost += cost
+        if reroute:
+            state.actions.append(f"DESTROY {pod_id}")
+        state.ops.add(pod_id)
+        state.pod_slots.append((len(state.actions), pod_id))
+        state.actions.append("")
+        state.pods[pod_id] = PodPlan([], True)
+        if track:
+            state.features.append(("reroute" if reroute else "pod", pod_id, cost, 0, True))
     def fill_dynamic_actions(self, state: PlanState, dynamic_paths: dict[int, list[int]]):
         for index, pod_id in state.pod_slots:
             path = dynamic_paths[pod_id]

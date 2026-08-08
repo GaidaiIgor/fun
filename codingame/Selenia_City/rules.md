@@ -17,6 +17,7 @@
    For a diversity pool, in case of a complete reroute, a path is eligible if it's shorter than active.
    For a partial reroute, a path is eligible if it's the same length as active.
       1. Among all paths with the same number of edges, only the cheapest one is eligible.
+      2. If there is no active path, start with the cheapest path.
 5. Once a specific path is determined, it results in a layout bundle that constructs it, if it does not exist.
 After that the generated layout is passed to the pod bundle generator.
    1. Other than the selected path, the bundle also constructs the cheapest necessary tubes to maintain connectivity with the rest of the graph,
@@ -37,7 +38,7 @@ After that the generated layout is passed to the pod bundle generator.
 4. The winner in each round is chosen based on the largest marginal efficiency.
 5. New rounds are generated if last round's winner's efficiency was greater than the one in the round before.
 6. Largest efficiency bundle in all rounds is selected as final.
-7. Teleports should be round-0 only.
+7. Teleports have round-0 only.
 
 ## Pod Dispatcher Rules
 

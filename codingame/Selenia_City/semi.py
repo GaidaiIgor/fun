@@ -433,7 +433,11 @@ class Planner:
             bases.extend(self.path_bundles(owner, f"equal-{current_length}", equal_path, state))
         if allow_shorter:
             hop_limit = len(self.buildings) - 1 if current_length >= INF else min(current_length - 1, len(self.buildings) - 1)
-            bases.extend(self.shortest_route_bundles(owner, group, module_ids, hop_limit, state))
+            if current_length >= INF:
+                path = self.cheapest_path_with_hop_limit(pad_id, module_ids, hop_limit, state)
+                bases.extend(self.path_bundles(owner, "cheapest", path, state))
+            else:
+                bases.extend(self.shortest_route_bundles(owner, group, module_ids, hop_limit, state))
         for base in bases:
             base.prune_unused = base.path_length < current_length
         options = []

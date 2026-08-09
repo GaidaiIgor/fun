@@ -39,19 +39,25 @@ def table_debug(self, result: SimulationResult, state: PlanState) -> str:
     """Formats result assignment rows using state pod headers."""
     headers = ["Day", "Loads", *("P{}{}".format(pod_id, "f" if not pod.dynamic else "")
         for pod_id, pod in sorted(state.pods.items()))]
-    rows = [headers, *(row[:] for row in result.table)]
+    initial_assignments = format_assignment_table(headers, result.initial_table)
+    assignments = format_assignment_table(headers, result.table)
+    edges = sorted(result.congestion_by_edge)
+    congestion_rows = [["Day", *(f"{a}-{b}" for a, b in edges)],
+        *([str(day + 1), *(str(result.congestion_by_day.get(day, {}).get(edge, 0)) for edge in edges)]
+            for day in range(semi.MONTH_DAYS))]
+    return "Fixed reservations: " + result.reserved + "\nInitial assignments:\n" + initial_assignments + \
+        "\nAssignments:\n" + assignments + "\nCongestion:\n" + format_table(congestion_rows)
+
+
+def format_assignment_table(headers: list[str], data: list[list[str]]) -> str:
+    """Formats assignment data under headers and aligns pod locations."""
+    rows = [headers, *(row[:] for row in data)]
     for column in range(2, len(headers)):
         path_width = max((len(row[column].rsplit(" (", 1)[0]) for row in rows[1:]), default=0)
         for row in rows[1:]:
             path, location = row[column].rsplit(" (", 1)
             row[column] = f"{path.ljust(path_width)} ({location}"
-    assignments = format_table(rows)
-    edges = sorted(result.congestion_by_edge)
-    congestion_rows = [["Day", *(f"{a}-{b}" for a, b in edges)],
-        *([str(day + 1), *(str(result.congestion_by_day.get(day, {}).get(edge, 0)) for edge in edges)]
-            for day in range(semi.MONTH_DAYS))]
-    return "Fixed reservations: " + result.reserved + "\nAssignments:\n" + assignments + \
-        "\nCongestion:\n" + format_table(congestion_rows)
+    return format_table(rows)
 
 
 def format_table(rows: list[list[str]]) -> str:

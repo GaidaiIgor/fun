@@ -110,6 +110,7 @@ class SimulationResult:
     congestion_by_edge: Counter[Pair] = field(default_factory=Counter)
     congestion_by_day: dict[int, Counter[Pair]] = field(default_factory=dict)
     dynamic_paths: dict[int, list[int]] = field(default_factory=dict)
+    initial_table: list[list[str]] = field(default_factory=list)
     table: list[list[str]] = field(default_factory=list)
     reserved: str = "-"
 @dataclass(slots=True)
@@ -794,7 +795,7 @@ class Planner:
         if keep_dynamic_paths:
             fixed_result = replace(fixed_result, congestion_by_edge=dynamic_result.congestion_by_edge,
                 congestion_by_day=dynamic_result.congestion_by_day, dynamic_paths=paths, table=dynamic_result.table,
-                reserved=dynamic_result.reserved)
+                initial_table=dynamic_result.initial_table, reserved=dynamic_result.reserved)
         return fixed_result
     def cached_simulate(self, state: PlanState) -> SimulationResult:
         keep_dynamic_paths = any(pod.dynamic for pod in state.pods.values())
@@ -852,19 +853,26 @@ class Planner:
             fixed_assignments, _, _ = self.fixed_load_assignments(fixed_pods, pod_positions, active, queues, wanted_edges)
             assignments, preferences = self.dispatch_dynamic_paths(active, dynamic_pods, dynamic_current, queues,
                 wanted_edges, passenger_priorities, reserved_passengers, result.delivered_by_module, state, graph)
+            if FULL_DEBUG:
+                initial_assignments = dict(assignments)
+                initial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending,
+                    initial_assignments, graph)
             assignments, requests, moves = self.resolve_dispatch_congestion(assignments, preferences, fixed_pods, dynamic_pods,
                 pod_positions, dynamic_current, dynamic_pending, graph, result, state, day)
-            if keep_dynamic_paths:
+            if FULL_DEBUG:
                 loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
                     "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
-                cells = []
-                for pod_id, pod in sorted(state.pods.items()):
-                    paths = fixed_assignments.get(pod_id, set()) if not pod.dynamic else {assignments[pod_id]} if pod_id in assignments else set()
-                    path_text = "/".join("-".join(map(str, path.nodes)) for path in paths) or "-"
-                    location = pod.path[pod_positions[pod_id]] if not pod.dynamic else dynamic_current[pod_id]
-                    location = requests[pod_id][0] if location == -1 and pod_id in requests else location
-                    cells.append("{} ({})".format(path_text, location if location != -1 else "-"))
-                result.table.append([str(day + 1), loads, *cells])
+                for table, day_assignments, day_requests in ((result.initial_table, initial_assignments, initial_requests),
+                        (result.table, assignments, requests)):
+                    cells = []
+                    for pod_id, pod in sorted(state.pods.items()):
+                        paths = fixed_assignments.get(pod_id, set()) if not pod.dynamic else \
+                            {day_assignments[pod_id]} if pod_id in day_assignments else set()
+                        path_text = "/".join("-".join(map(str, path.nodes)) for path in paths) or "-"
+                        location = pod.path[pod_positions[pod_id]] if not pod.dynamic else dynamic_current[pod_id]
+                        location = day_requests[pod_id][0] if location == -1 and pod_id in day_requests else location
+                        cells.append("{} ({})".format(path_text, location if location != -1 else "-"))
+                    table.append([str(day + 1), loads, *cells])
             for pod_id, _ in dynamic_pods:
                 if dynamic_pending[pod_id] != (-1, -1) or pod_id not in requests:
                     continue

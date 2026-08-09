@@ -1099,7 +1099,7 @@ class Planner:
             if preferences[pod_id]:
                 assignments[pod_id] = preferences[pod_id][0]
                 inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
-        self.fix_load_assignments(assignments, preferences, current, state, graph)
+        self.fix_load_assignments(assignments, preferences, current, graph)
         return assignments, preferences
     def boarding_batch(self, edge: DirectedPair, queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], reserved: set[int]) -> list[Passenger]:
@@ -1165,10 +1165,9 @@ class Planner:
         return -path.priority, -boarding, distance, len(path.nodes) - 1, delivered[path.destination], \
             -path.cap, path.pool, path.destination, path.nodes
     def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
-            current: dict[int, int], state: PlanState, graph: dict[int, list[int]]):
+            current: dict[int, int], graph: dict[int, list[int]]):
         def capacity(path: PathDemand) -> int:
-            route_capacity = (len(path.nodes) - 1) * min(state.tubes[route_key(a, b)] for a, b in zip(path.nodes, path.nodes[1:]))
-            return min(route_capacity, (path.cap + POD_CAPACITY - 1) // POD_CAPACITY)
+            return path.cap // POD_CAPACITY
         indices = {pod_id: 0 for pod_id in assignments}
         counts = Counter(assignments.values())
         owners = {}

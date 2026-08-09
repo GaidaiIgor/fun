@@ -67,9 +67,10 @@ Pods fulfill assigned loads.
    7. Loads with smaller ID.
 4. If initial assignments are such that capacity of a given load is exceeded or assignments are non-uniform, fix this by considering lower priority assignments
 for some of the pods violating these rules in the order of their preference list.
-When deciding which pods should remain assigned:
-   1. Prefer pods closer to the load's origin.
-   2. Prefer pods with lower id.
+   1. Capacity is defined as the available number of batches (passengers // 10)
+   2. When deciding which pods should remain assigned:
+      1. Prefer pods closer to the load's origin.
+      2. Prefer pods with lower id.
 5. If pods' movement due to currently selected assignments exceeds capacity of some edge E, record congestion event at that edge.
 Try to re-assign loads to resolve edge conflict as follows:
    1. If a pair of pods is trying to move in opposite directions through E, swap their assignments.

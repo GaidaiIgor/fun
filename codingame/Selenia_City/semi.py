@@ -1051,19 +1051,22 @@ class Planner:
             state: PlanState, graph: dict[int, list[int]]) -> tuple[dict[int, PathDemand], dict[int, list[PathDemand]]]:
         assignments = {}
         preferences = {}
-        reserved = set(reserved_passengers)
+        fixed_reserved = set(reserved_passengers)
+        inspected = set(reserved_passengers)
         for pod_id, _ in dynamic_pods:
             options = [path for path in active if current[pod_id] == -1 or graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
             batches = {}
+            inspection_batches = {}
             for path in options:
                 if path.nodes[:2] not in batches:
-                    batches[path.nodes[:2]] = self.boarding_batch(path.nodes[:2], queues, wanted_edges, reserved)
+                    batches[path.nodes[:2]] = self.boarding_batch(path.nodes[:2], queues, wanted_edges, fixed_reserved)
+                    inspection_batches[path.nodes[:2]] = self.boarding_batch(path.nodes[:2], queues, wanted_edges, inspected)
             evaluated = []
             for path in options:
                 priority = path.priority
                 if priority > 0:
                     balance = sum(passenger_priorities.get(((passenger.pad_id, passenger.kind), *path.nodes[:2]), 0)
-                        for passenger in batches[path.nodes[:2]])
+                        for passenger in inspection_batches[path.nodes[:2]])
                     if balance < 0:
                         priority = -1
                 evaluated.append(path if priority == path.priority else replace(path, priority=priority))
@@ -1071,7 +1074,7 @@ class Planner:
                 key=lambda path: self.path_assignment_key(path, pod_id, len(batches[path.nodes[:2]]), current, delivered, graph))
             if preferences[pod_id]:
                 assignments[pod_id] = preferences[pod_id][0]
-                reserved.update(passenger.id for passenger in batches[assignments[pod_id].nodes[:2]])
+                inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
         self.fix_load_assignments(assignments, preferences, current, state, graph)
         return assignments, preferences
     def boarding_batch(self, edge: DirectedPair, queues: dict[int, list[Passenger]],

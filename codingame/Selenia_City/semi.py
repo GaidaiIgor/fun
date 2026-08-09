@@ -465,11 +465,11 @@ class Planner:
                 affordable.append((efficiency, gain, -cost, option))
         if not affordable:
             return result
-        parent_efficiency, _, _, parent = max(affordable, key=lambda item: item[:3])
+        parent_efficiency, parent_gain, _, parent = max(affordable, key=lambda item: item[:3])
         parent.bundle.debug_chosen = parent.bundle.debug_id
-        result.extend(self.throughput_options(owner, group, parent, parent_efficiency, checkpoint_score, checkpoint_cost))
+        result.extend(self.throughput_options(owner, group, parent, parent_efficiency, parent_gain, checkpoint_score, checkpoint_cost))
         return result
-    def throughput_options(self, owner: PoolOwner, group: Pool, parent: PlanOption, parent_efficiency: float,
+    def throughput_options(self, owner: PoolOwner, group: Pool, parent: PlanOption, parent_efficiency: float, parent_gain: int,
             checkpoint_score: int, checkpoint_cost: int) -> list[PlanOption]:
         result = []
         round_number = 1
@@ -523,13 +523,13 @@ class Planner:
                 if option.state.cost <= self.resources]
             if not affordable:
                 break
-            efficiency, _, _, next_parent = max(affordable, key=lambda item: item[:3])
+            efficiency, gain, _, next_parent = max(affordable, key=lambda item: item[:3])
             next_parent.bundle.debug_chosen = next_parent.bundle.debug_id
-            if efficiency <= parent_efficiency:
+            if gain <= parent_gain if efficiency < 0 else efficiency <= parent_efficiency:
                 break
             if len(next_parent.state.pods) > len(parent.state.pods):
                 allow_reroute = False
-            parent, parent_efficiency = next_parent, efficiency
+            parent, parent_efficiency, parent_gain = next_parent, efficiency, gain
             round_number += 1
         return result
     def option_metrics(self, option: PlanOption, checkpoint_score: int, checkpoint_cost: int) -> tuple[int, int, float]:

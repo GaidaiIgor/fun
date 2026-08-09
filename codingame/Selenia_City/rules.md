@@ -41,7 +41,8 @@ After that the generated layout is passed to the pod bundle generator.
 4. Upgrades planned during previous iterations may be cancelled to afford a pod bundle.
    1. Cancellation order is the same as for the layout bundles.
 5. The winner in each round is chosen based on the largest marginal efficiency.
-6. New rounds are generated if last round's winner's efficiency was greater than the one in the round before.
+6. New rounds are generated if last round winner's efficiency was greater than the one in the round before.
+   1. If last round winner's efficiency is negative, then compare numerators only (global points gain).
 7. Largest efficiency bundle in all rounds is selected as final.
 8. Teleports have round-0 only.
 

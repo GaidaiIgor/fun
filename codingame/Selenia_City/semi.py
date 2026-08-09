@@ -1167,7 +1167,7 @@ class Planner:
     def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             current: dict[int, int], graph: dict[int, list[int]]):
         def capacity(path: PathDemand) -> int:
-            return path.cap // POD_CAPACITY
+            return (path.cap + POD_CAPACITY - 1) // POD_CAPACITY
         indices = {pod_id: 0 for pod_id in assignments}
         counts = Counter(assignments.values())
         owners = {}

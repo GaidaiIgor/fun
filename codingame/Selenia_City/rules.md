@@ -67,7 +67,7 @@ Pods fulfill assigned loads.
    7. Loads with smaller ID.
 4. If initial assignments are such that capacity of a given load is exceeded or assignments are non-uniform, fix this by considering lower priority assignments
 for some of the pods violating these rules in the order of their preference list.
-   1. Capacity is defined as the available number of batches (passengers // 10)
+   1. Capacity is defined as the available number of batches (ceil(passengers / 10))
    2. When deciding which pods should remain assigned:
       1. Prefer pods closer to the load's origin.
       2. Prefer pods with lower id.

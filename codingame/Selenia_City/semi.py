@@ -15,7 +15,6 @@ TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
 OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3 AUTO;POD 4 AUTO;POD 5 AUTO;POD 6 AUTO"
-# "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 3 5;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1189,8 +1188,8 @@ class Planner:
                     if indices[pod_id] + 1 < len(preferences[pod_id]) or may_unassign]
                 if not pods:
                     continue
-                uneven = counts[path] != capacities[path] and any(counts[candidate] != capacities[candidate] and
-                    counts[candidate] < counts[path] - 1 for candidate in paths)
+                uneven = counts[path] != capacities[path] and any(candidate.priority == path.priority and
+                    counts[candidate] != capacities[candidate] and counts[candidate] < counts[path] - 1 for candidate in paths)
                 if counts[path] <= capacities[path] and not uneven:
                     continue
                 pod_id = max(pods, key=lambda item: (distances[item, path.nodes[0]], item))

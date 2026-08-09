@@ -71,6 +71,7 @@ for some of the pods violating these rules in the order of their preference list
    2. Uniform assignment is defined as a distribution of pods over loads such that for any non-capped load the number of assigned pods does not exceed the
    number of pods assigned to any other non-capped load by more than 1.
       1. Capped load is defined as the load with the number of assigned pods equal to load capacity.
+      2. Uniformity is evaluated separately for each priority level.
    3. When deciding which pods should remain assigned:
       1. Prefer pods closer to the load's origin.
       2. Prefer pods with lower id.

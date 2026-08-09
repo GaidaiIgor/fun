@@ -45,12 +45,21 @@ def table_debug(self, result: SimulationResult, state: PlanState) -> str:
         for row in rows[1:]:
             path, location = row[column].rsplit(" (", 1)
             row[column] = f"{path.ljust(path_width)} ({location}"
+    assignments = format_table(rows)
+    edges = sorted(result.congestion_by_edge)
+    congestion_rows = [["Day", *(f"{a}-{b}" for a, b in edges)],
+        *([str(day + 1), *(str(result.congestion_by_day.get(day, {}).get(edge, 0)) for edge in edges)]
+            for day in range(semi.MONTH_DAYS))]
+    return "Fixed reservations: " + result.reserved + "\nAssignments:\n" + assignments + \
+        "\nCongestion:\n" + format_table(congestion_rows)
+
+
+def format_table(rows: list[list[str]]) -> str:
+    """Formats rows as an aligned table and returns its text."""
     widths = [max(map(len, column)) for column in zip(*rows)]
     border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
     lines = ["| " + " | ".join(value.ljust(width) for value, width in zip(row, widths)) + " |" for row in rows]
-    table = [border, lines[0], border, *lines[1:]]
-    table.extend([border] if len(lines) > 1 else [])
-    return "Fixed reservations: " + result.reserved + "\nAssignments:\n" + "\n".join(table)
+    return "\n".join([border, lines[0], border, *lines[1:], border])
 
 
 def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:

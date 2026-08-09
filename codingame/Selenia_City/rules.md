@@ -6,6 +6,8 @@
 2. On each iteration, we first select the main considered pool as the pool with the largest number of missing points.
    1. A pool is either an astronaut group (speed pool) or a target module (diversity pool).
    2. For diversity pools the number of missing points is calculated relative to the perfect balance distribution.
+   3. If no bundles can be afforded for the selected main pool, consider the next pool in line.
+   If no bundles can be afforded for all pools, stop iteration and output currently selected bundle.
 3. For the main considered pool, we consider all eligible pairs.
    1. A pair is a target module for a speed pool or an astronaut group for a diversity pool of matching type.
    2. An eligible pair for a speed pool is either a currently active pair or a pair to which a path shorter than active can be constructed.

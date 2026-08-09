@@ -316,17 +316,21 @@ class Planner:
         pools.sort(key=lambda item: (-item[0], item[1]))
         if not pools:
             return None
-        _, _, owner, pairs = pools[0]
-        debug(f"Considering {owner}:")
-        best = None
-        for pair, group, module_ids, eligibility in pairs:
-            debug(f"  Considering {pair}:")
-            options = self.generate_options(owner, group, module_ids, layouts, current_state, current_result, eligibility)
-            candidate = self.next_candidate(owner, pair, current_state, current_result, before_score, options)
-            if candidate and (best is None or (candidate.efficiency, candidate.marginal_gain, -candidate.marginal_cost) >
-                    (best.efficiency, best.marginal_gain, -best.marginal_cost)):
-                best = candidate
-        return best
+        for _, _, owner, pairs in pools:
+            debug(f"Considering {owner}:")
+            best = None
+            affordable = False
+            for pair, group, module_ids, eligibility in pairs:
+                debug(f"  Considering {pair}:")
+                options = self.generate_options(owner, group, module_ids, layouts, current_state, current_result, eligibility)
+                candidate, pair_affordable = self.next_candidate(owner, pair, current_state, current_result, before_score, options)
+                affordable |= pair_affordable
+                if candidate and (best is None or (candidate.efficiency, candidate.marginal_gain, -candidate.marginal_cost) >
+                        (best.efficiency, best.marginal_gain, -best.marginal_cost)):
+                    best = candidate
+            if best or affordable:
+                return best
+        return None
     def layout_path_eligibility(self, group: Pool, module_id: int, state: PlanState, result: SimulationResult,
             distances: dict[int, dict[int, int]], module_distances: dict[int, dict[int, int]], diversity: bool) \
             -> tuple[bool, bool]:
@@ -367,7 +371,7 @@ class Planner:
             partial |= moved < len(losses) and delta > 0
         return partial, bool(losses and delta > 0)
     def next_candidate(self, owner: PoolOwner, pair: PoolOwner, current_state: PlanState, current_result: SimulationResult,
-            before_score: int, options: list[PlanOption]) -> Candidate:
+            before_score: int, options: list[PlanOption]) -> tuple[Candidate, bool]:
         best = None
         seen_states = set()
         plans = []
@@ -422,7 +426,7 @@ class Planner:
                 if best is None or (candidate.efficiency, candidate.marginal_gain, -candidate.marginal_cost) > \
                         (best.efficiency, best.marginal_gain, -best.marginal_cost):
                     best = candidate
-        return best
+        return best, any(option.state.cost <= self.resources for option, _ in plans)
     def generate_options(self, owner: PoolOwner, group: Pool, module_ids: list[int], layouts: tuple[Bundle, ...], state: PlanState,
             current_result: SimulationResult, eligibility: tuple[bool, bool]) -> list[PlanOption]:
         bases = []

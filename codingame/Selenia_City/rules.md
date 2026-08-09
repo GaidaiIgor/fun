@@ -84,7 +84,8 @@ Try to re-assign loads to resolve edge conflict as follows:
    5. Repeat until no resolvable conflict remains.
 6. If there is not enough load slots for all pods, some pods may have no assignments.
 Unassigned pods just do their best to stay out of the way of assigned pods.
-   1. Congestion between unassigned pods does not increase edge congestion counter
+   1. Congestion between unassigned pods does not increase edge congestion counter.
+   2. Unassigned pods should prefer to get out of the way via edges that do not belong to the path of the load carried by assigned pods.
 
 ### Ambiguous Loads
 

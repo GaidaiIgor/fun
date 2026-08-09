@@ -14,8 +14,8 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "WAIT"
-# "TUBE 2 7;TUBE 4 8;POD 2 AUTO"
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 3 5;TUBE 4 6;TUBE 3 6;POD 1 AUTO;POD 2 AUTO"
+# "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 3 5;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -698,8 +698,20 @@ class Planner:
         used = set()
         if state.new_tubes:
             distances, module_distances = self.distances_to_targets(state)
-            for demand in self.path_demands(state, distances, module_distances):
+            demands = self.path_demands(state, distances, module_distances)
+            for demand in demands:
                 used.update(route_key(a, b) for a, b in zip(demand.nodes, demand.nodes[1:]))
+            origins = sorted({demand.nodes[0] for demand in demands})
+            graph = tube_graph(state.tubes)
+            for index, source_id in enumerate(origins):
+                for target_id in origins[index + 1:]:
+                    if graph_distance(graph, source_id, target_id) >= INF:
+                        continue
+                    current_id = source_id
+                    while current_id != target_id:
+                        next_id = next_step(graph, current_id, target_id)
+                        used.add(route_key(current_id, next_id))
+                        current_id = next_id
         for edge in sorted(state.new_tubes - used):
             remaining = dict(state.tubes)
             del remaining[edge]

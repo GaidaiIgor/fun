@@ -25,6 +25,8 @@ After that the generated layout is passed to the pod bundle generator.
    1. Other than the selected path, the bundle also constructs the cheapest necessary tubes to maintain connectivity with the rest of the graph,
    except for teleport paths.
    2. After a shorter than active path is built between the main pool and its pair, no longer used planned edges are dropped.
+      1. To decide which edges are no longer used, consider a union of all passenger paths and shortest paths between load origins at day 1.
+      Edges not in that union are not used.
    3. Upgrades, new pods and reroutes planned during previous iterations may be cancelled to afford a layout bundle.
       1. Cancellation happens in order of increasing efficiency of the bundles in which the cancelled feature was planned.
          1. If tied, prefer features with larger cost.

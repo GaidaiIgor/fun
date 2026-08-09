@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 3 5;TUBE 4 6;TUBE 3 6;POD 1 AUTO;POD 2 AUTO"
+OVERRIDE_MONTH = 10
+OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3 AUTO;POD 4 AUTO;POD 5 AUTO;POD 6 AUTO"
 # "TUBE 0 2;TUBE 1 4;TUBE 3 4;TUBE 2 3;TUBE 3 5;TUBE 4 6;POD 1 AUTO;POD 2 AUTO"
 FULL_DEBUG = False
 _G = {}
@@ -1159,7 +1159,8 @@ class Planner:
     def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             current: dict[int, int], state: PlanState, graph: dict[int, list[int]]):
         def capacity(path: PathDemand) -> int:
-            return (len(path.nodes) - 1) * min(state.tubes[route_key(a, b)] for a, b in zip(path.nodes, path.nodes[1:]))
+            route_capacity = (len(path.nodes) - 1) * min(state.tubes[route_key(a, b)] for a, b in zip(path.nodes, path.nodes[1:]))
+            return min(route_capacity, (path.cap + POD_CAPACITY - 1) // POD_CAPACITY)
         indices = {pod_id: 0 for pod_id in assignments}
         counts = Counter(assignments.values())
         owners = {}

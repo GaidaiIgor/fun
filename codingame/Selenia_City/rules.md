@@ -81,6 +81,8 @@ Try to re-assign loads to resolve edge conflict as follows:
    3. If such load is not found, try the other conflicting pod.
    4. If such load is still not found, give up and keep the original assignment.
    5. Repeat until no resolvable conflict remains.
+6. If there is not enough load slots for all pods, some pods may have no assignments.
+Unassigned pods just do their best to stay out of the way of assigned pods.
 
 ### Ambiguous Loads
 

@@ -1176,11 +1176,14 @@ class Planner:
         paths = sorted({path for pod_paths in preferences.values() for path in pod_paths},
             key=lambda item: (item.pool, item.destination, item.nodes))
         capacities = {path: capacity(path) for path in paths}
+        total_capacity = sum(capacities.values())
         distances = {(pod_id, path.nodes[0]): 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
             for pod_id in assignments for path in paths}
         while True:
             for path in paths:
-                pods = [pod_id for pod_id in owners.get(path, ()) if indices[pod_id] + 1 < len(preferences[pod_id])]
+                may_unassign = len(assignments) > total_capacity
+                pods = [pod_id for pod_id in owners.get(path, ())
+                    if indices[pod_id] + 1 < len(preferences[pod_id]) or may_unassign]
                 if not pods:
                     continue
                 uneven = counts[path] != capacities[path] and any(counts[candidate] != capacities[candidate] and
@@ -1191,9 +1194,12 @@ class Planner:
                 owners[path].remove(pod_id)
                 counts[path] -= 1
                 indices[pod_id] += 1
-                assignments[pod_id] = preferences[pod_id][indices[pod_id]]
-                owners.setdefault(assignments[pod_id], set()).add(pod_id)
-                counts[assignments[pod_id]] += 1
+                if indices[pod_id] == len(preferences[pod_id]):
+                    del assignments[pod_id]
+                else:
+                    assignments[pod_id] = preferences[pod_id][indices[pod_id]]
+                    owners.setdefault(assignments[pod_id], set()).add(pod_id)
+                    counts[assignments[pod_id]] += 1
                 break
             else:
                 return

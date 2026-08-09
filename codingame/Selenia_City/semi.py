@@ -1183,8 +1183,8 @@ class Planner:
                 pods = [pod_id for pod_id in owners.get(path, ()) if indices[pod_id] + 1 < len(preferences[pod_id])]
                 if not pods:
                     continue
-                uneven = any(any(candidate.priority == assignments[pod_id].priority and counts[candidate] < counts[path] - 1
-                    for candidate in preferences[pod_id][indices[pod_id] + 1:]) for pod_id in pods)
+                uneven = counts[path] != capacities[path] and any(counts[candidate] != capacities[candidate] and
+                    counts[candidate] < counts[path] - 1 for candidate in paths)
                 if counts[path] <= capacities[path] and not uneven:
                     continue
                 pod_id = max(pods, key=lambda item: (distances[item, path.nodes[0]], item))

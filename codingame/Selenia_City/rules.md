@@ -68,7 +68,10 @@ Pods fulfill assigned loads.
 4. If initial assignments are such that capacity of a given load is exceeded or assignments are non-uniform, fix this by considering lower priority assignments
 for some of the pods violating these rules in the order of their preference list.
    1. Capacity is defined as the available number of batches (ceil(passengers / 10))
-   2. When deciding which pods should remain assigned:
+   2. Uniform assignment is defined as a distribution of pods over loads such that for any non-capped load the number of assigned pods does not exceed the
+   number of pods assigned to any other non-capped load by more than 1.
+      1. Capped load is defined as the load with the number of assigned pods equal to load capacity.
+   3. When deciding which pods should remain assigned:
       1. Prefer pods closer to the load's origin.
       2. Prefer pods with lower id.
 5. If pods' movement due to currently selected assignments exceeds capacity of some edge E, record congestion event at that edge.

@@ -1119,9 +1119,12 @@ class Planner:
             return trial[edge] < original[edge]
         requests = requests_for(assignments)
         congestion = conflicts(requests)
-        result.congestion_by_edge.update(congestion.keys())
-        if congestion:
-            result.congestion_by_day.setdefault(day, Counter()).update(congestion.keys())
+        fixed_ids = {pod_id for pod_id, _ in fixed_pods}
+        counted = {edge for edge in congestion if any(route_key(*move) == edge and (pod_id in assignments or pod_id in fixed_ids)
+            for pod_id, move in requests.items())}
+        result.congestion_by_edge.update(counted)
+        if counted:
+            result.congestion_by_day.setdefault(day, Counter()).update(counted)
         unresolved = set()
         while remaining := sorted(set(congestion) - unresolved):
             edge = remaining[0]

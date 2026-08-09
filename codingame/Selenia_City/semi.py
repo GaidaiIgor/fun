@@ -776,9 +776,9 @@ class Planner:
         paths = dynamic_result.dynamic_paths
         fixed_result = self.cached_simulate(self.fixed_dynamic_state(state, paths))
         if keep_dynamic_paths:
-            fixed_result.dynamic_paths = paths
-            fixed_result.table = dynamic_result.table
-            fixed_result.reserved = dynamic_result.reserved
+            fixed_result = replace(fixed_result, congestion_by_edge=dynamic_result.congestion_by_edge,
+                congestion_by_day=dynamic_result.congestion_by_day, dynamic_paths=paths, table=dynamic_result.table,
+                reserved=dynamic_result.reserved)
         return fixed_result
     def cached_simulate(self, state: PlanState) -> SimulationResult:
         keep_dynamic_paths = any(pod.dynamic for pod in state.pods.values())

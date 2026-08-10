@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;UPGRADE 2 3;POD 3 AUTO;POD 4 AUTO;POD 2 AUTO"
+OVERRIDE_MONTH = -1
+OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;POD 3 AUTO;POD 4 AUTO;POD 5 AUTO;POD 6 AUTO"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -207,6 +207,19 @@ class Planner:
                 self.selected_debug(best, current_state, current_result, before_score)
                 iteration += 1
                 debug(f"\nIteration {iteration}\n" + self.status_debug(current_result))
+        debug("\nCleanup:")
+        for feature in list(current_state.features):
+            kind, key, _, _, _ = feature
+            if kind not in ("upgrade", "reroute"):
+                continue
+            trial = self.copy_state(current_state)
+            self.cancel_feature(trial, feature)
+            trial_result = self.score_state(trial)
+            action = f"DROP UPGRADE {key[0]} {key[1]}" if kind == "upgrade" else f"REVERT POD {key}"
+            keep = trial_result.score >= current_result.score
+            debug("  {}: score={}, {}".format(action, trial_result.score, "kept" if keep else "rejected"))
+            if keep:
+                current_state, current_result = trial, trial_result
         final_state = current_state
         final_result = self.score_state(final_state, True)
         self.fill_dynamic_actions(final_state, final_result.dynamic_paths)

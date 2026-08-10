@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;POD 3 AUTO;POD 4 AUTO;POD 5 AUTO;POD 6 AUTO"
+OVERRIDE_MONTH = 12
+OVERRIDE_COMMAND = "WAIT"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -858,7 +858,7 @@ class Planner:
                 break
             if not dynamic_pods:
                 requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, graph)
-                moves = self.allocate_tube_capacity(requests, state, result, day)
+                moves = self.allocate_tube_capacity(requests, state, result, day, False)
                 self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {})
                 self.settle(day + 1, queues, arrivals, result)
                 continue

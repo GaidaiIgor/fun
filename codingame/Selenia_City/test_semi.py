@@ -157,10 +157,15 @@ def state_action_text(self, state: PlanState, base: PlanState = None) -> str:
 
 def selected_debug(self, best: Candidate, state: PlanState, result: SimulationResult, before_score: int):
     """Prints the selected branch and resulting grand-total plan."""
-    score_gain = result.score - before_score
     path_text = ", ".join(map(str, best.bundle.path))
     text = f"selected: pair={best.pair}, path=[{path_text}], bundle={best.bundle.debug_id}, actions={self.state_action_text(state)}, "
-    semi.debug(f"{text}gain={score_gain}, cost={state.cost}, efficiency={best.efficiency:.3f}, "
+    gains = result.score - before_score, best.marginal_gain, best.round_gain
+    costs = state.cost, best.marginal_cost, best.round_cost
+    efficiencies = tuple(semi.score_efficiency(gain, cost) for gain, cost in zip(gains, costs))
+    gain_text = "/".join(f"{gain:+d}" for gain in gains)
+    cost_text = "/".join(f"{cost:+d}" for cost in costs)
+    efficiency_text = "/".join(f"{efficiency:+.3f}" for efficiency in efficiencies)
+    semi.debug(f"{text}global gains={gain_text}, costs={cost_text}, efficiencies={efficiency_text}, "
         f"resources left={self.resources - state.cost}")
 
 

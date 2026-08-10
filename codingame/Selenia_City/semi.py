@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 12
-OVERRIDE_COMMAND = "WAIT"
+OVERRIDE_MONTH = 10
+OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3 AUTO;POD 4 AUTO;POD 5 AUTO;POD 6 AUTO"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -857,8 +857,8 @@ class Planner:
             if not active:
                 break
             if not dynamic_pods:
-                requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, graph)
-                moves = self.allocate_tube_capacity(requests, state, result, day, False)
+                requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, {}, graph)
+                moves = self.allocate_tube_capacity(requests, state, result, day)
                 self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {})
                 self.settle(day + 1, queues, arrivals, result)
                 continue
@@ -868,9 +868,9 @@ class Planner:
             if FULL_DEBUG:
                 initial_assignments = dict(assignments)
                 initial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending,
-                    initial_assignments, graph)
+                    initial_assignments, fixed_assignments, graph)
             assignments, requests, moves = self.resolve_dispatch_congestion(assignments, preferences, fixed_pods, dynamic_pods,
-                pod_positions, dynamic_current, dynamic_pending, graph, result, state, day)
+                fixed_assignments, pod_positions, dynamic_current, dynamic_pending, graph, result, state, day)
             if FULL_DEBUG:
                 loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
                     "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
@@ -1119,11 +1119,11 @@ class Planner:
         return [passenger for passenger in queues.get(source_id, [])
             if passenger.id not in reserved and edge in wanted_edges[source_id, passenger.kind]][:POD_CAPACITY]
     def resolve_dispatch_congestion(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
-            fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
-            current: dict[int, int], pending: dict[int, DirectedPair], graph: dict[int, list[int]], result: SimulationResult,
-            state: PlanState, day: int) -> tuple:
+            fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
+            fixed_assignments: dict[int, set[PathDemand]], pod_positions: dict[int, int], current: dict[int, int],
+            pending: dict[int, DirectedPair], graph: dict[int, list[int]], result: SimulationResult, state: PlanState, day: int) -> tuple:
         def requests_for(values: dict[int, PathDemand]) -> dict[int, DirectedPair]:
-            return self.path_pod_requests([], dynamic_pods, {}, current, pending, values, graph)
+            return self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, current, pending, values, fixed_assignments, graph)
         def conflicts(values: dict[int, DirectedPair]) -> Counter[Pair]:
             counts = Counter(route_key(*move) for move in values.values())
             return Counter({edge: count - state.tubes[edge] for edge, count in counts.items() if count > state.tubes[edge]})
@@ -1131,7 +1131,8 @@ class Planner:
             return trial[edge] < original[edge]
         requests = requests_for(assignments)
         congestion = conflicts(requests)
-        counted = {edge for edge in congestion if any(route_key(*move) == edge and pod_id in assignments
+        fixed_ids = {pod_id for pod_id, _ in fixed_pods}
+        counted = {edge for edge in congestion if any(route_key(*move) == edge and (pod_id in assignments or pod_id in fixed_ids)
             for pod_id, move in requests.items())}
         result.congestion_by_edge.update(counted)
         if counted:
@@ -1172,7 +1173,6 @@ class Planner:
                 unresolved.intersection_update(congestion)
             else:
                 unresolved.add(edge)
-        requests.update(self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, graph))
         return assignments, requests, self.allocate_tube_capacity(requests, state, result, day, False)
     def path_assignment_key(self, path: PathDemand, pod_id: int, boarding: int, current: dict[int, int],
             delivered: Counter[int], graph: dict[int, list[int]]) -> tuple:
@@ -1220,7 +1220,7 @@ class Planner:
                 return
     def path_pod_requests(self, fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
             pod_positions: dict[int, int], current: dict[int, int], pending: dict[int, DirectedPair], assignments: dict[int, PathDemand],
-            graph: dict[int, list[int]]) -> dict[int, DirectedPair]:
+            fixed_assignments: dict[int, set[PathDemand]], graph: dict[int, list[int]]) -> dict[int, DirectedPair]:
         requests = {}
         for pod_id, pod in fixed_pods:
             index = pod_positions[pod_id]
@@ -1228,7 +1228,8 @@ class Planner:
             if next_index != index:
                 requests[pod_id] = pod.path[index], pod.path[next_index]
         options = {}
-        assigned_edges = {route_key(a, b) for path in assignments.values() for a, b in zip(path.nodes, path.nodes[1:])}
+        assigned_paths = [*assignments.values(), *(path for paths in fixed_assignments.values() for path in paths)]
+        assigned_edges = {route_key(a, b) for path in assigned_paths for a, b in zip(path.nodes, path.nodes[1:])}
         all_edges = [(a, b) for a in sorted(graph) for b in graph[a] if a < b]
         for pod_id, _ in dynamic_pods:
             if pending[pod_id] != (-1, -1):

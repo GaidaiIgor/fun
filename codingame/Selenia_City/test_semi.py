@@ -12,8 +12,8 @@ import Selenia_City.semi as semi
 from Selenia_City.semi import Building, Candidate, Planner, PlanState, PodPlan, SimulationResult, route_key
 
 TURN_STATE = """
-month 10
-resources 5324
+month 15
+resources 50099
 module 0 1 20 15
 module 1 2 140 15
 landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
@@ -25,12 +25,18 @@ module 7 3 10 45
 landing 8 150 45 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
 tube 0 2 1
 tube 1 4 1
-tube 2 3 1
+tube 2 3 2
+tube 2 7 1
 tube 3 4 1
 tube 3 5 1
 tube 3 6 1
+tube 4 8 1
 pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 6, 3, 6, 3, 6, 3, 6]
 pod id=2, path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
+pod id=3, path=[3, 6, 3, 2, 7, 2, 7, 2, 7, 2, 7, 2, 0, 2, 0, 2, 7, 2, 7, 2, 7]
+pod id=4, path=[3, 5, 3, 6, 3, 2, 3, 2, 3, 2, 3, 2, 7, 2, 3, 2, 3, 2, 3, 2, 3]
+pod id=5, path=[8, 4, 3, 4, 3, 4, 3, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 4, 3, 4, 3]
+pod id=6, path=[8, 4, 8, 4, 8, 4, 8, 4, 3, 6, 3, 4, 1, 4, 3, 6, 3, 4, 8, 4, 8]
 """
 
 semi.FULL_DEBUG = True
@@ -141,11 +147,11 @@ def state_action_text(self, state: PlanState, base: PlanState = None) -> str:
         actions.extend(f"DROP POD {pod_id}" for pod_id in sorted(set(base.pods) - set(state.pods)))
         actions.extend(f"REVERT POD {pod_id}" for pod_id in sorted((base.ops - state.ops) & set(state.pods)))
         actions.extend(f"REVERT POD {pod_id}" for pod_id in sorted((set(state.pods) - set(base.pods)) - state.ops))
-        actions.extend(f"POD {pod_id} AUTO" for pod_id in sorted(state.ops - base.ops))
+        actions.extend(f"POD {pod_id}" for pod_id in sorted(state.ops - base.ops))
         return ";".join(actions) if actions else "WAIT"
     actions = [action for action in state.actions if action and action.split()[0] in ("TUBE", "TELEPORT", "UPGRADE")]
     actions.extend(f"DROP POD {pod_id}" for pod_id in sorted(set(self.pods) - set(state.pods)))
-    actions.extend(f"POD {pod_id} AUTO" for pod_id in sorted(state.ops))
+    actions.extend(f"POD {pod_id}" for pod_id in sorted(state.ops))
     return ";".join(actions) if actions else "WAIT"
 
 

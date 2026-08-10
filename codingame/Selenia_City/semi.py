@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3 AUTO;POD 4 AUTO;POD 5 AUTO;POD 6 AUTO"
+OVERRIDE_MONTH = -1
+OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3;POD 4;POD 5;POD 6"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -279,19 +279,19 @@ class Planner:
         elif command != "WAIT":
             raise ValueError(f"unknown override action {command}")
     def apply_override_pod(self, state: PlanState, action: str):
-        _, pod_text, route_text = action.split(maxsplit=2)
-        pod_id = int(pod_text)
+        parts = action.split()
+        pod_id = int(parts[1])
         if pod_id in state.pods:
             del state.pods[pod_id]
             state.cost -= POD_REFUND
             state.actions.append(f"DESTROY {pod_id}")
-        if route_text.startswith("AUTO"):
+        if len(parts) == 2:
             state.cost += POD_COST
             state.pods[pod_id] = PodPlan([], True)
             state.pod_slots.append((len(state.actions), pod_id))
             state.actions.append("")
             return
-        path = [int(item) for item in route_text.split()]
+        path = [int(item) for item in parts[2:]]
         state.cost += POD_COST
         state.pods[pod_id] = PodPlan(path)
         state.actions.append(action)

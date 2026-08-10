@@ -93,12 +93,12 @@ class PlannerScoreTests(unittest.TestCase):
         """Checks the current month-fifteen planner baseline."""
         self.assert_turn_score(MONTH_15_STATE, 15690)
 
-    def test_month_15_surplus_auto_pod(self):
-        """Checks final route materialization for a surplus AUTO pod."""
+    def test_month_15_surplus_pod(self):
+        """Checks final route materialization for a surplus dynamic pod."""
         planner = parse_turn_state(MONTH_15_STATE)
         command = semi.OVERRIDE_COMMAND
         semi.OVERRIDE_MONTH = 15
-        semi.OVERRIDE_COMMAND = "POD 3 AUTO;POD 4 AUTO;POD 5 AUTO"
+        semi.OVERRIDE_COMMAND = "POD 3;POD 4;POD 5"
         try:
             actions = planner.choose_actions()
         finally:

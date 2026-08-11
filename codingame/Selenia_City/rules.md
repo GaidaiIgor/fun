@@ -68,7 +68,11 @@ Pods fulfill assigned loads.
    7. Loads with smaller ID.
 4. If initial assignments are such that capacity of a given load is exceeded or assignments are non-uniform, fix this by considering lower priority assignments
 for some of the pods violating these rules in the order of their preference list.
-   1. Capacity is defined as the available number of batches (ceil(passengers / 10))
+   1. Load capacity is defined as the minimum of
+      1. Passenger capacity, defined as available number of batches at the source (ceil(passengers / 10)).
+      2. Path capacity, defined as the total remaining edge capacity along the way.
+         1. If paths of multiple loads overlap, the edge capacity from the shared edges is shared too,
+         so reserving it for one path also removes it from the overlapping paths.
    2. Uniform assignment is defined as a distribution of pods over loads such that for any load the number of assigned pods does not exceed the number of pods
    assigned to any other non-capped load by more than 1.
       1. Capped load is defined as the load with the number of assigned pods equal to load capacity.

@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3;POD 4;POD 5;POD 6"
+OVERRIDE_MONTH = 15
+OVERRIDE_COMMAND = "UPGRADE 2 7; UPGRADE 2 7; UPGRADE 2 7; UPGRADE 2 7; UPGRADE 2 7; UPGRADE 2 3; UPGRADE 2 3; UPGRADE 2 3; UPGRADE 2 3; UPGRADE 2 3; UPGRADE 3 4; UPGRADE 3 4; UPGRADE 3 4; UPGRADE 3 4; UPGRADE 3 4; UPGRADE 4 8; UPGRADE 4 8; UPGRADE 4 8; UPGRADE 4 8; UPGRADE 4 8; POD 1; POD 2; POD 3; POD 4; POD 5; POD 6; POD 7; POD 8; POD 9"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1114,7 +1114,7 @@ class Planner:
             if preferences[pod_id]:
                 assignments[pod_id] = preferences[pod_id][0]
                 inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
-        self.fix_load_assignments(assignments, preferences, current, graph)
+        self.fix_load_assignments(assignments, preferences, current, graph, state)
         return assignments, preferences
     def boarding_batch(self, edge: DirectedPair, queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], reserved: set[int]) -> list[Passenger]:
@@ -1183,9 +1183,33 @@ class Planner:
         return -path.priority, -boarding, distance, len(path.nodes) - 1, delivered[path.destination], \
             -path.cap, path.pool, path.destination, path.nodes
     def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
-            current: dict[int, int], graph: dict[int, list[int]]):
-        def capacity(path: PathDemand) -> int:
+            current: dict[int, int], graph: dict[int, list[int]], state: PlanState):
+        def passenger_capacity(path: PathDemand) -> int:
             return (path.cap + POD_CAPACITY - 1) // POD_CAPACITY
+        def overflow(values: Counter[PathDemand]) -> PathDemand:
+            def assign(path: PathDemand, seen: set[tuple[Pair, int]]) -> bool:
+                for edge in path_edges[path]:
+                    for slot in range(state.tubes[edge]):
+                        key = edge, slot
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        if key not in matches or assign(matches[key], seen):
+                            matches[key] = path
+                            return True
+                return False
+            matches = {}
+            for path in sorted(paths, key=lambda item: (-item.priority, item.pool, item.destination, item.nodes)):
+                if values[path] > passenger_capacity(path):
+                    return path
+                for _ in range(values[path]):
+                    if not assign(path, set()):
+                        return path
+            return None
+        def can_add(path: PathDemand) -> bool:
+            trial = counts.copy()
+            trial[path] += 1
+            return overflow(trial) is None
         indices = {pod_id: 0 for pod_id in assignments}
         counts = Counter(assignments.values())
         owners = {}
@@ -1193,21 +1217,22 @@ class Planner:
             owners.setdefault(path, set()).add(pod_id)
         paths = sorted({path for pod_paths in preferences.values() for path in pod_paths},
             key=lambda item: (item.pool, item.destination, item.nodes))
-        capacities = {path: capacity(path) for path in paths}
-        total_capacity = sum(capacities.values())
+        path_edges = {path: tuple(route_key(a, b) for a, b in zip(path.nodes, path.nodes[1:])) for path in paths}
         distances = {(pod_id, path.nodes[0]): 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
             for pod_id in assignments for path in paths}
         while True:
+            exceeded = overflow(counts)
             for path in paths:
-                may_unassign = len(assignments) > total_capacity
-                pods = [pod_id for pod_id in owners.get(path, ())
-                    if indices[pod_id] + 1 < len(preferences[pod_id]) or may_unassign]
+                pods = [pod_id for pod_id in owners.get(path, ())]
                 if not pods:
                     continue
-                uneven = any(candidate.priority == path.priority and counts[candidate] != capacities[candidate] and
-                    counts[candidate] < counts[path] - 1 for candidate in paths)
-                if counts[path] <= capacities[path] and not uneven:
+                uneven = exceeded is None and any(candidate.priority == path.priority and counts[candidate] < counts[path] - 1
+                    and can_add(candidate) for candidate in paths)
+                if path != exceeded and not uneven:
                     continue
+                pods = [pod_id for pod_id in pods if indices[pod_id] + 1 < len(preferences[pod_id])]
+                if not pods:
+                    pods = list(owners[path])
                 pod_id = max(pods, key=lambda item: (distances[item, path.nodes[0]], item))
                 owners[path].remove(pod_id)
                 counts[path] -= 1

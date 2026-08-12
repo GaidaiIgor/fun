@@ -78,8 +78,9 @@ for some of the pods violating these rules in the order of their preference list
       1. Capped load is defined as the load with the number of assigned pods equal to load capacity.
       2. Uniformity is evaluated separately for each priority level.
    3. When deciding which pods should remain assigned:
-      1. Prefer pods closer to the load's origin.
-      2. Prefer pods with lower id.
+      1. Prefer to keep pods closer to the load's origin.
+      2. Prefer to keep pods with larger distance to the next legitimate alternative load.
+      3. Prefer to keep pods with lower id.
 5. If pods' movement due to currently selected assignments exceeds capacity of some edge E, record congestion event at that edge.
 Try to re-assign loads to resolve edge conflict as follows:
    1. If a pair of pods is trying to move in opposite directions through E, swap their assignments.

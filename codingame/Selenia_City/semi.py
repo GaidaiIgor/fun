@@ -14,7 +14,7 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 15
-OVERRIDE_COMMAND = "UPGRADE 4 8;POD 7"
+OVERRIDE_COMMAND = "WAIT"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1237,7 +1237,8 @@ class Planner:
                     and can_add(candidate) for candidate in paths)
                 if path != exceeded and not uneven:
                     continue
-                pod_id = max(pods, key=lambda item: (distances[item, path.nodes[0]], item))
+                pod_id = max(pods, key=lambda item: (distances[item, path.nodes[0]],
+                    -distances[item, preferences[item][indices[item] + 1].nodes[0]] if indices[item] + 1 < len(preferences[item]) else -INF, item))
                 owners[path].remove(pod_id)
                 counts[path] -= 1
                 indices[pod_id] += 1

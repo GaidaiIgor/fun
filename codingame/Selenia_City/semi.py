@@ -14,7 +14,7 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 15
-OVERRIDE_COMMAND = "UPGRADE 2 7; UPGRADE 2 7; UPGRADE 2 7; UPGRADE 2 7; UPGRADE 2 7; UPGRADE 2 3; UPGRADE 2 3; UPGRADE 2 3; UPGRADE 2 3; UPGRADE 2 3; UPGRADE 3 4; UPGRADE 3 4; UPGRADE 3 4; UPGRADE 3 4; UPGRADE 3 4; UPGRADE 4 8; UPGRADE 4 8; UPGRADE 4 8; UPGRADE 4 8; UPGRADE 4 8; POD 1; POD 2; POD 3; POD 4; POD 5; POD 6; POD 7; POD 8; POD 9"
+OVERRIDE_COMMAND = "UPGRADE 4 8;POD 7"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -866,8 +866,14 @@ class Planner:
                 self.settle(day + 1, queues, arrivals, result)
                 continue
             fixed_assignments, _, _ = self.fixed_load_assignments(fixed_pods, pod_positions, active, queues, wanted_edges)
+            occupied_edges = Counter()
+            for pod_id, pod in fixed_pods:
+                index = pod_positions[pod_id]
+                next_index = fixed_next_index(pod.path, index)
+                if pod_id in fixed_assignments and next_index != index:
+                    occupied_edges[route_key(pod.path[index], pod.path[next_index])] += 1
             assignments, preferences = self.dispatch_dynamic_paths(active, dynamic_pods, dynamic_current, queues,
-                wanted_edges, passenger_priorities, reserved_passengers, result.delivered_by_module, state, graph)
+                wanted_edges, passenger_priorities, reserved_passengers, result.delivered_by_module, state, graph, occupied_edges)
             if FULL_DEBUG:
                 initial_assignments = dict(assignments)
                 initial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending,
@@ -1087,7 +1093,8 @@ class Planner:
     def dispatch_dynamic_paths(self, active: list[PathDemand], dynamic_pods: list[tuple[int, PodPlan]], current: dict[int, int],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
             passenger_priorities: dict[tuple[Pool, int, int], int], reserved_passengers: set[int], delivered: Counter[int],
-            state: PlanState, graph: dict[int, list[int]]) -> tuple[dict[int, PathDemand], dict[int, list[PathDemand]]]:
+            state: PlanState, graph: dict[int, list[int]], occupied_edges: Counter[Pair]) \
+            -> tuple[dict[int, PathDemand], dict[int, list[PathDemand]]]:
         assignments = {}
         preferences = {}
         fixed_reserved = set(reserved_passengers)
@@ -1114,7 +1121,7 @@ class Planner:
             if preferences[pod_id]:
                 assignments[pod_id] = preferences[pod_id][0]
                 inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
-        self.fix_load_assignments(assignments, preferences, current, graph, state)
+        self.fix_load_assignments(assignments, preferences, current, graph, state, occupied_edges)
         return assignments, preferences
     def boarding_batch(self, edge: DirectedPair, queues: dict[int, list[Passenger]],
             wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], reserved: set[int]) -> list[Passenger]:
@@ -1183,13 +1190,13 @@ class Planner:
         return -path.priority, -boarding, distance, len(path.nodes) - 1, delivered[path.destination], \
             -path.cap, path.pool, path.destination, path.nodes
     def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
-            current: dict[int, int], graph: dict[int, list[int]], state: PlanState):
+            current: dict[int, int], graph: dict[int, list[int]], state: PlanState, occupied_edges: Counter[Pair]):
         def passenger_capacity(path: PathDemand) -> int:
             return (path.cap + POD_CAPACITY - 1) // POD_CAPACITY
         def overflow(values: Counter[PathDemand]) -> PathDemand:
             def assign(path: PathDemand, seen: set[tuple[Pair, int]]) -> bool:
                 for edge in path_edges[path]:
-                    for slot in range(state.tubes[edge]):
+                    for slot in range(occupied_edges[edge], state.tubes[edge]):
                         key = edge, slot
                         if key in seen:
                             continue

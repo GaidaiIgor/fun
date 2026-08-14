@@ -12,8 +12,8 @@ import Selenia_City.semi as semi
 from Selenia_City.semi import Building, Candidate, Planner, PlanState, PodPlan, SimulationResult, route_key
 
 TURN_STATE = """
-month 10
-resources 5324
+month 15
+resources 50762
 module 0 1 20 15
 module 1 2 140 15
 landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
@@ -26,11 +26,17 @@ landing 8 150 45 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
 tube 0 2 1
 tube 1 4 1
 tube 2 3 1
+tube 2 7 1
 tube 3 4 1
 tube 3 5 1
 tube 3 6 1
-pod id=1, path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 6, 3, 6, 3, 6, 3, 6]
-pod id=2, path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
+tube 4 8 1
+pod id=1, assignments=[2-0, -, 2-0, -, 2-0, -, 2-0, -, 2-0, -, -, -, -, -, -, -, -, -, -, -], path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2]
+pod id=2, assignments=[4-1, -, 4-1, -, 4-1, -, 4-1, -, 4-1, -, -, -, -, -, -, -, -, -, -, -], path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
+pod id=3, assignments=[3-6, -, 3-6, -, 3-2-7, 2-7, -, 2-7, -, 2-7, -, 2-7, -, -, -, -, -, -, -, -], path=[3, 6, 3, 6, 3, 2, 7, 2, 7, 2, 7, 2, 7, 2, 7, 2, 7, 2, 7, 2, 3]
+pod id=4, assignments=[3-5, -, 3-2-7, 2-7, -, -, 3-2-7, -, 3-2-7, -, 3-2-7, -, -, -, -, -, -, -, -, -], path=[3, 5, 3, 2, 7, 2, 3, 2, 3, 2, 3, 2, 0, 2, 3, 2, 3, 2, 3, 2, 7]
+pod id=5, assignments=[8-4-3-2-7, 4-3-2-7, -, 4-3-2-7, -, 4-3-2-7, -, 4-3-2-7, -, -, -, -, -, -, -, -, -, -, -, -], path=[8, 4, 3, 4, 3, 4, 3, 4, 3, 6, 3, 5, 3, 5, 3, 6, 3, 4, 3, 4, 3]
+pod id=6, assignments=[8-4-3-2-7, -, 8-4-3-2-7, -, 8-4-3-2-7, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -], path=[8, 4, 8, 4, 8, 4, 8, 4, 3, 5, 3, 5, 3, 4, 8, 4, 8, 4, 8, 4, 8]
 """
 
 semi.FULL_DEBUG = True
@@ -207,8 +213,8 @@ def parse_turn_state(text: str) -> Planner:
             case "teleport":
                 planner.teleports[int(parts[1])] = int(parts[2])
             case "pod":
-                pod_id, path = parse_pod_line(line)
-                planner.pods[pod_id] = PodPlan(path)
+                pod_id, assignments, path = parse_pod_line(line)
+                planner.pods[pod_id] = PodPlan(path, False, assignments)
             case _:
                 raise ValueError(f"Unknown turn-state line: {line}")
     return planner
@@ -235,10 +241,12 @@ def parse_path(text: str) -> list[int]:
     return [int(item) for item in text.replace(",", " ").split()]
 
 
-def parse_pod_line(line: str) -> tuple[int, list[int]]:
-    """Parses pod id and itinerary from line."""
-    id_text, path_text = line.removeprefix("pod id=").split(", path=[")
-    return int(id_text), parse_path(path_text.removesuffix("]"))
+def parse_pod_line(line: str) -> tuple[int, list[tuple[int, ...]], list[int]]:
+    """Parses pod id, daily assignments and itinerary from line."""
+    id_text, values = line.removeprefix("pod id=").split(", assignments=[")
+    assignments_text, path_text = values.split("], path=[")
+    assignments = [tuple(map(int, item.split("-"))) if item != "-" else () for item in assignments_text.split(", ")]
+    return int(id_text), assignments, parse_path(path_text.removesuffix("]"))
 
 
 if __name__ == "__main__":

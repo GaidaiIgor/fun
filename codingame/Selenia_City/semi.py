@@ -13,7 +13,7 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 15
+OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "UPGRADE 4 8;UPGRADE 3 4;POD 7"
 FULL_DEBUG = False
 _G = {}
@@ -115,7 +115,7 @@ class SimulationResult:
     congestion_by_edge: Counter[Pair] = field(default_factory=Counter)
     congestion_by_day: dict[int, Counter[Pair]] = field(default_factory=dict)
     dynamic_paths: dict[int, list[int]] = field(default_factory=dict)
-    dynamic_assignments: dict[int, list[PathKey]] = field(default_factory=dict)
+    pod_assignments: dict[int, list[PathKey]] = field(default_factory=dict)
     initial_table: list[list[str]] = field(default_factory=list)
     table: list[list[str]] = field(default_factory=list)
     reserved: str = "-"
@@ -233,7 +233,7 @@ class Planner:
                 current_state, current_result = trial, trial_result
         final_state = current_state
         final_result = self.score_state(final_state, True)
-        self.fill_dynamic_actions(final_state, final_result.dynamic_paths, final_result.dynamic_assignments)
+        self.fill_dynamic_actions(final_state, final_result.dynamic_paths, final_result.pod_assignments)
         self.pod_assignments = {pod_id: pod.assignments[:] for pod_id, pod in final_state.pods.items()}
         if FULL_DEBUG:
             debug("\n" + self.table_debug(final_result, final_state))
@@ -247,7 +247,7 @@ class Planner:
             debug("\n" + self.score_debug("override", current_result, current_state.cost))
         final_state = self.override_state(OVERRIDE_COMMAND)
         final_result = self.score_state(final_state, True)
-        self.fill_dynamic_actions(final_state, final_result.dynamic_paths, final_result.dynamic_assignments)
+        self.fill_dynamic_actions(final_state, final_result.dynamic_paths, final_result.pod_assignments)
         self.pod_assignments = {pod_id: pod.assignments[:] for pod_id, pod in final_state.pods.items()}
         if FULL_DEBUG:
             debug("\n" + self.table_debug(final_result, final_state))
@@ -306,7 +306,7 @@ class Planner:
             return
         path = [int(item) for item in parts[2:]]
         state.cost += POD_COST
-        state.pods[pod_id] = PodPlan(path)
+        state.pods[pod_id] = PodPlan(path, False, [()] * MONTH_DAYS)
         state.actions.append(action)
     def best_candidate(self, layouts: tuple[Bundle, ...], current_state: PlanState, current_result: SimulationResult,
             before_score: int) -> Candidate:
@@ -804,23 +804,24 @@ class Planner:
         if track:
             state.features.append(("reroute" if reroute else "pod", pod_id, cost, 0, True))
     def fill_dynamic_actions(self, state: PlanState, dynamic_paths: dict[int, list[int]],
-            dynamic_assignments: dict[int, list[PathKey]]):
+            pod_assignments: dict[int, list[PathKey]]):
         for index, pod_id in state.pod_slots:
             path = dynamic_paths[pod_id]
             assert len(path) >= 2, f"dynamic pod {pod_id} produced an empty route"
             state.actions[index] = "POD {} {}".format(pod_id, " ".join(map(str, path)))
             state.pods[pod_id].path = path
-            state.pods[pod_id].assignments = dynamic_assignments[pod_id]
+        for pod_id, pod in state.pods.items():
+            pod.assignments = pod_assignments[pod_id]
     def score_state(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         if not any(pod.dynamic for pod in state.pods.values()):
             return self.cached_simulate(state)
         dynamic_result = self.cached_simulate(state)
         paths = dynamic_result.dynamic_paths
-        assignments = dynamic_result.dynamic_assignments
+        assignments = dynamic_result.pod_assignments
         fixed_result = self.cached_simulate(self.fixed_dynamic_state(state, paths, assignments))
         if keep_dynamic_paths:
             fixed_result = replace(fixed_result, congestion_by_edge=dynamic_result.congestion_by_edge,
-                congestion_by_day=dynamic_result.congestion_by_day, dynamic_paths=paths, dynamic_assignments=assignments,
+                congestion_by_day=dynamic_result.congestion_by_day, dynamic_paths=paths, pod_assignments=assignments,
                 table=dynamic_result.table, initial_table=dynamic_result.initial_table, reserved=dynamic_result.reserved)
         return fixed_result
     def cached_simulate(self, state: PlanState) -> SimulationResult:
@@ -831,9 +832,9 @@ class Planner:
             self.simulation_cache[key] = self.simulate(state, keep_dynamic_paths)
         return self.simulation_cache[key]
     def fixed_dynamic_state(self, state: PlanState, dynamic_paths: dict[int, list[int]],
-            dynamic_assignments: dict[int, list[PathKey]]) -> PlanState:
-        pods = {pod_id: PodPlan(dynamic_paths[pod_id][:], False, dynamic_assignments[pod_id][:]) if pod.dynamic else
-            PodPlan(pod.path[:], False, pod.assignments[:]) for pod_id, pod in state.pods.items()}
+            pod_assignments: dict[int, list[PathKey]]) -> PlanState:
+        pods = {pod_id: PodPlan(dynamic_paths[pod_id][:] if pod.dynamic else pod.path[:], False, pod_assignments[pod_id][:])
+            for pod_id, pod in state.pods.items()}
         return PlanState(state.tubes, state.teleports, pods)
     def simulate(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         network_key = tuple(sorted(state.tubes)), tuple(sorted(state.teleports.items()))
@@ -861,7 +862,7 @@ class Planner:
         dynamic_current = {pod_id: -1 for pod_id, _ in dynamic_pods}
         dynamic_pending = {pod_id: (-1, -1) for pod_id, _ in dynamic_pods}
         dynamic_paths = {pod_id: [] for pod_id, _ in dynamic_pods}
-        dynamic_assignments = {pod_id: [] for pod_id, _ in dynamic_pods}
+        pod_assignments = {pod_id: [] for pod_id in state.pods}
         arrivals = Counter()
         for day in range(MONTH_DAYS):
             self.teleport_phase(queues, distances, state.teleports)
@@ -873,13 +874,16 @@ class Planner:
                 route_cache, choice_cache)
             if not active:
                 break
+            fixed_assignments, _, _ = self.fixed_load_assignments(fixed_pods, pod_positions, active, queues, wanted_edges, day)
+            for pod_id, _ in fixed_pods:
+                paths = fixed_assignments.get(pod_id)
+                pod_assignments[pod_id].append(next(iter(paths)).nodes if paths else ())
             if not dynamic_pods:
                 requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, {}, graph)
                 moves = self.allocate_tube_capacity(requests, state, result, day)
                 self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {})
                 self.settle(day + 1, queues, arrivals, result)
                 continue
-            fixed_assignments, _, _ = self.fixed_load_assignments(fixed_pods, pod_positions, active, queues, wanted_edges, day)
             occupied_edges = Counter()
             for pod_id, pod in fixed_pods:
                 index = pod_positions[pod_id]
@@ -895,7 +899,7 @@ class Planner:
             assignments, requests, moves = self.resolve_dispatch_congestion(assignments, preferences, fixed_pods, dynamic_pods,
                 fixed_assignments, pod_positions, dynamic_current, dynamic_pending, graph, result, state, day)
             for pod_id, _ in dynamic_pods:
-                dynamic_assignments[pod_id].append(assignments[pod_id].nodes if pod_id in assignments else ())
+                pod_assignments[pod_id].append(assignments[pod_id].nodes if pod_id in assignments else ())
             if FULL_DEBUG:
                 loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
                     "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
@@ -920,10 +924,10 @@ class Planner:
                 dynamic_paths[pod_id].append(requests[pod_id][1])
             self.board_and_launch(queues, distances, state, moves, pod_positions, dynamic_current, dynamic_pending)
             self.settle(day + 1, queues, arrivals, result)
+        result.pod_assignments = {pod_id: assignments + [()] * (MONTH_DAYS - len(assignments))
+            for pod_id, assignments in pod_assignments.items()}
         if keep_dynamic_paths:
             result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
-            result.dynamic_assignments = {pod_id: assignments + [()] * (MONTH_DAYS - len(assignments))
-                for pod_id, assignments in dynamic_assignments.items()}
         return result
     def fixed_assignment_schedule(self, state: PlanState, distances: dict[int, dict[int, int]],
             module_distances: dict[int, dict[int, int]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],

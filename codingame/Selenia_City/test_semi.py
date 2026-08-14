@@ -12,8 +12,8 @@ import Selenia_City.semi as semi
 from Selenia_City.semi import Building, Candidate, Planner, PlanState, PodPlan, SimulationResult, route_key
 
 TURN_STATE = """
-month 10
-resources 5324
+month 15
+resources 50762
 module 0 1 20 15
 module 1 2 140 15
 landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
@@ -26,11 +26,17 @@ landing 8 150 45 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
 tube 0 2 1
 tube 1 4 1
 tube 2 3 1
+tube 2 7 1
 tube 3 4 1
 tube 3 5 1
 tube 3 6 1
-pod id=1, assignments=[2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 3-6, 3-6, 3-6, 3-6, 3-6, 3-6, 3-6, -, -, -, -], path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 6, 3, 6, 3, 6, 3, 6]
-pod id=2, assignments=[4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 3-5, 3-5, 3-5, 3-5, 3-5, 3-5, 3-5, -, -, -, -], path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
+tube 4 8 1
+pod id=1, assignments=[2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 2-0, -, -, -, -, -, -, -, -, -, -, -], path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2]
+pod id=2, assignments=[4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 3-5, 3-5, -, -, -, -, -, -, -, -, -], path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
+pod id=3, assignments=[3-6, 3-6, 3-6, 3-6, 3-2-7, 2-7, 3-6, 2-7, 3-5, 2-7, -, 2-7, -, -, -, -, -, -, -, -], path=[3, 6, 3, 6, 3, 2, 7, 2, 7, 2, 7, 2, 7, 2, 7, 2, 7, 2, 7, 2, 3]
+pod id=4, assignments=[3-5, 8-4-3-2-7, 3-2-7, 2-7, 3-6, 3-6, 3-2-7, 3-6, 3-2-7, 3-2-7, 3-2-7, -, -, -, -, -, -, -, -, -], path=[3, 5, 3, 2, 7, 2, 3, 2, 3, 2, 3, 2, 0, 2, 3, 2, 3, 2, 3, 2, 7]
+pod id=5, assignments=[8-4-3-2-7, 4-3-2-7, 4-3-2-7, 4-3-2-7, 4-3-2-7, 4-3-2-7, 4-3-2-7, 4-3-2-7, 3-6, -, 3-5, -, -, -, -, -, -, -, -, -], path=[8, 4, 3, 4, 3, 4, 3, 4, 3, 6, 3, 5, 3, 5, 3, 6, 3, 4, 3, 4, 3]
+pod id=6, assignments=[8-4-3-2-7, 8-4-3-2-7, 8-4-3-2-7, 8-4-3-2-7, 8-4-3-2-7, 8-4-3-2-7, 8-4-3-2-7, 8-4-3-2-7, 4-3-2-7, 3-5, -, -, -, -, -, -, -, -, -, -], path=[8, 4, 8, 4, 8, 4, 8, 4, 3, 5, 3, 5, 3, 4, 8, 4, 8, 4, 8, 4, 8]
 """
 
 semi.FULL_DEBUG = True
@@ -45,8 +51,9 @@ def table_debug(self, result: SimulationResult, state: PlanState) -> str:
     congestion_rows = [["Day", *(f"{a}-{b}" for a, b in edges)],
         *([str(day + 1), *(str(result.congestion_by_day.get(day, {}).get(edge, 0)) for edge in edges)]
             for day in range(semi.MONTH_DAYS))]
-    return "Fixed reservations: " + result.reserved + "\nInitial assignments:\n" + initial_assignments + \
-        "\nAssignments:\n" + assignments + "\nCongestion:\n" + format_table(congestion_rows)
+    initial = "\nInitial assignments:\n" + initial_assignments if result.initial_table else ""
+    return "Fixed reservations: " + result.reserved + initial + "\nAssignments:\n" + assignments + \
+        "\nCongestion:\n" + format_table(congestion_rows)
 
 
 def format_assignment_table(headers: list[str], data: list[list[str]]) -> str:

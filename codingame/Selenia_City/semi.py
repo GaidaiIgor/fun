@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "UPGRADE 4 8;UPGRADE 3 4;POD 7"
+OVERRIDE_MONTH = 15
+OVERRIDE_COMMAND = "WAIT"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -880,6 +880,15 @@ class Planner:
                 pod_assignments[pod_id].append(next(iter(paths)).nodes if paths else ())
             if not dynamic_pods:
                 requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, {}, graph)
+                if FULL_DEBUG:
+                    loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
+                        "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
+                    cells = []
+                    for pod_id, pod in fixed_pods:
+                        paths = fixed_assignments.get(pod_id, set())
+                        path_text = "/".join("-".join(map(str, path.nodes)) for path in paths) or "-"
+                        cells.append("{} ({})".format(path_text, pod.path[pod_positions[pod_id]]))
+                    result.table.append([str(day + 1), loads, *cells])
                 moves = self.allocate_tube_capacity(requests, state, result, day)
                 self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {})
                 self.settle(day + 1, queues, arrivals, result)

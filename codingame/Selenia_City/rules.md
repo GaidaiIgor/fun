@@ -44,6 +44,8 @@ If the score does not decrease, keep the drop.
    2. Previous round winner +1 pod (if layout capacity allows more pods).
    3. Previous round winner +1 upgrade (if congestion exists in previous round's winner).
    4. Previous round winner +1 pod +1 upgrade (if congestion exists in the +pod bundle).
+   5. If the previous bundles did not improve the score relative to the previous round,
+   keep adding +1 upgrade to bundle #4 until a bundle that improves the score is found or there is not enough resources to keep doing it.
 4. Upgrades planned during previous iterations may be cancelled to afford a pod bundle.
    1. Cancellation order is the same as for the layout bundles.
 5. The winner in each round is chosen based on the largest marginal efficiency.

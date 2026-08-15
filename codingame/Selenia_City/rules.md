@@ -78,6 +78,7 @@ for some of the pods violating these rules in the order of their preference list
       2. Path capacity, defined as the total remaining edge capacity along the way.
          1. If paths of multiple loads overlap, the edge capacity from the shared edges is shared too,
          so reserving it for one path also removes it from the overlapping paths.
+         2. Being reassigned due to path capacity increases congestion counter on the closest to origin edge with the smallest capacity along the way.
    2. Uniform assignment is defined as a distribution of pods over loads such that for any load the number of assigned pods does not exceed the number of pods
    assigned to any other non-capped load by more than 1.
       1. Capped load is defined as the load with the number of assigned pods equal to load capacity.

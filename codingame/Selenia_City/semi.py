@@ -500,6 +500,8 @@ class Planner:
         result = []
         round_number = 1
         allow_reroute = True
+        iteration_score = parent.round_score
+        positive_iteration = self.score_state(parent.state).score > iteration_score
         while parent.state.cost <= self.resources:
             simulation = self.cached_simulate(parent.state)
             parent_score = self.score_state(parent.state).score
@@ -569,7 +571,9 @@ class Planner:
                 break
             efficiency, _, _, next_parent = max(affordable, key=lambda item: item[:3])
             next_parent.bundle.debug_chosen = next_parent.bundle.debug_id
-            if efficiency < parent_efficiency:
+            positive_iteration |= any(option.round_score + round_gain > iteration_score
+                for _, round_gain, _, option in affordable)
+            if not any(round_gain > 0 for _, round_gain, _, _ in affordable) or positive_iteration and efficiency < parent_efficiency:
                 break
             if len(next_parent.state.pods) > len(parent.state.pods):
                 allow_reroute = False

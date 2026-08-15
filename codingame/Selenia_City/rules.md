@@ -49,8 +49,10 @@ If the score does not decrease, keep the drop.
    keep adding +1 upgrade to bundle #4 until a bundle that improves the score is found or there is not enough resources to keep doing it.
 4. Upgrades planned during previous iterations may be cancelled to afford a pod bundle.
    1. Cancellation order is the same as for the layout bundles.
-5. The winner in each round is chosen based on the largest marginal efficiency.
-6. New rounds are generated if last round winner's round efficiency was no worse than that in the round before.
+5. The winner in each round is chosen based on the largest round efficiency.
+6. New rounds are generated if affordable bundles with positive round score gain existed in the last round and
+   1. Round efficiency of the last round's winner was no worse than that in the round before.
+   2. Or bundle with positive iteration score gain is not yet found.
 7. Largest efficiency bundle in all rounds is selected as final.
 8. Teleports have round-0 only.
 

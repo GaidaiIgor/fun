@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "WAIT"
+OVERRIDE_MONTH = 15
+OVERRIDE_COMMAND = "UPGRADE 3 4;UPGRADE 4 8;POD 7"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1152,7 +1152,6 @@ class Planner:
             -> tuple[dict[int, PathDemand], dict[int, list[PathDemand]]]:
         assignments = {}
         preferences = {}
-        fixed_reserved = set(reserved_passengers)
         inspected = set(reserved_passengers)
         for pod_id, _ in dynamic_pods:
             options = [path for path in active if current[pod_id] == -1 or graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
@@ -1160,7 +1159,7 @@ class Planner:
             inspection_batches = {}
             for path in options:
                 if path.nodes[:2] not in batches:
-                    batches[path.nodes[:2]] = self.boarding_batch(path.nodes[:2], queues, wanted_edges, fixed_reserved)
+                    batches[path.nodes[:2]] = self.boarding_batch(path.nodes[:2], queues, wanted_edges, set())
                     inspection_batches[path.nodes[:2]] = self.boarding_batch(path.nodes[:2], queues, wanted_edges, inspected)
             evaluated = []
             for path in options:

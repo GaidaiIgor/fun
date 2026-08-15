@@ -57,18 +57,21 @@ class PathDemand:
         object.__setattr__(self, "h", hash((self.pool, self.destination, self.nodes, self.cap, self.reserved)))
     def __hash__(self) -> int:
         return self.h
-def assignment_text(paths: set[PathDemand], pod_id: int, requests: dict[int, DirectedPair], moves: dict[int, DirectedPair]) -> str:
-    """Formats paths for pod_id, using requests and moves to return a three-character status prefix."""
+def assignment_text(paths: set[PathDemand], pod_id: int, requests: dict[int, DirectedPair], moves: dict[int, DirectedPair],
+        carrying: set[int]) -> str:
+    """Formats paths for pod_id, using requests, moves and carrying to return a three-character status prefix."""
     values = []
     for path in paths:
         if pod_id not in requests:
             status = "   "
         elif pod_id not in moves:
             status = "E! "
-        elif requests[pod_id] in zip(path.nodes, path.nodes[1:]):
+        elif pod_id in carrying:
             status = ".. "
-        else:
+        elif requests[pod_id] not in zip(path.nodes, path.nodes[1:]):
             status = "-> "
+        else:
+            status = "   "
         values.append(status + "-".join(map(str, path.nodes)))
     return "/".join(values) or "   -"
 @dataclass(slots=True)
@@ -920,16 +923,17 @@ class Planner:
             if not dynamic_pods:
                 requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, {}, graph)
                 moves = self.allocate_tube_capacity(requests, state, result, day)
+                locations = {pod_id: pod.path[pod_positions[pod_id]] for pod_id, pod in fixed_pods} if FULL_DEBUG else {}
+                carrying = self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {})
                 if FULL_DEBUG:
                     loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
                         "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
                     cells = []
                     for pod_id, pod in fixed_pods:
                         paths = fixed_assignments.get(pod_id, set())
-                        path_text = assignment_text(paths, pod_id, requests, moves)
-                        cells.append("{} ({})".format(path_text, pod.path[pod_positions[pod_id]]))
+                        path_text = assignment_text(paths, pod_id, requests, moves, carrying)
+                        cells.append("{} ({})".format(path_text, locations[pod_id]))
                     result.table.append([str(day + 1), loads, *cells])
-                self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {})
                 self.settle(day + 1, queues, arrivals, result)
                 continue
             occupied_edges = Counter()
@@ -948,24 +952,18 @@ class Planner:
                 initial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending,
                     initial_assignments, fixed_assignments, graph)
                 initial_moves = self.allocate_tube_capacity(initial_requests, state, result, day, False)
+                initial_locations = {pod_id: pod.path[pod_positions[pod_id]] if not pod.dynamic else
+                    dynamic_current[pod_id] if dynamic_current[pod_id] != -1 else initial_requests.get(pod_id, ("-",))[0]
+                    for pod_id, pod in state.pods.items()}
+                initial_carrying = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
+                    distances, state, initial_moves, pod_positions.copy(), dynamic_current.copy(), dynamic_pending.copy())
             assignments, requests, moves = self.resolve_dispatch_congestion(assignments, preferences, fixed_pods, dynamic_pods,
                 fixed_assignments, pod_positions, dynamic_current, dynamic_pending, graph, result, state, day)
             for pod_id, _ in dynamic_pods:
                 pod_assignments[pod_id].append(assignments[pod_id].nodes if pod_id in assignments else ())
-            if FULL_DEBUG:
-                loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
-                    "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
-                for table, day_assignments, day_requests, day_moves in ((result.initial_table, initial_assignments, initial_requests, initial_moves),
-                        (result.table, assignments, requests, moves)):
-                    cells = []
-                    for pod_id, pod in sorted(state.pods.items()):
-                        paths = fixed_assignments.get(pod_id, set()) if not pod.dynamic else \
-                            {day_assignments[pod_id]} if pod_id in day_assignments else set()
-                        path_text = assignment_text(paths, pod_id, day_requests, day_moves)
-                        location = pod.path[pod_positions[pod_id]] if not pod.dynamic else dynamic_current[pod_id]
-                        location = day_requests[pod_id][0] if location == -1 and pod_id in day_requests else location
-                        cells.append("{} ({})".format(path_text, location if location != -1 else "-"))
-                    table.append([str(day + 1), loads, *cells])
+            locations = {pod_id: pod.path[pod_positions[pod_id]] if not pod.dynamic else
+                dynamic_current[pod_id] if dynamic_current[pod_id] != -1 else requests.get(pod_id, ("-",))[0]
+                for pod_id, pod in state.pods.items()} if FULL_DEBUG else {}
             for pod_id, _ in dynamic_pods:
                 if dynamic_pending[pod_id] != (-1, -1) or pod_id not in requests:
                     continue
@@ -974,7 +972,20 @@ class Planner:
                     dynamic_current[pod_id] = requests[pod_id][0]
                     dynamic_paths[pod_id].append(requests[pod_id][0])
                 dynamic_paths[pod_id].append(requests[pod_id][1])
-            self.board_and_launch(queues, distances, state, moves, pod_positions, dynamic_current, dynamic_pending)
+            carrying = self.board_and_launch(queues, distances, state, moves, pod_positions, dynamic_current, dynamic_pending)
+            if FULL_DEBUG:
+                loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
+                    "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
+                tables = ((result.initial_table, initial_assignments, initial_requests, initial_moves, initial_carrying, initial_locations),
+                    (result.table, assignments, requests, moves, carrying, locations))
+                for table, day_assignments, day_requests, day_moves, day_carrying, day_locations in tables:
+                    cells = []
+                    for pod_id, pod in sorted(state.pods.items()):
+                        paths = fixed_assignments.get(pod_id, set()) if not pod.dynamic else \
+                            {day_assignments[pod_id]} if pod_id in day_assignments else set()
+                        cells.append("{} ({})".format(assignment_text(paths, pod_id, day_requests, day_moves, day_carrying),
+                            day_locations[pod_id]))
+                    table.append([str(day + 1), loads, *cells])
             self.settle(day + 1, queues, arrivals, result)
         result.pod_assignments = {pod_id: assignments + [()] * (MONTH_DAYS - len(assignments))
             for pod_id, assignments in pod_assignments.items()}
@@ -1461,7 +1472,7 @@ class Planner:
         return moves
     def board_and_launch(self, queues: dict[int, list[Passenger]], distances: dict[int, dict[int, int]], state: PlanState,
             moves: dict[int, DirectedPair], pod_positions: dict[int, int], dynamic_current: dict[int, int],
-            dynamic_pending: dict[int, DirectedPair]):
+            dynamic_pending: dict[int, DirectedPair]) -> set[int]:
         by_start = {}
         for pod_id, (source_id, target_id) in moves.items():
             by_start.setdefault(source_id, []).append((pod_id, target_id))
@@ -1497,6 +1508,7 @@ class Planner:
                 dynamic_pending[pod_id] = (-1, -1)
             if onboard.get(pod_id):
                 queues.setdefault(target_id, []).extend(onboard[pod_id])
+        return set(onboard)
     def cheapest_hop_path(self, start_id: int, targets: list[int], hop_count: int, state: PlanState) -> list[int]:
         return self.cheapest_paths_by_hop(start_id, targets, hop_count, state).get(hop_count, [])
     def cheapest_path_with_hop_limit(self, start_id: int, targets: list[int], hop_limit: int,

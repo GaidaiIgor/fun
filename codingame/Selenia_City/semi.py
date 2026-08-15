@@ -14,7 +14,7 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 15
-OVERRIDE_COMMAND = "UPGRADE 3 4;UPGRADE 4 8;POD 7"
+OVERRIDE_COMMAND = "WAIT"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -907,7 +907,8 @@ class Planner:
                     cells = []
                     for pod_id, pod in fixed_pods:
                         paths = fixed_assignments.get(pod_id, set())
-                        path_text = "/".join("-".join(map(str, path.nodes)) for path in paths) or "-"
+                        path_text = "/".join(("->" if pod_id in requests and requests[pod_id] not in zip(path.nodes, path.nodes[1:]) else "") +
+                            "-".join(map(str, path.nodes)) for path in paths) or "-"
                         cells.append("{} ({})".format(path_text, pod.path[pod_positions[pod_id]]))
                     result.table.append([str(day + 1), loads, *cells])
                 moves = self.allocate_tube_capacity(requests, state, result, day)
@@ -942,7 +943,8 @@ class Planner:
                     for pod_id, pod in sorted(state.pods.items()):
                         paths = fixed_assignments.get(pod_id, set()) if not pod.dynamic else \
                             {day_assignments[pod_id]} if pod_id in day_assignments else set()
-                        path_text = "/".join("-".join(map(str, path.nodes)) for path in paths) or "-"
+                        path_text = "/".join(("->" if pod_id in day_requests and day_requests[pod_id] not in zip(path.nodes, path.nodes[1:]) else "") +
+                            "-".join(map(str, path.nodes)) for path in paths) or "-"
                         location = pod.path[pod_positions[pod_id]] if not pod.dynamic else dynamic_current[pod_id]
                         location = day_requests[pod_id][0] if location == -1 and pod_id in day_requests else location
                         cells.append("{} ({})".format(path_text, location if location != -1 else "-"))

@@ -504,7 +504,7 @@ class Planner:
             simulation = self.cached_simulate(parent.state)
             parent_score = self.score_state(parent.state).score
             options = []
-            reroute_id = self.closest_fixed_pod(group[0], parent.state) if allow_reroute else None
+            reroute_id = self.best_reroute_pod(group[0], parent.state) if allow_reroute else None
             if reroute_id is not None:
                 reroute_bundle = Bundle(owner, pod_specs=(reroute_id,), label=f"{parent.bundle.label}-reroute",
                     path_edges=parent.bundle.path_edges, destination=parent.bundle.destination,
@@ -666,7 +666,7 @@ class Planner:
             if best is None or order < best[0]:
                 best = order, edges
         return best[1] if best else ()
-    def closest_fixed_pod(self, origin_id: int, state: PlanState) -> int:
+    def best_reroute_pod(self, origin_id: int, state: PlanState) -> int:
         graph = tube_graph(state.tubes)
         options = []
         for pod_id, pod in state.pods.items():
@@ -677,8 +677,8 @@ class Planner:
             for _ in range(MONTH_DAYS):
                 distance += graph_distance(graph, pod.path[index], origin_id)
                 index = fixed_next_index(pod.path, index)
-            options.append((distance, pod_id))
-        return min(options)[1] if options else None
+            options.append((sum(bool(assignment) for assignment in pod.assignments), distance, pod_id))
+        return min(options)[2] if options else None
     def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair]) -> Pair:
         candidates = [(counts[edge], edge) for edge in path_edges if counts[edge]]
         return max(candidates, key=lambda item: (item[0], -item[1][0], -item[1][1]))[1] if candidates else (-1, -1)

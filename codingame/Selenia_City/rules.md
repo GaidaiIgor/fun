@@ -39,8 +39,9 @@ If the score does not decrease, keep the drop.
 2. Round 0 constructs necessary tubes for the considered path and copies pod configuration from the currently selected bundle.
 3. Each subsequent round considers the following bundles.
    1. Previous round winner +1 reroute of a fixed pod.
-      1. The pod with the minimum average monthly distance to load's origin is considered for reroute.
-      2. Once a bundle with +pod has been selected in a given round, future rounds of that iteration no longer consider +reroute bundles.
+      1. For reroutes, first prefer pods with the smaller number of load-carrying days.
+      2. On tie, prefer pods with the smaller average monthly distance to the origin of the load currently being considered.
+      3. Once a bundle with +pod has been selected in a given round, future rounds of that iteration no longer consider +reroute bundles.
    2. Previous round winner +1 pod (if layout capacity allows more pods).
    3. Previous round winner +1 upgrade (if congestion exists in previous round's winner).
    4. Previous round winner +1 pod +1 upgrade (if congestion exists in the +pod bundle).

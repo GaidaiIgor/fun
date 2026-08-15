@@ -13,7 +13,7 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 15
+OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "WAIT"
 FULL_DEBUG = False
 _G = {}
@@ -678,10 +678,14 @@ class Planner:
                 continue
             index = 0
             distance = 0
-            for _ in range(MONTH_DAYS):
+            carrying_days = 0
+            for assignment in pod.assignments:
                 distance += graph_distance(graph, pod.path[index], origin_id)
-                index = fixed_next_index(pod.path, index)
-            options.append((sum(bool(assignment) for assignment in pod.assignments), distance, pod_id))
+                next_index = fixed_next_index(pod.path, index)
+                if assignment and (pod.path[index], pod.path[next_index]) in zip(assignment, assignment[1:]):
+                    carrying_days += 1
+                index = next_index
+            options.append((carrying_days, distance, pod_id))
         return min(options)[2] if options else None
     def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair]) -> Pair:
         candidates = [(counts[edge], edge) for edge in path_edges if counts[edge]]

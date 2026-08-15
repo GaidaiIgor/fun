@@ -13,7 +13,7 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 15
+OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "WAIT"
 FULL_DEBUG = False
 _G = {}
@@ -131,6 +131,7 @@ class SimulationResult:
     delivered_by_pool_module: Counter[tuple[Pool, int]] = field(default_factory=Counter)
     congestion_by_edge: Counter[Pair] = field(default_factory=Counter)
     congestion_by_day: dict[int, Counter[Pair]] = field(default_factory=dict)
+    carrying_days: Counter[int] = field(default_factory=Counter)
     dynamic_paths: dict[int, list[int]] = field(default_factory=dict)
     pod_assignments: dict[int, list[PathKey]] = field(default_factory=dict)
     initial_table: list[list[str]] = field(default_factory=list)
@@ -689,20 +690,17 @@ class Planner:
         return best[1] if best else ()
     def best_reroute_pod(self, origin_id: int, state: PlanState) -> int:
         graph = tube_graph(state.tubes)
+        carrying_days = self.cached_simulate(state).carrying_days
         options = []
         for pod_id, pod in state.pods.items():
             if pod_id in state.ops:
                 continue
             index = 0
             distance = 0
-            carrying_days = 0
             for assignment in pod.assignments:
                 distance += graph_distance(graph, pod.path[index], origin_id)
-                next_index = fixed_next_index(pod.path, index)
-                if assignment and (pod.path[index], pod.path[next_index]) in zip(assignment, assignment[1:]):
-                    carrying_days += 1
-                index = next_index
-            options.append((carrying_days, distance, pod_id))
+                index = fixed_next_index(pod.path, index)
+            options.append((carrying_days[pod_id], distance, pod_id))
         return min(options)[2] if options else None
     def best_counter_edge(self, path_edges: tuple[Pair, ...], counts: Counter[Pair]) -> Pair:
         candidates = [(counts[edge], edge) for edge in path_edges if counts[edge]]
@@ -925,6 +923,7 @@ class Planner:
                 moves = self.allocate_tube_capacity(requests, state, result, day)
                 locations = {pod_id: pod.path[pod_positions[pod_id]] for pod_id, pod in fixed_pods} if FULL_DEBUG else {}
                 carrying = self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {})
+                result.carrying_days.update(carrying)
                 if FULL_DEBUG:
                     loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
                         "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
@@ -973,6 +972,7 @@ class Planner:
                     dynamic_paths[pod_id].append(requests[pod_id][0])
                 dynamic_paths[pod_id].append(requests[pod_id][1])
             carrying = self.board_and_launch(queues, distances, state, moves, pod_positions, dynamic_current, dynamic_pending)
+            result.carrying_days.update(carrying)
             if FULL_DEBUG:
                 loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
                     "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)

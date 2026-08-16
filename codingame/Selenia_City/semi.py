@@ -519,7 +519,9 @@ class Planner:
         round_number = 1
         allow_reroute = True
         iteration_score = parent.round_score
+        iteration_cost = parent.round_cost
         positive_iteration = self.score_state(parent.state).score > iteration_score
+        parent_iteration_efficiency = parent_efficiency
         while parent.state.cost <= self.resources:
             simulation = self.cached_simulate(parent.state)
             parent_score = self.score_state(parent.state).score
@@ -565,11 +567,13 @@ class Planner:
             next_parent.bundle.debug_chosen = next_parent.bundle.debug_id
             positive_iteration |= any(option.round_score + round_gain > iteration_score
                 for _, round_gain, _, option in affordable)
-            if positive_iteration and efficiency < parent_efficiency:
+            next_iteration_efficiency = score_efficiency(self.score_state(next_parent.state).score - iteration_score,
+                next_parent.state.cost - iteration_cost)
+            if positive_iteration and efficiency < parent_efficiency and next_iteration_efficiency < parent_iteration_efficiency:
                 break
             if len(next_parent.state.pods) > len(parent.state.pods):
                 allow_reroute = False
-            parent, parent_efficiency = next_parent, efficiency
+            parent, parent_efficiency, parent_iteration_efficiency = next_parent, efficiency, next_iteration_efficiency
             round_number += 1
         return result
     def option_metrics(self, option: PlanOption) -> tuple[int, int, float]:

@@ -1248,7 +1248,7 @@ class Planner:
             alternatives = {pod_id: find_alternative(pod_id, edge) for pod_id in pods}
             candidates = [pod_id for pod_id in pods if alternatives[pod_id] is not None]
             if candidates:
-                pod_id = min(candidates, key=lambda item: (alternatives[item][3], -alternatives[item][4]))
+                pod_id = min(candidates, key=lambda item: (alternatives[item][3], -alternatives[item][4], -item))
                 assignments, requests, congestion = alternatives[pod_id][:3]
                 if edge not in counted:
                     result.congestion_by_edge[edge] += 1
@@ -1335,8 +1335,8 @@ class Planner:
                             extra = distances[pod_id, candidate.nodes[0]] - distances[pod_id, path.nodes[0]]
                             alternatives[pod_id] = index, extra, distances[pod_id, path.nodes[0]]
                             break
-                pod_id = min(pods, key=lambda item: (alternatives[item][1], -alternatives[item][2])
-                    if item in alternatives else (INF, -distances[item, path.nodes[0]]))
+                pod_id = min(pods, key=lambda item: (alternatives[item][1], -alternatives[item][2], -item)
+                    if item in alternatives else (INF, -distances[item, path.nodes[0]], -item))
                 owners[path].remove(pod_id)
                 counts[path] -= 1
                 if pod_id not in alternatives:

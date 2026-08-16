@@ -13,7 +13,7 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 15
+OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "TUBE 1 2;TUBE 1 8;POD 3;POD 4;POD 5;POD 6"
 FULL_DEBUG = False
 _G = {}
@@ -363,16 +363,14 @@ class Planner:
         for _, _, owner, pairs in pools:
             debug(f"Considering {owner}:")
             best = None
-            affordable = False
             for pair, group, module_ids, eligibility in pairs:
                 debug(f"  Considering {pair}:")
                 options = self.generate_options(owner, group, module_ids, layouts, current_state, current_result, eligibility)
-                candidate, pair_affordable = self.next_candidate(owner, pair, current_state, current_result, before_score, options)
-                affordable |= pair_affordable
+                candidate = self.next_candidate(owner, pair, current_state, current_result, before_score, options)
                 if candidate and (best is None or (candidate.efficiency, candidate.marginal_gain, -candidate.marginal_cost) >
                         (best.efficiency, best.marginal_gain, -best.marginal_cost)):
                     best = candidate
-            if best or affordable:
+            if best:
                 return best
         return None
     def layout_path_eligibility(self, group: Pool, module_id: int, state: PlanState, result: SimulationResult,
@@ -415,7 +413,7 @@ class Planner:
             partial |= moved < len(losses) and delta > 0
         return partial, bool(losses and delta > 0)
     def next_candidate(self, owner: PoolOwner, pair: PoolOwner, current_state: PlanState, current_result: SimulationResult,
-            before_score: int, options: list[PlanOption]) -> tuple[Candidate, bool]:
+            before_score: int, options: list[PlanOption]) -> Candidate:
         best = None
         seen_states = set()
         plans = []
@@ -465,7 +463,7 @@ class Planner:
                 if best is None or (candidate.efficiency, candidate.marginal_gain, -candidate.marginal_cost) > \
                         (best.efficiency, best.marginal_gain, -best.marginal_cost):
                     best = candidate
-        return best, any(option.state.cost <= self.resources for option, _ in plans)
+        return best
     def generate_options(self, owner: PoolOwner, group: Pool, module_ids: list[int], layouts: tuple[Bundle, ...], state: PlanState,
             current_result: SimulationResult, eligibility: tuple[bool, bool]) -> list[PlanOption]:
         bases = []

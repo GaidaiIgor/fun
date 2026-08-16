@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "WAIT"
+OVERRIDE_MONTH = 15
+OVERRIDE_COMMAND = "TUBE 1 2;TUBE 1 8;POD 4;POD 6"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1196,18 +1196,19 @@ class Planner:
         def requests_for(values: dict[int, PathDemand]) -> dict[int, DirectedPair]:
             return self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, current, pending, values, fixed_assignments, graph)
         def conflicts(values: dict[int, DirectedPair]) -> Counter[Pair]:
-            counts = Counter(route_key(*move) for move in values.values())
-            return Counter({edge: count - state.tubes[edge] for edge, count in counts.items() if count > state.tubes[edge]})
+            pods = {}
+            for pod_id, move in values.items():
+                pods.setdefault(route_key(*move), []).append(pod_id)
+            return Counter({edge: sum(pod_id in assigned_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])
+                for edge, pod_ids in pods.items() if any(pod_id in assigned_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])})
         def improves(trial: Counter[Pair], original: Counter[Pair], edge: Pair) -> bool:
             return trial[edge] < original[edge]
+        assigned_ids = set(assignments) | set(fixed_assignments)
         requests = requests_for(assignments)
         congestion = conflicts(requests)
-        fixed_ids = {pod_id for pod_id, _ in fixed_pods}
-        counted = {edge for edge in congestion if any(route_key(*move) == edge and (pod_id in assignments or pod_id in fixed_ids)
-            for pod_id, move in requests.items())}
-        result.congestion_by_edge.update(counted)
-        if counted:
-            result.congestion_by_day.setdefault(day, Counter()).update(counted)
+        result.congestion_by_edge.update(congestion.keys())
+        if congestion:
+            result.congestion_by_day.setdefault(day, Counter()).update(congestion.keys())
         unresolved = set()
         while remaining := sorted(set(congestion) - unresolved):
             edge = remaining[0]

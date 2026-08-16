@@ -12,8 +12,8 @@ import Selenia_City.semi as semi
 from Selenia_City.semi import Building, Candidate, Planner, PlanState, PodPlan, SimulationResult, route_key
 
 TURN_STATE = """
-month 1
-resources 5000
+month 2
+resources 154
 module 0 1 20 15
 module 1 2 140 15
 landing 2 40 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
@@ -21,6 +21,14 @@ landing 3 80 45 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,
 landing 4 120 45 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
 module 5 2 20 75
 module 6 1 140 75
+tube 0 2 1
+tube 1 4 1
+tube 2 3 1
+tube 3 4 1
+tube 3 5 1
+tube 3 6 1
+pod id=1, assignments=[2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 2-0, 3-6, 3-6, 3-6, 3-6, 3-6, 3-6, 3-6, -, -, -, -], path=[2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 3, 6, 3, 6, 3, 6, 3, 6, 3, 6]
+pod id=2, assignments=[4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 3-5, 3-5, 3-5, 3-5, 3-5, 3-5, 3-5, -, -, -, -], path=[4, 1, 4, 1, 4, 1, 4, 1, 4, 1, 4, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5]
 """
 
 semi.FULL_DEBUG = True

@@ -832,7 +832,7 @@ class Planner:
             pod.assignments = pod_assignments[pod_id]
     def score_state(self, state: PlanState, keep_dynamic_paths: bool = False) -> SimulationResult:
         if not any(pod.dynamic for pod in state.pods.values()):
-            return self.cached_simulate(state)
+            return self.simulate(state, True) if keep_dynamic_paths else self.cached_simulate(state)
         dynamic_result = self.cached_simulate(state)
         paths = dynamic_result.dynamic_paths
         assignments = dynamic_result.pod_assignments
@@ -890,7 +890,7 @@ class Planner:
             self.settle(day, queues, arrivals, result)
             for passengers in queues.values():
                 passengers.sort(key=BY_ID)
-            if not dynamic_pods and not FULL_DEBUG:
+            if not dynamic_pods and not FULL_DEBUG and not keep_dynamic_paths:
                 if not any(wanted_edges[node_id, passenger.kind] for node_id, passengers in queues.items() for passenger in passengers):
                     break
                 requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, {}, graph)

@@ -14,7 +14,7 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 15
-OVERRIDE_COMMAND = "TUBE 1 2;TUBE 1 8;POD 4;POD 6"
+OVERRIDE_COMMAND = "TUBE 1 2;TUBE 1 8;POD 3;POD 4;POD 5;POD 6"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -985,7 +985,7 @@ class Planner:
             for passengers in queues.values():
                 passengers.sort(key=BY_ID)
             active, _ = self.daily_loads(state, queues, module_distances, result, set(), route_cache, choice_cache)
-            _, reservations, claimed = self.fixed_load_assignments(fixed_pods, positions, active, queues, wanted_edges, day)
+            _, reservations, claimed = self.fixed_load_assignments(fixed_pods, positions, active, queues, wanted_edges, day, True)
             schedule.append((reservations, claimed))
             if not active:
                 schedule.extend((set(), {}) for _ in range(day + 1, MONTH_DAYS))
@@ -1011,7 +1011,17 @@ class Planner:
         return filtered, summary
     def fixed_load_assignments(self, fixed_pods: list[tuple[int, PodPlan]], pod_positions: dict[int, int],
             active: list[PathDemand], queues: dict[int, list[Passenger]],
-            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], day: int) -> tuple:
+            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], day: int, claims: bool = False) -> tuple:
+        by_nodes = {}
+        for path in active:
+            by_nodes.setdefault(path.nodes, []).append(path)
+        assignments = {}
+        for pod_id, pod in fixed_pods:
+            matches = by_nodes.get(pod.assignments[day], ())
+            if matches:
+                assignments[pod_id] = {min(matches, key=lambda item: (-item.priority, item.pool, item.destination))}
+        if not claims:
+            return assignments, set(), {}
         moves = {}
         for pod_id, pod in fixed_pods:
             next_index = fixed_next_index(pod.path, pod_positions[pod_id])
@@ -1020,11 +1030,6 @@ class Planner:
         paths = {}
         for path in active:
             paths.setdefault((path.pool, path.nodes[:2]), []).append(path)
-        assignments = {}
-        for pod_id, pod in fixed_pods:
-            matches = [path for path in active if path.nodes == pod.assignments[day]]
-            if matches:
-                assignments[pod_id] = {min(matches, key=lambda item: (-item.priority, item.pool, item.destination))}
         claimed = {}
         reservations = set()
         seats = {pod_id: POD_CAPACITY for pod_id in moves}
@@ -1160,14 +1165,13 @@ class Planner:
         assignments = {}
         preferences = {}
         inspected = set(reserved_passengers)
+        edges = {path.nodes[:2] for path in active}
+        eligible = {edge: [passenger for passenger in queues.get(edge[0], [])
+            if edge in wanted_edges[edge[0], passenger.kind]] for edge in edges}
         for pod_id, _ in dynamic_pods:
             options = [path for path in active if current[pod_id] == -1 or graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
-            batches = {}
-            inspection_batches = {}
-            for path in options:
-                if path.nodes[:2] not in batches:
-                    batches[path.nodes[:2]] = self.boarding_batch(path.nodes[:2], queues, wanted_edges, set())
-                    inspection_batches[path.nodes[:2]] = self.boarding_batch(path.nodes[:2], queues, wanted_edges, inspected)
+            inspection_batches = {edge: [passenger for passenger in eligible[edge] if passenger.id not in inspected][:POD_CAPACITY]
+                for edge in {path.nodes[:2] for path in options}}
             evaluated = []
             for path in options:
                 priority = path.priority
@@ -1178,17 +1182,12 @@ class Planner:
                         priority = -1
                 evaluated.append(path if priority == path.priority else replace(path, priority=priority))
             preferences[pod_id] = sorted(evaluated,
-                key=lambda path: self.path_assignment_key(path, pod_id, len(batches[path.nodes[:2]]), current, delivered, graph))
+                key=lambda path: self.path_assignment_key(path, pod_id, min(POD_CAPACITY, len(eligible[path.nodes[:2]])), current, delivered, graph))
             if preferences[pod_id]:
                 assignments[pod_id] = preferences[pod_id][0]
                 inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
         capacity_congestion = self.fix_load_assignments(assignments, preferences, current, graph, state, occupied_edges)
         return assignments, preferences, capacity_congestion
-    def boarding_batch(self, edge: DirectedPair, queues: dict[int, list[Passenger]],
-            wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]], reserved: set[int]) -> list[Passenger]:
-        source_id, _ = edge
-        return [passenger for passenger in queues.get(source_id, [])
-            if passenger.id not in reserved and edge in wanted_edges[source_id, passenger.kind]][:POD_CAPACITY]
     def resolve_dispatch_congestion(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
             fixed_assignments: dict[int, set[PathDemand]], pod_positions: dict[int, int], current: dict[int, int],

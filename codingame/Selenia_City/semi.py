@@ -565,7 +565,7 @@ class Planner:
             next_parent.bundle.debug_chosen = next_parent.bundle.debug_id
             positive_iteration |= any(option.round_score + round_gain > iteration_score
                 for _, round_gain, _, option in affordable)
-            if not any(round_gain > 0 for _, round_gain, _, _ in affordable) or positive_iteration and efficiency < parent_efficiency:
+            if positive_iteration and efficiency < parent_efficiency:
                 break
             if len(next_parent.state.pods) > len(parent.state.pods):
                 allow_reroute = False

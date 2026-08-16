@@ -48,7 +48,7 @@ If the score does not decrease, keep the drop.
    1. Cancellation order is the same as for the layout bundles.
 5. The winner in each round is chosen based on the largest round efficiency.
    1. If all bundles have 0 efficiency, choose +1 upgrade bundle.
-6. New rounds are generated if affordable bundles with positive round score gain existed in the last round and
+6. New rounds are generated if affordable bundles existed in the last round and
    1. Round efficiency of the last winner was no worse than that in the round before.
    2. Or bundle with positive iteration score gain is not yet found.
 7. Largest efficiency bundle in all rounds is selected as final.

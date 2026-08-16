@@ -931,7 +931,7 @@ class Planner:
                 initial_carrying = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, initial_moves, pod_positions.copy(), dynamic_current.copy(), dynamic_pending.copy())
             assignments, requests, moves = self.resolve_dispatch_congestion(assignments, preferences, fixed_pods, dynamic_pods,
-                fixed_assignments, pod_positions, dynamic_current, dynamic_pending, graph, result, state, day)
+                fixed_assignments, pod_positions, dynamic_current, dynamic_pending, graph, occupied_edges, result, state, day)
             for pod_id, _ in dynamic_pods:
                 pod_assignments[pod_id].append(assignments[pod_id].nodes if pod_id in assignments else ())
             locations = {pod_id: pod.path[pod_positions[pod_id]] if not pod.dynamic else
@@ -1191,7 +1191,8 @@ class Planner:
     def resolve_dispatch_congestion(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
             fixed_assignments: dict[int, set[PathDemand]], pod_positions: dict[int, int], current: dict[int, int],
-            pending: dict[int, DirectedPair], graph: dict[int, list[int]], result: SimulationResult, state: PlanState, day: int) -> tuple:
+            pending: dict[int, DirectedPair], graph: dict[int, list[int]], occupied_edges: Counter[Pair], result: SimulationResult,
+            state: PlanState, day: int) -> tuple:
         def requests_for(values: dict[int, PathDemand]) -> dict[int, DirectedPair]:
             return self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, current, pending, values, fixed_assignments, graph)
         def conflicts(values: dict[int, DirectedPair]) -> Counter[Pair]:
@@ -1232,6 +1233,10 @@ class Planner:
                     for path in preferences[pod_id][start:]:
                         trial = dict(assignments)
                         trial[pod_id] = path
+                        corrected = dict(trial)
+                        self.fix_load_assignments(corrected, preferences, current, graph, state, occupied_edges)
+                        if corrected != trial:
+                            continue
                         trial_requests = requests_for(trial)
                         trial_congestion = conflicts(trial_requests)
                         target = route_key(*trial_requests[pod_id])

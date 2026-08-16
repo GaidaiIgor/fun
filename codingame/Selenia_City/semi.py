@@ -830,6 +830,8 @@ class Planner:
         dynamic_result = self.cached_simulate(state)
         paths = dynamic_result.dynamic_paths
         assignments = dynamic_result.pod_assignments
+        if not keep_dynamic_paths and not FULL_DEBUG:
+            return dynamic_result
         fixed_result = self.cached_simulate(self.fixed_dynamic_state(state, paths, assignments))
         if keep_dynamic_paths:
             fixed_result = replace(fixed_result, congestion_by_edge=dynamic_result.congestion_by_edge,
@@ -838,7 +840,8 @@ class Planner:
         return fixed_result
     def cached_simulate(self, state: PlanState) -> SimulationResult:
         keep_dynamic_paths = any(pod.dynamic for pod in state.pods.values())
-        pods = tuple(sorted((pod_id, tuple(pod.path), pod.dynamic, tuple(pod.assignments)) for pod_id, pod in state.pods.items()))
+        pods = tuple(sorted((pod_id, (), True, ()) if pod.dynamic else
+            (pod_id, tuple(pod.path), False, tuple(pod.assignments) if keep_dynamic_paths else ()) for pod_id, pod in state.pods.items()))
         key = tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), pods
         if key not in self.simulation_cache:
             self.simulation_cache[key] = self.simulate(state, keep_dynamic_paths)
@@ -881,6 +884,14 @@ class Planner:
             self.settle(day, queues, arrivals, result)
             for passengers in queues.values():
                 passengers.sort(key=BY_ID)
+            if not dynamic_pods and not FULL_DEBUG:
+                if not any(wanted_edges[node_id, passenger.kind] for node_id, passengers in queues.items() for passenger in passengers):
+                    break
+                requests = self.path_pod_requests(fixed_pods, [], pod_positions, {}, {}, {}, {}, graph)
+                moves = self.allocate_tube_capacity(requests, state, result, day)
+                result.carrying_days.update(self.board_and_launch(queues, distances, state, moves, pod_positions, {}, {}))
+                self.settle(day + 1, queues, arrivals, result)
+                continue
             reserved_passengers = fixed_reservations[day] if dynamic_pods else set()
             active, passenger_priorities = self.daily_loads(state, queues, module_distances, result, reserved_passengers,
                 route_cache, choice_cache)
@@ -1322,6 +1333,8 @@ class Planner:
             next_index = fixed_next_index(pod.path, index)
             if next_index != index:
                 requests[pod_id] = pod.path[index], pod.path[next_index]
+        if not dynamic_pods:
+            return requests
         options = {}
         assigned_paths = [*assignments.values(), *(path for paths in fixed_assignments.values() for path in paths)]
         assigned_edges = {route_key(a, b) for path in assigned_paths for a, b in zip(path.nodes, path.nodes[1:])}
@@ -1641,7 +1654,7 @@ def tube_graph(tubes: dict[Pair, int]) -> dict[int, list[int]]:
 def graph_distance(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int:
     if start_id == finish_id:
         return 0
-    d = _G.setdefault(id(graph), (graph, {}))[1]
+    d = _G.setdefault(id(graph), (graph, {}, {}))[1]
     key = start_id, finish_id
     if key in d:
         return d[key]
@@ -1659,6 +1672,10 @@ def graph_distance(graph: dict[int, list[int]], start_id: int, finish_id: int) -
 def next_step(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int:
     if start_id == finish_id:
         return start_id
+    steps = _G.setdefault(id(graph), (graph, {}, {}))[2]
+    key = start_id, finish_id
+    if key in steps:
+        return steps[key]
     queue = deque([start_id])
     parent = {start_id: start_id}
     while queue and finish_id not in parent:
@@ -1670,7 +1687,7 @@ def next_step(graph: dict[int, list[int]], start_id: int, finish_id: int) -> int
     step = finish_id
     while parent[step] != start_id:
         step = parent[step]
-    return step
+    return steps.setdefault(key, step)
 def normalize_month_path(path: list[int]) -> list[int]:
     if len(path) >= MONTH_DAYS + 1:
         return path[:MONTH_DAYS + 1]

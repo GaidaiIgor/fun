@@ -1203,48 +1203,42 @@ class Planner:
                 for edge, pod_ids in pods.items() if any(pod_id in assigned_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])})
         def improves(trial: Counter[Pair], original: Counter[Pair], edge: Pair) -> bool:
             return trial[edge] < original[edge]
+        def reassign_key(pod_id: int) -> tuple:
+            index = preferences[pod_id].index(assignments[pod_id])
+            distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], assignments[pod_id].nodes[0])
+            alternative = preferences[pod_id][index + 1].nodes[0] if index + 1 < len(preferences[pod_id]) else None
+            next_distance = INF if alternative is None else 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], alternative)
+            return distance, -next_distance, pod_id
         assigned_ids = set(assignments) | set(fixed_assignments)
         requests = requests_for(assignments)
         congestion = conflicts(requests)
-        result.congestion_by_edge.update(congestion.keys())
-        if congestion:
-            result.congestion_by_day.setdefault(day, Counter()).update(congestion.keys())
         unresolved = set()
+        counted = set()
         while remaining := sorted(set(congestion) - unresolved):
             edge = remaining[0]
-            pods = sorted(pod_id for pod_id in assignments if route_key(*requests[pod_id]) == edge)
+            pods = [pod_id for pod_id in assignments if route_key(*requests[pod_id]) == edge]
             changed = False
-            for index, pod_id in enumerate(pods):
-                for other_id in pods[index + 1:]:
-                    if requests[pod_id] != requests[other_id][::-1] or assignments[pod_id] == assignments[other_id]:
-                        continue
+            for pod_id in sorted(pods, key=reassign_key, reverse=True):
+                start = preferences[pod_id].index(assignments[pod_id]) + 1
+                for path in preferences[pod_id][start:]:
                     trial = dict(assignments)
-                    trial[pod_id], trial[other_id] = trial[other_id], trial[pod_id]
+                    trial[pod_id] = path
+                    corrected = dict(trial)
+                    self.fix_load_assignments(corrected, preferences, current, graph, state, occupied_edges)
+                    if corrected != trial:
+                        continue
                     trial_requests = requests_for(trial)
                     trial_congestion = conflicts(trial_requests)
-                    if improves(trial_congestion, congestion, edge):
+                    target = route_key(*trial_requests[pod_id])
+                    if not trial_congestion[target] and improves(trial_congestion, congestion, edge):
                         assignments, requests, congestion, changed = trial, trial_requests, trial_congestion, True
                         break
                 if changed:
+                    if edge not in counted:
+                        result.congestion_by_edge[edge] += 1
+                        result.congestion_by_day.setdefault(day, Counter())[edge] += 1
+                        counted.add(edge)
                     break
-            if not changed:
-                for pod_id in pods:
-                    start = preferences[pod_id].index(assignments[pod_id]) + 1
-                    for path in preferences[pod_id][start:]:
-                        trial = dict(assignments)
-                        trial[pod_id] = path
-                        corrected = dict(trial)
-                        self.fix_load_assignments(corrected, preferences, current, graph, state, occupied_edges)
-                        if corrected != trial:
-                            continue
-                        trial_requests = requests_for(trial)
-                        trial_congestion = conflicts(trial_requests)
-                        target = route_key(*trial_requests[pod_id])
-                        if not trial_congestion[target] and improves(trial_congestion, congestion, edge):
-                            assignments, requests, congestion, changed = trial, trial_requests, trial_congestion, True
-                            break
-                    if changed:
-                        break
             if changed:
                 unresolved.intersection_update(congestion)
             else:

@@ -69,29 +69,25 @@ Pods fulfill assigned loads.
    5. Loads leading to a target module with fewer delivered passengers.
    6. Loads with larger total remaining passengers.
    7. Loads with smaller ID.
-4. If initial assignments are such that capacity of a given load is exceeded or assignments are non-uniform, fix this by considering lower priority assignments
-for some of the pods violating these rules in the order of their preference list.
-   1. Load capacity is defined as the minimum of
+4. Label the pods as conflicting as follows.
+   1. If load capacity is exceeded, all pods assigned to it are conflicting. Load capacity is defined as the minimum of
       1. Passenger capacity, defined as available number of batches at the source (ceil(passengers / 10)).
       2. Path capacity, defined as the total remaining edge capacity along the way.
          1. If paths of multiple loads overlap, the edge capacity from the shared edges is shared too,
          so reserving it for one path also removes it from the overlapping paths.
-         2. Being reassigned due to path capacity increases congestion counter on the closest to origin edge with the smallest capacity along the way.
-   2. Uniform assignment is defined as a distribution of pods over loads such that for any load the number of assigned pods does not exceed the number of pods
-   assigned to any other non-capped load by more than 1.
-      1. Capped load is defined as the load with the number of assigned pods equal to load capacity.
-      2. Uniformity is evaluated separately for each priority level.
-   3. When deciding which pods should remain assigned:
-      1. Prefer to keep pods closer to the load's origin.
-      2. Prefer to keep pods with larger distance to the next legitimate alternative load.
-      3. Prefer to keep pods with lower id.
-5. If pods' movement due to currently selected assignments exceeds capacity of some edge E, record congestion event at that edge.
-Try to re-assign loads to resolve edge conflict as follows:
-   1. If a pair of pods is trying to move in opposite directions through E, swap their assignments.
-   2. Otherwise, pick the pod with lower id, and assign the next load from its preference list that resolves the conflict.
-   3. If such load is not found, try the other conflicting pod.
-   4. If such load is still not found, give up and keep the original assignment.
-   5. Repeat until no resolvable conflict remains.
+   2. If assignment is non-uniform, all pods assigned to the load violating uniformity are conflicting.
+      1. Uniform assignment is defined as a distribution of pods over loads such that for any load the number of assigned pods does not exceed
+      the number of pods assigned to any other non-capped load by more than 1.
+      2. Capped load is defined as the load with the number of assigned pods equal to load capacity.
+      3. Uniformity is evaluated separately for each priority level.
+   3. If some pods cannot move towards their target due to limited edge capacity, all pods trying to use that edge are conflicting.
+5. Fix conflicts by considering lower priority assignments for some of the conflicting pods in the order of their initial preference list.
+   1. When deciding which pods should remain assigned:
+      1. Prefer to keep pods closer to their load's origin.
+      2. On tie, prefer to keep pods with larger distance to the next legitimate alternative load.
+      3. On tie, prefer to keep pods with lower id.
+   2. Being reassigned due to edge capacity increases congestion counter on that edge.
+   3. Being reassigned due to path capacity increases congestion counter on the closest to origin edge with the smallest capacity along the way.
 6. If there is not enough load slots for all pods, some pods may have no assignments.
 Unassigned pods just do their best to stay out of the way of assigned pods.
    1. Congestion between unassigned pods does not increase edge congestion counter.

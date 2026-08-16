@@ -13,8 +13,8 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 2"
+OVERRIDE_MONTH = 10
+OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;UPGRADE 2 3;POD 3;POD 2"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -930,11 +930,8 @@ class Planner:
                 next_index = fixed_next_index(pod.path, index)
                 if pod_id in fixed_assignments and next_index != index:
                     occupied_edges[route_key(pod.path[index], pod.path[next_index])] += 1
-            assignments, preferences, capacity_congestion = self.dispatch_dynamic_paths(active, dynamic_pods, dynamic_current, queues,
-                wanted_edges, passenger_priorities, reserved_passengers, result.delivered_by_module, state, graph, occupied_edges, day)
-            result.congestion_by_edge.update(capacity_congestion)
-            if capacity_congestion:
-                result.congestion_by_day.setdefault(day, Counter()).update(capacity_congestion)
+            assignments, preferences = self.dispatch_dynamic_paths(active, dynamic_pods, dynamic_current, queues,
+                wanted_edges, passenger_priorities, reserved_passengers, result.delivered_by_module, graph, day)
             if FULL_DEBUG:
                 initial_assignments = dict(assignments)
                 initial_requests = self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, dynamic_current, dynamic_pending,
@@ -1175,8 +1172,8 @@ class Planner:
     def dispatch_dynamic_paths(self, active: list[PathDemand], dynamic_pods: list[tuple[int, PodPlan]], current: dict[int, int],
             queues: dict[int, list[Passenger]], wanted_edges: dict[tuple[int, int], tuple[DirectedPair, ...]],
             passenger_priorities: dict[tuple[Pool, int, int], int], reserved_passengers: set[int], delivered: Counter[int],
-            state: PlanState, graph: dict[int, list[int]], occupied_edges: Counter[Pair], day: int) \
-            -> tuple[dict[int, PathDemand], dict[int, list[PathDemand]], Counter[Pair]]:
+            graph: dict[int, list[int]], day: int) \
+            -> tuple[dict[int, PathDemand], dict[int, list[PathDemand]]]:
         assignments = {}
         preferences = {}
         inspected = set(reserved_passengers)
@@ -1202,8 +1199,7 @@ class Planner:
             if preferences[pod_id]:
                 assignments[pod_id] = preferences[pod_id][0]
                 inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
-        capacity_congestion = self.fix_load_assignments(assignments, preferences, current, graph, state, occupied_edges)
-        return assignments, preferences, capacity_congestion
+        return assignments, preferences
     def resolve_dispatch_congestion(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             fixed_pods: list[tuple[int, PodPlan]], dynamic_pods: list[tuple[int, PodPlan]],
             fixed_assignments: dict[int, set[PathDemand]], pod_positions: dict[int, int], current: dict[int, int],
@@ -1225,6 +1221,10 @@ class Planner:
             alternative = preferences[pod_id][index + 1].nodes[0] if index + 1 < len(preferences[pod_id]) else None
             next_distance = INF if alternative is None else 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], alternative)
             return distance, -next_distance, pod_id
+        capacity_congestion = self.fix_load_assignments(assignments, preferences, current, graph, state, occupied_edges)
+        result.congestion_by_edge.update(capacity_congestion)
+        if capacity_congestion:
+            result.congestion_by_day.setdefault(day, Counter()).update(capacity_congestion)
         assigned_ids = set(assignments) | set(fixed_assignments)
         requests = requests_for(assignments)
         congestion = conflicts(requests)

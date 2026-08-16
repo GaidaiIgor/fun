@@ -84,9 +84,10 @@ Pods fulfill assigned loads.
    3. If some pods cannot move towards their target due to limited edge capacity, all pods trying to use that edge are conflicting.
 5. Fix conflicts by considering lower priority assignments for some of the conflicting pods in the order of their initial preference list.
    1. When deciding which pods should remain assigned:
-      1. Prefer to keep pods closer to their load's origin.
-      2. On tie, prefer to keep pods with larger distance to the next legitimate alternative load.
-      3. On tie, prefer to keep pods with lower id.
+      1. Prefer to keep pods that do not have other non-conflicting assignments.
+      2. Prefer to keep pods closer to their load's origin.
+      3. On tie, prefer to keep pods with larger distance to the next legitimate alternative load.
+      4. On tie, prefer to keep pods with lower id.
    2. Being reassigned due to edge capacity increases congestion counter on that edge.
    3. Being reassigned due to path capacity increases congestion counter on the closest to origin edge with the smallest capacity along the way.
 6. If there is not enough load slots for all pods, some pods may have no assignments.

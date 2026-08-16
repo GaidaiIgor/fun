@@ -13,7 +13,7 @@ POD_REFUND = 750
 REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 10
+OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 2"
 FULL_DEBUG = False
 _G = {}
@@ -479,6 +479,8 @@ class Planner:
             if current_length >= INF:
                 path = self.cheapest_path_with_hop_limit(pad_id, module_ids, hop_limit, state)
                 bases.extend(self.path_bundles(owner, "cheapest", path, state))
+                if len(path) > 2:
+                    bases.extend(self.shortest_route_bundles(owner, group, module_ids, len(path) - 2, state))
             else:
                 bases.extend(self.shortest_route_bundles(owner, group, module_ids, hop_limit, state))
         for base in bases:

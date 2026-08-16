@@ -552,42 +552,16 @@ class Planner:
                     self.replay_bundle_on_state(parent.state, upgrade_bundle), parent_score, parent.state.cost)
                 upgrade_bundle.debug_id = self.bundle_debug_id(upgrade_option.state)
                 options.append((upgrade_option, self.option_metrics(upgrade_option)))
-            combined_edge = (-1, -1)
-            if pod_added and pod_option.state.cost <= self.resources:
-                combined_edge = self.best_counter_edge(parent.bundle.path_edges,
-                    self.cached_simulate(pod_option.state).congestion_by_edge)
-            if combined_edge != (-1, -1):
-                combined = Bundle(owner, pod_specs=(0,), upgrades=(combined_edge,), label=f"{parent.bundle.label}-pod-upgrade",
-                    path_edges=parent.bundle.path_edges, destination=parent.bundle.destination,
-                    path_length=parent.bundle.path_length, path=parent.bundle.path, round_number=round_number)
-                combined_option = PlanOption(combined, parent.layouts, parent.layout_key,
-                    self.replay_bundle_on_state(parent.state, combined), parent_score, parent.state.cost)
-                combined.debug_id = self.bundle_debug_id(combined_option.state)
-                if len(combined_option.state.pods) > len(parent.state.pods):
-                    combined_metrics = self.option_metrics(combined_option)
-                    options.append((combined_option, combined_metrics))
-                    retry = combined_option
-                    while retry.state.cost <= self.resources and not any(metrics[0] > 0 for _, metrics in options):
-                        retry_edge = self.best_counter_edge(parent.bundle.path_edges,
-                            self.cached_simulate(retry.state).congestion_by_edge)
-                        if retry_edge == (-1, -1):
-                            break
-                        retry_bundle = Bundle(owner, upgrades=(retry_edge,), label=f"{retry.bundle.label}-upgrade",
-                            path_edges=parent.bundle.path_edges, destination=parent.bundle.destination,
-                            path_length=parent.bundle.path_length, path=parent.bundle.path, round_number=round_number)
-                        retry = PlanOption(retry_bundle, parent.layouts, parent.layout_key,
-                            self.replay_bundle_on_state(retry.state, retry_bundle), parent_score, parent.state.cost)
-                        retry_bundle.debug_id = self.bundle_debug_id(retry.state)
-                        retry_metrics = self.option_metrics(retry)
-                        options.append((retry, retry_metrics))
-                        if retry_metrics[0] > 0:
-                            break
             result.extend(option for option, _ in options)
             affordable = [(metrics[2], metrics[0], -metrics[1], option) for option, metrics in options
                 if option.state.cost <= self.resources]
             if not affordable:
                 break
-            efficiency, _, _, next_parent = max(affordable, key=lambda item: item[:3])
+            if all(item[0] == 0 for item in affordable):
+                upgrade = next((item for item in affordable if item[3].bundle.upgrades), None)
+            else:
+                upgrade = None
+            efficiency, _, _, next_parent = upgrade or max(affordable, key=lambda item: item[:3])
             next_parent.bundle.debug_chosen = next_parent.bundle.debug_id
             positive_iteration |= any(option.round_score + round_gain > iteration_score
                 for _, round_gain, _, option in affordable)

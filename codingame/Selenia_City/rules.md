@@ -41,17 +41,15 @@ If the score does not decrease, keep the drop.
    1. Previous round winner +1 reroute of a fixed pod.
       1. For reroutes, first prefer pods with the smaller number of load-carrying days.
       2. On tie, prefer pods with the smaller average monthly distance to the origin of the load currently being considered.
-      3. Once a bundle with +pod has been selected in a given round, future rounds of that iteration no longer consider +reroute bundles.
-   2. Previous round winner +1 pod (if layout capacity allows more pods).
-   3. Previous round winner +1 upgrade (if congestion exists in previous round's winner).
-   4. Previous round winner +1 pod +1 upgrade (if congestion exists in the +pod bundle).
-   5. If the previous bundles did not improve the score relative to the previous round,
-   keep adding +1 upgrade to bundle #4 until a bundle that improves the score is found or there is not enough resources to keep doing it.
+      3. Once a bundle with +pod has been selected in a given round, future rounds of that iteration no longer consider bundles involving +reroute.
+   2. Previous round winner +1 pod (if total layout capacity allows more pods).
+   3. Previous round winner +1 upgrade (if congestion exists in previous round winner).
 4. Upgrades planned during previous iterations may be cancelled to afford a pod bundle.
    1. Cancellation order is the same as for the layout bundles.
 5. The winner in each round is chosen based on the largest round efficiency.
+   1. If all bundles have 0 efficiency, choose +1 upgrade bundle.
 6. New rounds are generated if affordable bundles with positive round score gain existed in the last round and
-   1. Round efficiency of the last round's winner was no worse than that in the round before.
+   1. Round efficiency of the last winner was no worse than that in the round before.
    2. Or bundle with positive iteration score gain is not yet found.
 7. Largest efficiency bundle in all rounds is selected as final.
 8. Teleports have round-0 only.

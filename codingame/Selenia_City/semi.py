@@ -1182,7 +1182,8 @@ class Planner:
         eligible = {edge: [passenger for passenger in queues.get(edge[0], [])
             if edge in wanted_edges[edge[0], passenger.kind]] for edge in edges}
         for pod_id, _ in dynamic_pods:
-            options = [path for path in active if current[pod_id] == -1 or graph_distance(graph, current[pod_id], path.nodes[0]) < INF]
+            options = [path for path in active if (0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0]))
+                + len(path.nodes) - 1 <= MONTH_DAYS - day]
             inspection_batches = {edge: [passenger for passenger in eligible[edge] if passenger.id not in inspected][:POD_CAPACITY]
                 for edge in {path.nodes[:2] for path in options}}
             evaluated = []
@@ -1196,7 +1197,7 @@ class Planner:
                 evaluated.append(path if priority == path.priority else replace(path, priority=priority))
             preferences[pod_id] = sorted(evaluated,
                 key=lambda path: self.path_assignment_key(path, pod_id, min(POD_CAPACITY, len(eligible[path.nodes[:2]])), current,
-                    delivered, graph, MONTH_DAYS - day))
+                    delivered, graph))
             if preferences[pod_id]:
                 assignments[pod_id] = preferences[pod_id][0]
                 inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
@@ -1272,9 +1273,9 @@ class Planner:
                 unresolved.add(edge)
         return assignments, requests, self.allocate_tube_capacity(requests, state, result, day, False)
     def path_assignment_key(self, path: PathDemand, pod_id: int, boarding: int, current: dict[int, int],
-            delivered: Counter[int], graph: dict[int, list[int]], remaining_days: int) -> tuple:
+            delivered: Counter[int], graph: dict[int, list[int]]) -> tuple:
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
-        return distance + len(path.nodes) - 1 > remaining_days, -path.priority, -boarding, distance, len(path.nodes) - 1, delivered[path.destination], \
+        return -path.priority, -boarding, distance, len(path.nodes) - 1, delivered[path.destination], \
             -path.cap, path.pool, path.destination, path.nodes
     def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             current: dict[int, int], graph: dict[int, list[int]], state: PlanState,

@@ -1,4 +1,5 @@
 from collections import Counter, deque
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from heapq import heappop, heappush
 from math import inf, isqrt
@@ -1213,6 +1214,12 @@ class Planner:
                 pods.setdefault(route_key(*move), []).append(pod_id)
             return Counter({edge: sum(pod_id in assigned_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])
                 for edge, pod_ids in pods.items() if any(pod_id in assigned_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])})
+        def conflict_free(values: dict[int, PathDemand], pod_id: int) -> bool:
+            key = pod_id, tuple(sorted(values.items()))
+            if key not in conflict_cache:
+                trial_requests = requests_for(values)
+                conflict_cache[key] = pod_id not in trial_requests or not conflicts(trial_requests)[route_key(*trial_requests[pod_id])]
+            return conflict_cache[key]
         def improves(trial: Counter[Pair], original: Counter[Pair], edge: Pair) -> bool:
             return trial[edge] < original[edge]
         def find_alternative(pod_id: int, edge: Pair) -> tuple:
@@ -1221,7 +1228,7 @@ class Planner:
                 trial = dict(assignments)
                 trial[pod_id] = path
                 corrected = dict(trial)
-                self.fix_load_assignments(corrected, preferences, current, graph, state, occupied_edges)
+                self.fix_load_assignments(corrected, preferences, current, graph, state, occupied_edges, conflict_free)
                 if corrected != trial:
                     continue
                 trial_requests = requests_for(trial)
@@ -1235,11 +1242,12 @@ class Planner:
             alternative = preferences[pod_id][index + 1].nodes[0] if index + 1 < len(preferences[pod_id]) else None
             next_distance = INF if alternative is None else 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], alternative)
             return distance, -next_distance, pod_id
-        capacity_congestion = self.fix_load_assignments(assignments, preferences, current, graph, state, occupied_edges)
+        assigned_ids = set(assignments) | set(fixed_assignments)
+        conflict_cache = {}
+        capacity_congestion = self.fix_load_assignments(assignments, preferences, current, graph, state, occupied_edges, conflict_free)
         result.congestion_by_edge.update(capacity_congestion)
         if capacity_congestion:
             result.congestion_by_day.setdefault(day, Counter()).update(capacity_congestion)
-        assigned_ids = set(assignments) | set(fixed_assignments)
         requests = requests_for(assignments)
         congestion = conflicts(requests)
         unresolved = set()
@@ -1270,7 +1278,7 @@ class Planner:
             -path.cap, path.pool, path.destination, path.nodes
     def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             current: dict[int, int], graph: dict[int, list[int]], state: PlanState,
-            occupied_edges: Counter[Pair]) -> Counter[Pair]:
+            occupied_edges: Counter[Pair], conflict_free: Callable[[dict[int, PathDemand], int], bool]) -> Counter[Pair]:
         def passenger_capacity(path: PathDemand) -> int:
             return (path.cap + POD_CAPACITY - 1) // POD_CAPACITY
         def overflow(values: Counter[PathDemand]) -> tuple[PathDemand, bool]:
@@ -1302,10 +1310,12 @@ class Planner:
                 for path in paths for candidate in paths)
         def has_alternative(pod_id: int, path: PathDemand) -> bool:
             trial = counts.copy()
+            trial_assignments = dict(assignments)
             trial[path] -= 1
             for candidate in preferences[pod_id][indices[pod_id] + 1:]:
                 trial[candidate] += 1
-                if overflow(trial) is None and uniform(trial):
+                trial_assignments[pod_id] = candidate
+                if overflow(trial) is None and uniform(trial) and conflict_free(trial_assignments, pod_id):
                     return True
                 trial[candidate] -= 1
             return False

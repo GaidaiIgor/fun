@@ -84,7 +84,8 @@ Pods fulfill assigned loads.
       2. Uniformity is evaluated separately for each priority level.
    3. If some pods cannot move towards their target due to limited edge capacity, all pods trying to use that edge are in a conflict group.
 5. While resolvable conflicts remain, resolve each resolvable conflict group iteratively as follows.
-   1. For an edge capacity conflict, if there is a pair of pods moving in opposite directions, swap their assignments.
+   1. For an edge capacity conflict, if there is a pair of pods moving in opposite directions through that edge towards different assignments,
+   swap their assignments.
    2. For each pod within a given conflict group, find the next non-conflicting assignment in the order of their list of preferences.
    The pod with the shortest extra distance to their alternative assignment is assigned there.
       1. Extra distance is distance from the pod to the alternative load origin minus distance from the pod to the current load origin.

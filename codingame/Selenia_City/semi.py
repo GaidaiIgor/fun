@@ -1,4 +1,5 @@
 from collections import Counter, deque
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from heapq import heappop, heappush
 from math import inf, isqrt
@@ -1208,12 +1209,15 @@ class Planner:
             state: PlanState, day: int) -> tuple:
         def requests_for(values: dict[int, PathDemand]) -> dict[int, DirectedPair]:
             return self.path_pod_requests(fixed_pods, dynamic_pods, pod_positions, current, pending, values, fixed_assignments, graph)
-        def conflicts(values: dict[int, DirectedPair]) -> Counter[Pair]:
+        def conflicts(values: dict[int, DirectedPair], active_ids: set[int]) -> Counter[Pair]:
             pods = {}
             for pod_id, move in values.items():
                 pods.setdefault(route_key(*move), []).append(pod_id)
-            return Counter({edge: sum(pod_id in assigned_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])
-                for edge, pod_ids in pods.items() if any(pod_id in assigned_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])})
+            return Counter({edge: sum(pod_id in active_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])
+                for edge, pod_ids in pods.items() if any(pod_id in active_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])})
+        def assignment_conflicts(values: dict[int, PathDemand], pod_id: int) -> bool:
+            trial_requests = requests_for(values)
+            return conflicts(trial_requests, set(values) | set(fixed_assignments))[route_key(*trial_requests[pod_id])] > 0
         def find_alternative(pod_id: int, edge: Pair) -> tuple:
             current_distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], assignments[pod_id].nodes[0])
             start = preferences[pod_id].index(assignments[pod_id]) + 1
@@ -1224,22 +1228,21 @@ class Planner:
                 else:
                     trial[pod_id] = path
                 corrected = dict(trial)
-                self.fix_load_assignments(corrected, preferences, current, graph, state, occupied_edges)
+                self.fix_load_assignments(corrected, preferences, current, graph, state, occupied_edges, assignment_conflicts)
                 if corrected != trial:
                     continue
                 trial_requests = requests_for(trial)
-                trial_congestion = conflicts(trial_requests)
+                trial_congestion = conflicts(trial_requests, set(trial) | set(fixed_assignments))
                 if trial_congestion[edge] < congestion[edge] and (pod_id not in trial or not trial_congestion[route_key(*trial_requests[pod_id])]):
                     alternative_distance = INF if path is None else 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
                     return trial, trial_requests, trial_congestion, alternative_distance - current_distance, current_distance
             return None
-        capacity_congestion = self.fix_load_assignments(assignments, preferences, current, graph, state, occupied_edges)
+        capacity_congestion = self.fix_load_assignments(assignments, preferences, current, graph, state, occupied_edges, assignment_conflicts)
         result.congestion_by_edge.update(capacity_congestion)
         if capacity_congestion:
             result.congestion_by_day.setdefault(day, Counter()).update(capacity_congestion)
-        assigned_ids = set(assignments) | set(fixed_assignments)
         requests = requests_for(assignments)
-        congestion = conflicts(requests)
+        congestion = conflicts(requests, set(assignments) | set(fixed_assignments))
         unresolved = set()
         counted = set()
         while remaining := sorted(set(congestion) - unresolved):
@@ -1265,7 +1268,7 @@ class Planner:
             -path.cap, path.pool, path.destination, path.nodes
     def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             current: dict[int, int], graph: dict[int, list[int]], state: PlanState,
-            occupied_edges: Counter[Pair]) -> Counter[Pair]:
+            occupied_edges: Counter[Pair], assignment_conflicts: Callable[[dict[int, PathDemand], int], bool]) -> Counter[Pair]:
         def passenger_capacity(path: PathDemand) -> int:
             return (path.cap + POD_CAPACITY - 1) // POD_CAPACITY
         def allocation(values: Counter[PathDemand]) -> tuple[int, tuple[PathDemand, bool]]:
@@ -1331,7 +1334,9 @@ class Planner:
                         trial_exceeded = overflow(trial)
                         trial_uneven = uniform_conflicts(trial) if trial_exceeded is None else set()
                         capacity_fit = trial[candidate] <= passenger_capacity(candidate) and allocation(trial)[0] == allocation(base)[0] + 1
-                        if (exceeded is not None and capacity_fit) or (trial_exceeded is None and not (trial_uneven - uneven_paths)):
+                        load_fit = (exceeded is not None and capacity_fit) or (trial_exceeded is None and not (trial_uneven - uneven_paths))
+                        assignment_trial = {**assignments, pod_id: candidate}
+                        if load_fit and not assignment_conflicts(assignment_trial, pod_id):
                             extra = distances[pod_id, candidate.nodes[0]] - distances[pod_id, path.nodes[0]]
                             alternatives[pod_id] = index, extra, distances[pod_id, path.nodes[0]]
                             break

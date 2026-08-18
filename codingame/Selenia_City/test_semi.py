@@ -9,7 +9,7 @@ from pathlib import Path
 if not __package__:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 import Selenia_City.semi as semi
-from Selenia_City.semi import Building, Candidate, Planner, PlanState, PodPlan, SimulationResult, route_key
+from Selenia_City.semi import Candidate, Node, Planner, PodPlan, Result, State, route_key
 
 TURN_STATE = """
 month 10
@@ -35,7 +35,7 @@ pod id=2, assignments=[4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 4-1, 3-5, 3-5, 3-
 
 semi.FULL_DEBUG = True
 
-def table_debug(self, result: SimulationResult, state: PlanState) -> str:
+def table_debug(self, result: Result, state: State) -> str:
     """Formats result assignment rows using state pod headers."""
     headers = ["Day", "Loads", *("P{}{}".format(pod_id, "f" if not pod.dynamic else "")
         for pod_id, pod in sorted(state.pods.items()))]
@@ -44,7 +44,7 @@ def table_debug(self, result: SimulationResult, state: PlanState) -> str:
     edges = sorted(result.congestion_by_edge)
     congestion_rows = [["Day", *(f"{a}-{b}" for a, b in edges)],
         *([str(day + 1), *(str(result.congestion_by_day.get(day, {}).get(edge, 0)) for edge in edges)]
-            for day in range(semi.MONTH_DAYS))]
+            for day in range(semi.DAYS))]
     initial = "\nInitial assignments:\n" + initial_assignments if result.initial_table else ""
     return "Fixed reservations: " + result.reserved + initial + "\nAssignments:\n" + assignments + \
         "\nCongestion:\n" + format_table(congestion_rows)
@@ -69,7 +69,7 @@ def format_table(rows: list[list[str]]) -> str:
     return "\n".join([border, lines[0], border, *lines[1:], border])
 
 
-def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
+def score_debug(self, label: str, result: Result, cost: int) -> str:
     """Formats label score from result using cost."""
     demand = sum(sum(pad.demand.values()) for pad in self.landing_pads())
     stats = self.status_debug(result)
@@ -87,12 +87,12 @@ def score_debug(self, label: str, result: SimulationResult, cost: int) -> str:
         f"score: {result.score}, resources: {self.resources - cost}\n{stats}"
 
 
-def status_debug(self, result: SimulationResult) -> str:
+def status_debug(self, result: Result) -> str:
     """Formats all pool status from result."""
     return f"{self.pool_debug(result)}\n{self.diversity_debug(result)}"
 
 
-def pool_debug(self, result: SimulationResult) -> str:
+def pool_debug(self, result: Result) -> str:
     """Formats speed-pool status from result."""
     lines = []
     for pool in self.speed_pools():
@@ -103,7 +103,7 @@ def pool_debug(self, result: SimulationResult) -> str:
     return "\n".join(lines)
 
 
-def diversity_debug(self, result: SimulationResult) -> str:
+def diversity_debug(self, result: Result) -> str:
     """Formats diversity-pool status from result."""
     lines = []
     for building in sorted(self.buildings.values(), key=lambda item: item.id):
@@ -124,7 +124,7 @@ def max_diversity(self, kind: int) -> int:
     return sum(max(0, 50 - index) for index in range(demand))
 
 
-def state_action_text(self, state: PlanState, base: PlanState = None) -> str:
+def state_action_text(self, state: State, base: State = None) -> str:
     """Formats planned actions in state completely, or as changes relative to base."""
     if base is not None:
         actions = [f"DROP TUBE {edge[0]} {edge[1]}" for edge in sorted(set(base.tubes) - set(state.tubes))]
@@ -150,7 +150,7 @@ def state_action_text(self, state: PlanState, base: PlanState = None) -> str:
     return ";".join(actions) if actions else "WAIT"
 
 
-def selected_debug(self, best: Candidate, state: PlanState, result: SimulationResult, before_score: int):
+def selected_debug(self, best: Candidate, state: State, result: Result, before_score: int):
     """Prints the selected branch and resulting grand-total plan."""
     path_text = ", ".join(map(str, best.bundle.path))
     text = f"selected: pair={best.pair}, path=[{path_text}], bundle={best.bundle.debug_id}, actions={self.state_action_text(state)}, "
@@ -200,9 +200,9 @@ def parse_turn_state(text: str) -> Planner:
                 planner.resources = int(parts[1])
             case "landing":
                 demand, order = parse_demand("".join(parts[4:]))
-                planner.buildings[int(parts[1])] = Building(int(parts[1]), 0, int(parts[2]), int(parts[3]), demand, order)
+                planner.buildings[int(parts[1])] = Node(int(parts[1]), 0, int(parts[2]), int(parts[3]), demand, order)
             case "module":
-                planner.buildings[int(parts[1])] = Building(int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
+                planner.buildings[int(parts[1])] = Node(int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
             case "tube":
                 planner.tubes[route_key(int(parts[1]), int(parts[2]))] = int(parts[3])
             case "teleport":

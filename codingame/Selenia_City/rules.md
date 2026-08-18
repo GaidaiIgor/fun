@@ -85,13 +85,14 @@ Pods fulfill assigned loads.
    3. If some pods cannot move towards their target due to limited edge capacity, all pods trying to use that edge are in a conflict group.
 5. While resolvable conflicts remain, resolve each resolvable conflict group iteratively as follows.
    1. For an edge capacity conflict, if there is a pair of pods moving in opposite directions, swap their assignments.
-   2. Next, for each pod within a given conflict group, find the next non-conflicting assignment in the order of their list of preferences.
+   2. For each pod within a given conflict group, find the next non-conflicting assignment in the order of their list of preferences.
    The pod with the shortest extra distance to their alternative assignment is assigned there.
       1. Extra distance is distance from the pod to the alternative load origin minus distance from the pod to the current load origin.
       2. On tie, prefer to reassign pods further from load origin.
       3. On tie, prefer to reassign pods with larger id.
-      4. Being reassigned due to edge capacity increases congestion counter on that edge.
-      5. Being reassigned due to path capacity increases congestion counter on the closest to origin edge with the smallest capacity along the way.
+      4. If a reassignment is edge-conflicting, but it can be resolved with a swap, accept the reassignment and do the swap.
+      5. Being reassigned due to edge capacity increases congestion counter on that edge.
+      6. Being reassigned due to path capacity increases congestion counter on the closest to origin edge with the smallest capacity along the way.
    3. It is allowed to disregard uniformity rule to resolve edge capacity conflict if no uniformity-conforming resolutions exist.
       1. If resolution is still impossible, keep the conflicting assignment.
 6. If there is not enough load slots for all pods, some pods may have no assignments.

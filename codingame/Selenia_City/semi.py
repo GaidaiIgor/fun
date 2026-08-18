@@ -15,7 +15,7 @@ REROUTE_COST = POD_COST - POD_REFUND
 TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;UPGRADE 2 3;POD 3;POD 2"
+OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;UPGRADE 2 3;POD 3;POD 4;POD 1;POD 2"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1366,23 +1366,50 @@ class Planner:
         if not dynamic_pods:
             return requests
         options = {}
-        assigned_paths = [*assignments.values(), *(path for paths in fixed_assignments.values() for path in paths)]
-        assigned_edges = {route_key(a, b) for path in assigned_paths for a, b in zip(path.nodes, path.nodes[1:])}
+        protected_edges = set()
+        for pod_id, pod in fixed_pods:
+            index = pod_positions[pod_id]
+            for path in fixed_assignments.get(pod_id, ()):
+                route = list(path.nodes) if pod.path[index] == path.nodes[0] else pod.path[index:] + \
+                    (pod.path[1:index + 1] if pod.path[0] == pod.path[-1] else [])
+                if path.nodes[0] in route[1:]:
+                    route = route[:route.index(path.nodes[0], 1) + 1]
+                protected_edges.update(route_key(a, b) for a, b in zip(route, route[1:]))
         all_edges = [(a, b) for a in sorted(graph) for b in graph[a] if a < b]
         for pod_id, _ in dynamic_pods:
+            if pod_id not in assignments:
+                continue
+            path = assignments[pod_id].nodes
+            if pending[pod_id] != (-1, -1):
+                options[pod_id] = [pending[pod_id]]
+                source_id = pending[pod_id][1]
+                delivering = pending[pod_id] == path[:2]
+            else:
+                if current[pod_id] == -1:
+                    options[pod_id] = [path[:2]]
+                    delivering = True
+                else:
+                    target_id = path[1] if current[pod_id] == path[0] else next_step(graph, current[pod_id], path[0])
+                    options[pod_id] = [(current[pod_id], target_id)]
+                    source_id = current[pod_id]
+                    delivering = current[pod_id] == path[0]
+            if delivering:
+                protected_edges.update(route_key(a, b) for a, b in zip(path, path[1:]))
+            else:
+                protected_edges.add(route_key(*options[pod_id][0]))
+                while source_id != path[0]:
+                    target_id = next_step(graph, source_id, path[0])
+                    protected_edges.add(route_key(source_id, target_id))
+                    source_id = target_id
+        requested_edges = {route_key(*move) for move in requests.values()} | {route_key(*moves[0]) for moves in options.values()}
+        for pod_id, _ in dynamic_pods:
+            if pod_id in assignments:
+                continue
             if pending[pod_id] != (-1, -1):
                 options[pod_id] = [pending[pod_id]]
                 continue
-            if pod_id not in assignments:
-                moves = all_edges if current[pod_id] == -1 else [(current[pod_id], neighbor_id) for neighbor_id in graph[current[pod_id]]]
-                options[pod_id] = [min(moves, key=lambda move: (route_key(*move) in assigned_edges, move))]
-                continue
-            path = assignments[pod_id].nodes
-            if current[pod_id] == -1:
-                options[pod_id] = [path[:2]]
-                continue
-            target_id = path[1] if current[pod_id] == path[0] else next_step(graph, current[pod_id], path[0])
-            options[pod_id] = [(current[pod_id], target_id)]
+            moves = all_edges if current[pod_id] == -1 else [(current[pod_id], neighbor_id) for neighbor_id in graph[current[pod_id]]]
+            options[pod_id] = [min(moves, key=lambda move: (route_key(*move) in protected_edges, route_key(*move) in requested_edges, move))]
         requests.update((pod_id, moves[0]) for pod_id, moves in options.items())
         return requests
     def distances_to_targets(self, state: PlanState) -> tuple[dict[int, dict[int, int]], dict[int, dict[int, int]]]:

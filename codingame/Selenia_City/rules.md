@@ -83,14 +83,16 @@ Pods fulfill assigned loads.
          1. Capped load is defined as the load with the number of assigned pods equal to load capacity.
       2. Uniformity is evaluated separately for each priority level.
    3. If some pods cannot move towards their target due to limited edge capacity, all pods trying to use that edge are in a conflict group.
-5. While conflicts remain, resolve each conflict group iteratively as follows.
+5. While resolvable conflicts remain, resolve each resolvable conflict group iteratively as follows.
    1. For each pod within a given conflict group, find the next non-conflicting assignment in the order of their list of preferences.
    The pod with the shortest extra distance to their alternative assignment is assigned there.
       1. Extra distance is distance from the pod to the alternative load origin minus distance from the pod to the current load origin.
       2. On tie, prefer to reassign pods further from load origin.
       3. On tie, prefer to reassign pods with larger id.
-   2. Being reassigned due to edge capacity increases congestion counter on that edge.
-   3. Being reassigned due to path capacity increases congestion counter on the closest to origin edge with the smallest capacity along the way.
+      4. Being reassigned due to edge capacity increases congestion counter on that edge.
+      5. Being reassigned due to path capacity increases congestion counter on the closest to origin edge with the smallest capacity along the way.
+   2. It is allowed to disregard uniformity rule to resolve edge capacity conflict if no uniformity-conforming resolutions exist.
+      1. If resolution is still impossible, keep the conflicting assignment.
 6. If there is not enough load slots for all pods, some pods may have no assignments.
 Unassigned pods just do their best to stay out of the way of assigned pods.
    1. Congestion between unassigned pods does not increase edge congestion counter.

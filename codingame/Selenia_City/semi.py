@@ -30,7 +30,7 @@ def debug(text: str):
     if FULL_DEBUG:
         print(text, file=sys.stderr)
 def score_efficiency(gain: int, cost: int) -> float:
-    """Calculates efficiency for gain and cost, treating beneficial free changes as infinite."""
+    """Returns efficiency for gain and cost."""
     return gain / cost if cost > 0 else inf if gain > 0 else 0
 @dataclass(slots=True)
 class Building:
@@ -60,7 +60,7 @@ class PathDemand:
         return self.h
 def assignment_text(paths: set[PathDemand], pod_id: int, requests: dict[int, DirectedPair], moves: dict[int, DirectedPair],
         carrying: set[int]) -> str:
-    """Formats paths for pod_id, using requests, moves and carrying to return a three-character status prefix."""
+    """Formats path statuses for pod_id."""
     values = []
     for path in paths:
         if pod_id not in requests:
@@ -647,7 +647,7 @@ class Planner:
         return [Bundle(owner, tubes=tubes, label=label, path_edges=path_edges,
             destination=path[-1], path_length=len(path) - 1, path=tuple(path))]
     def connected_path_edges(self, path: list[int], state: PlanState) -> tuple[Pair, ...]:
-        base_edges = tuple(route_key(a, b) for a, b in zip(path, path[1:]))
+        base_edges = edges_of(path)
         network_nodes = {node for edge in state.tubes for node in edge}
         if not network_nodes or network_nodes.intersection(path):
             return base_edges
@@ -658,7 +658,7 @@ class Planner:
             connector = self.cheapest_path_with_hop_limit(junction_id, list(network_nodes), remaining_hops, state)
             if not connector:
                 continue
-            edges = tuple(dict.fromkeys((*base_edges, *(route_key(a, b) for a, b in zip(connector, connector[1:])))))
+            edges = tuple(dict.fromkeys((*base_edges, *edges_of(connector))))
             tubes = [edge for edge in edges if edge not in state.tubes]
             if len(edges) > max_edges or not self.can_add_tubes(tubes, state.tubes):
                 continue
@@ -694,14 +694,14 @@ class Planner:
         return PlanState(dict(state.tubes), dict(state.teleports), pods, list(state.actions), list(state.pod_slots),
             set(state.ops), set(state.new_tubes), state.cost, list(state.features))
     def cancel_features(self, state: PlanState, upgrades_only: bool):
-        """Cancels prior features in state until affordable; upgrades_only restricts eligible kinds."""
+        """Cancels state features allowed by upgrades_only until affordable."""
         eligible = [feature for feature in state.features if not feature[4] and (not upgrades_only or feature[0] == "upgrade")]
         for feature in sorted(eligible, key=lambda item: (item[3], -item[2], item[0], str(item[1]))):
             if state.cost <= self.resources:
                 break
             self.cancel_feature(state, feature)
     def cancel_feature(self, state: PlanState, feature: Feature):
-        """Cancels feature from state and refunds its effective current cost."""
+        """Cancels feature from state and refunds cost."""
         kind, key, _, _, _ = feature
         if kind == "upgrade":
             edge = key
@@ -742,7 +742,7 @@ class Planner:
             distances, module_distances = self.distances_to_targets(state)
             demands = self.path_demands(state, distances, module_distances)
             for demand in demands:
-                used.update(route_key(a, b) for a, b in zip(demand.nodes, demand.nodes[1:]))
+                used.update(edges_of(demand.nodes))
             origins = sorted({demand.nodes[0] for demand in demands})
             graph = tube_graph(state.tubes)
             for index, source_id in enumerate(origins):
@@ -811,7 +811,7 @@ class Planner:
                 pod_id = self.next_pod_id(state.pods)
             self.add_dynamic_pod(state, pod_id, pod_id in self.pods)
     def add_dynamic_pod(self, state: PlanState, pod_id: int, reroute: bool, track: bool = True):
-        """Adds pod_id to dynamic state; reroute controls replacement cost and track records cancellation provenance."""
+        """Adds pod_id with reroute cost and optional track provenance."""
         cost = REROUTE_COST if reroute else POD_COST
         state.cost += cost
         if reroute:
@@ -870,7 +870,7 @@ class Planner:
         result = SimulationResult()
         fixed_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if not pod.dynamic]
         dynamic_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if pod.dynamic]
-        fixed_usage = Counter(edge for _, pod in fixed_pods for edge in {route_key(a, b) for a, b in zip(pod.path, pod.path[1:])})
+        fixed_usage = Counter(edge for _, pod in fixed_pods for edge in set(edges_of(pod.path)))
         shared_capacities = tuple((edge, state.tubes[edge]) for edge, count in sorted(fixed_usage.items()) if count > 1)
         key = network_key, shared_capacities, tuple((pod_id, tuple(pod.path), tuple(pod.assignments)) for pod_id, pod in fixed_pods)
         if dynamic_pods and key not in self.fs_cache:
@@ -1218,23 +1218,20 @@ class Planner:
         def assignment_conflicts(values: dict[int, PathDemand], pod_id: int) -> bool:
             trial_requests = requests_for(values)
             return conflicts(trial_requests, set(values) | set(fixed_assignments))[route_key(*trial_requests[pod_id])] > 0
-        def find_alternative(pod_id: int, edge: Pair) -> tuple:
+        def find_alternative(pod_id: int, edge: Pair, enforce_uniformity: bool = True) -> tuple:
             current_distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], assignments[pod_id].nodes[0])
             start = preferences[pod_id].index(assignments[pod_id]) + 1
-            for path in [*preferences[pod_id][start:], None]:
+            for path in preferences[pod_id][start:]:
                 trial = dict(assignments)
-                if path is None:
-                    del trial[pod_id]
-                else:
-                    trial[pod_id] = path
+                trial[pod_id] = path
                 corrected = dict(trial)
-                self.fix_load_assignments(corrected, preferences, current, graph, state, occupied_edges, assignment_conflicts)
+                self.fix_load_assignments(corrected, preferences, current, graph, state, occupied_edges, assignment_conflicts, enforce_uniformity)
                 if corrected != trial:
                     continue
                 trial_requests = requests_for(trial)
                 trial_congestion = conflicts(trial_requests, set(trial) | set(fixed_assignments))
-                if trial_congestion[edge] < congestion[edge] and (pod_id not in trial or not trial_congestion[route_key(*trial_requests[pod_id])]):
-                    alternative_distance = INF if path is None else 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
+                if trial_congestion[edge] < congestion[edge] and not trial_congestion[route_key(*trial_requests[pod_id])]:
+                    alternative_distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
                     return trial, trial_requests, trial_congestion, alternative_distance - current_distance, current_distance
             return None
         capacity_congestion = self.fix_load_assignments(assignments, preferences, current, graph, state, occupied_edges, assignment_conflicts)
@@ -1250,6 +1247,9 @@ class Planner:
             pods = [pod_id for pod_id in assignments if route_key(*requests[pod_id]) == edge]
             alternatives = {pod_id: find_alternative(pod_id, edge) for pod_id in pods}
             candidates = [pod_id for pod_id in pods if alternatives[pod_id] is not None]
+            if not candidates:
+                alternatives = {pod_id: find_alternative(pod_id, edge, False) for pod_id in pods}
+                candidates = [pod_id for pod_id in pods if alternatives[pod_id] is not None]
             if candidates:
                 pod_id = min(candidates, key=lambda item: (alternatives[item][3], -alternatives[item][4], -item))
                 assignments, requests, congestion = alternatives[pod_id][:3]
@@ -1268,7 +1268,8 @@ class Planner:
             -path.cap, path.pool, path.destination, path.nodes
     def fix_load_assignments(self, assignments: dict[int, PathDemand], preferences: dict[int, list[PathDemand]],
             current: dict[int, int], graph: dict[int, list[int]], state: PlanState,
-            occupied_edges: Counter[Pair], assignment_conflicts: Callable[[dict[int, PathDemand], int], bool]) -> Counter[Pair]:
+            occupied_edges: Counter[Pair], assignment_conflicts: Callable[[dict[int, PathDemand], int], bool],
+            enforce_uniformity: bool = True) -> Counter[Pair]:
         def passenger_capacity(path: PathDemand) -> int:
             return (path.cap + POD_CAPACITY - 1) // POD_CAPACITY
         def allocation(values: Counter[PathDemand]) -> tuple[int, tuple[PathDemand, bool]]:
@@ -1308,22 +1309,24 @@ class Planner:
             owners.setdefault(path, set()).add(pod_id)
         paths = sorted({path for pod_paths in preferences.values() for path in pod_paths},
             key=lambda item: (item.pool, item.destination, item.nodes))
-        path_edges = {path: tuple(route_key(a, b) for a, b in zip(path.nodes, path.nodes[1:])) for path in paths}
+        path_edges = {path: edges_of(path.nodes) for path in paths}
         distances = {(pod_id, path.nodes[0]): 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
             for pod_id in assignments for path in paths}
         congestion = Counter()
+        unresolved = set()
         while True:
             exceeded = overflow(counts)
-            uneven_paths = uniform_conflicts(counts) if exceeded is None else set()
+            uneven_paths = uniform_conflicts(counts) if exceeded is None and enforce_uniformity else set()
             for path in paths:
+                if path in unresolved:
+                    continue
                 pods = [pod_id for pod_id in owners.get(path, ())]
                 if not pods:
                     continue
                 if path != (exceeded[0] if exceeded else None) and path not in uneven_paths:
                     continue
-                if exceeded and exceeded[1]:
-                    congestion[min(path_edges[path], key=lambda edge: state.tubes[edge])] += 1
                 alternatives = {}
+                slot_exists = False
                 for pod_id in sorted(pods):
                     base = counts.copy()
                     base[path] -= 1
@@ -1336,10 +1339,17 @@ class Planner:
                         capacity_fit = trial[candidate] <= passenger_capacity(candidate) and allocation(trial)[0] == allocation(base)[0] + 1
                         load_fit = (exceeded is not None and capacity_fit) or (trial_exceeded is None and not (trial_uneven - uneven_paths))
                         assignment_trial = {**assignments, pod_id: candidate}
+                        if load_fit:
+                            slot_exists = True
                         if load_fit and not assignment_conflicts(assignment_trial, pod_id):
                             extra = distances[pod_id, candidate.nodes[0]] - distances[pod_id, path.nodes[0]]
                             alternatives[pod_id] = index, extra, distances[pod_id, path.nodes[0]]
                             break
+                if not alternatives and (exceeded is None or slot_exists):
+                    unresolved.add(path)
+                    continue
+                if exceeded and exceeded[1]:
+                    congestion[min(path_edges[path], key=lambda edge: state.tubes[edge])] += 1
                 pod_id = min(pods, key=lambda item: (alternatives[item][1], -alternatives[item][2], -item)
                     if item in alternatives else (INF, -distances[item, path.nodes[0]], -item))
                 owners[path].remove(pod_id)
@@ -1351,6 +1361,7 @@ class Planner:
                     assignments[pod_id] = preferences[pod_id][indices[pod_id]]
                     owners.setdefault(assignments[pod_id], set()).add(pod_id)
                     counts[assignments[pod_id]] += 1
+                unresolved.clear()
                 break
             else:
                 return congestion
@@ -1374,7 +1385,7 @@ class Planner:
                     (pod.path[1:index + 1] if pod.path[0] == pod.path[-1] else [])
                 if path.nodes[0] in route[1:]:
                     route = route[:route.index(path.nodes[0], 1) + 1]
-                protected_edges.update(route_key(a, b) for a, b in zip(route, route[1:]))
+                protected_edges.update(edges_of(route))
         all_edges = [(a, b) for a in sorted(graph) for b in graph[a] if a < b]
         for pod_id, _ in dynamic_pods:
             if pod_id not in assignments:
@@ -1394,7 +1405,7 @@ class Planner:
                     source_id = current[pod_id]
                     delivering = current[pod_id] == path[0]
             if delivering:
-                protected_edges.update(route_key(a, b) for a, b in zip(path, path[1:]))
+                protected_edges.update(edges_of(path))
             else:
                 protected_edges.add(route_key(*options[pod_id][0]))
                 while source_id != path[0]:
@@ -1677,6 +1688,9 @@ class Planner:
         return sum(max(0, 50 - index) for index in range(balanced_population))
 def route_key(a: int, b: int) -> Pair:
     return (a, b) if a < b else (b, a)
+def edges_of(path: PathKey | list[int]) -> tuple[Pair, ...]:
+    """Returns edges from path."""
+    return tuple(route_key(*edge) for edge in zip(path, path[1:]))
 def tube_cost(a: Building, b: Building) -> int:
     return isqrt(100 * ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)))
 def orientation(a: Building, b: Building, c: Building) -> int:

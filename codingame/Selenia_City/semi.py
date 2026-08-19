@@ -121,6 +121,7 @@ class Result:
     dynamic_paths: dict[int, list[int]] = field(default_factory=dict)
     pod_assignments: dict[int, list[Path]] = field(default_factory=dict)
     initial_table: list[list[str]] = field(default_factory=list)
+    capacity_table: list[list[str]] = field(default_factory=list)
     table: list[list[str]] = field(default_factory=list)
     reserved: str = "-"
 @dataclass(slots=True)
@@ -825,7 +826,8 @@ class Planner:
         if keep_dynamic_paths:
             fixed_result = replace(fixed_result, congestion_by_edge=dynamic_result.congestion_by_edge,
                 congestion_by_day=dynamic_result.congestion_by_day, dynamic_paths=paths, pod_assignments=assignments,
-                table=dynamic_result.table, initial_table=dynamic_result.initial_table, reserved=dynamic_result.reserved)
+                table=dynamic_result.table, initial_table=dynamic_result.initial_table, capacity_table=dynamic_result.capacity_table,
+                reserved=dynamic_result.reserved)
         return fixed_result
     def cached_simulate(self, state: State) -> Result:
         keep_dynamic_paths = any(pod.dynamic for pod in state.pods.values())
@@ -904,7 +906,10 @@ class Planner:
                         paths = fixed_jobs.get(pod_id, set())
                         path_text = assignment_text(paths, pod_id, requests, moves, carrying)
                         cells.append("{} ({})".format(path_text, locations[pod_id]))
-                    result.table.append([str(day + 1), loads, *cells])
+                    row = [str(day + 1), loads, *cells]
+                    result.initial_table.append(row[:])
+                    result.capacity_table.append(row[:])
+                    result.table.append(row)
                 self.settle(day + 1, queues, arrivals, result)
                 continue
             occupied = Counter()
@@ -925,8 +930,22 @@ class Planner:
                     for pod_id, pod in state.pods.items()}
                 initial_carrying = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, initial_moves, positions.copy(), dynamic_current.copy(), dynamic_pending.copy())
-            assignments, requests, moves = self.resolve_dispatch_congestion(assignments, prefs, f_pods, d_pods,
-                fixed_jobs, positions, dynamic_current, dynamic_pending, graph, occupied, result, state, day)
+            capacity_congestion = self.fix_load_assignments(assignments, prefs, dynamic_current, graph, state, occupied)
+            result.congestion_by_edge.update(capacity_congestion)
+            if capacity_congestion:
+                result.congestion_by_day.setdefault(day, Counter()).update(capacity_congestion)
+            if FULL_DEBUG:
+                capacity_assignments = dict(assignments)
+                capacity_requests = self.path_pod_requests(f_pods, d_pods, positions, dynamic_current, dynamic_pending,
+                    capacity_assignments, fixed_jobs, graph)
+                capacity_moves = self.allocate_tube_capacity(capacity_requests, state, result, day, False)
+                capacity_locations = {pod_id: pod.path[positions[pod_id]] if not pod.dynamic else
+                    dynamic_current[pod_id] if dynamic_current[pod_id] != -1 else capacity_requests.get(pod_id, ("-",))[0]
+                    for pod_id, pod in state.pods.items()}
+                capacity_carrying = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
+                    distances, state, capacity_moves, positions.copy(), dynamic_current.copy(), dynamic_pending.copy())
+            assignments, requests, moves = self.resolve_edge_conflicts(assignments, prefs, f_pods, d_pods, fixed_jobs,
+                positions, dynamic_current, dynamic_pending, graph, result, state, day)
             for pod_id, _ in d_pods:
                 pod_assignments[pod_id].append(assignments[pod_id].nodes if pod_id in assignments else ())
             locations = {pod_id: pod.path[positions[pod_id]] if not pod.dynamic else
@@ -946,6 +965,7 @@ class Planner:
                 loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
                     "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
                 tables = ((result.initial_table, initial_assignments, initial_requests, initial_moves, initial_carrying, initial_locations),
+                    (result.capacity_table, capacity_assignments, capacity_requests, capacity_moves, capacity_carrying, capacity_locations),
                     (result.table, assignments, requests, moves, carrying, locations))
                 for table, day_assignments, day_requests, day_moves, day_carrying, day_locations in tables:
                     cells = []
@@ -1184,11 +1204,10 @@ class Planner:
                 assignments[pod_id] = prefs[pod_id][0]
                 inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
         return assignments, prefs
-    def resolve_dispatch_congestion(self, assignments: dict[int, Load], prefs: dict[int, list[Load]],
+    def resolve_edge_conflicts(self, assignments: dict[int, Load], prefs: dict[int, list[Load]],
             f_pods: list[tuple[int, PodPlan]], d_pods: list[tuple[int, PodPlan]],
             fixed_jobs: dict[int, set[Load]], positions: dict[int, int], current: dict[int, int],
-            pending: dict[int, Pair], graph: dict[int, list[int]], occupied: Counter[Pair], result: Result,
-            state: State, day: int) -> tuple:
+            pending: dict[int, Pair], graph: dict[int, list[int]], result: Result, state: State, day: int) -> tuple:
         def requests_for(values: dict[int, Load]) -> dict[int, Pair]:
             return self.path_pod_requests(f_pods, d_pods, positions, current, pending, values, fixed_jobs, graph)
         def conflicts(values: dict[int, Pair], active_ids: set[int]) -> Counter[Pair]:
@@ -1202,10 +1221,6 @@ class Planner:
                 result.congestion_by_edge[edge] += 1
                 result.congestion_by_day.setdefault(day, Counter())[edge] += 1
                 counted.add(edge)
-        capacity_congestion = self.fix_load_assignments(assignments, prefs, current, graph, state, occupied)
-        result.congestion_by_edge.update(capacity_congestion)
-        if capacity_congestion:
-            result.congestion_by_day.setdefault(day, Counter()).update(capacity_congestion)
         requests = requests_for(assignments)
         active_ids = set(assignments) | set(fixed_jobs)
         counted = set()

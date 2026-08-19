@@ -1,5 +1,4 @@
 from collections import Counter, deque
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from heapq import heappop, heappush
 from math import inf, isqrt
@@ -1198,75 +1197,50 @@ class Planner:
                 pods.setdefault(route_key(*move), []).append(pod_id)
             return Counter({edge: sum(pod_id in active_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])
                 for edge, pod_ids in pods.items() if any(pod_id in active_ids for pod_id in sorted(pod_ids)[state.tubes[edge]:])})
-        def swap_pair(values: dict[int, Load], edge: Pair, requests: dict[int, Pair], rejected: set[tuple] = set()) -> tuple:
-            pods = [pod_id for pod_id in values if route_key(*requests[pod_id]) == edge]
-            return next(((a, b) for a in pods for b in pods if a < b and (edge, a, b) not in rejected and values[a] != values[b]
-                and requests[a] == requests[b][::-1] and values[b] in prefs[a] and values[a] in prefs[b]), ())
         def count_congestion(edge: Pair, counted: set[Pair]):
             if edge not in counted:
                 result.congestion_by_edge[edge] += 1
                 result.congestion_by_day.setdefault(day, Counter())[edge] += 1
                 counted.add(edge)
-        def assignment_conflicts(values: dict[int, Load], pod_id: int) -> bool:
-            trial_requests = requests_for(values)
-            edge = route_key(*trial_requests[pod_id])
-            return conflicts(trial_requests, set(values) | set(fixed_jobs))[edge] > 0 and not swap_pair(values, edge, trial_requests)
-        def find_alternative(pod_id: int, edge: Pair, enforce_uniformity: bool = True) -> tuple:
-            current_distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], assignments[pod_id].nodes[0])
-            start = prefs[pod_id].index(assignments[pod_id]) + 1
-            for path in prefs[pod_id][start:]:
-                trial = dict(assignments)
-                trial[pod_id] = path
-                corrected = dict(trial)
-                self.fix_load_assignments(corrected, prefs, current, graph, state, occupied, assignment_conflicts, enforce_uniformity)
-                if corrected != trial:
-                    continue
-                trial_requests = requests_for(trial)
-                trial_congestion = conflicts(trial_requests, set(trial) | set(fixed_jobs))
-                swap = swap_pair(trial, route_key(*trial_requests[pod_id]), trial_requests)
-                if trial_congestion[route_key(*trial_requests[pod_id])] and swap:
-                    a, b = swap
-                    trial[a], trial[b] = trial[b], trial[a]
-                    trial_requests = requests_for(trial)
-                    trial_congestion = conflicts(trial_requests, set(trial) | set(fixed_jobs))
-                if trial_congestion[edge] < congestion[edge] and not trial_congestion[route_key(*trial_requests[pod_id])]:
-                    alternative_distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
-                    return trial, trial_requests, trial_congestion, alternative_distance - current_distance, current_distance
-            return None
-        capacity_congestion = self.fix_load_assignments(assignments, prefs, current, graph, state, occupied, assignment_conflicts)
+        capacity_congestion = self.fix_load_assignments(assignments, prefs, current, graph, state, occupied)
         result.congestion_by_edge.update(capacity_congestion)
         if capacity_congestion:
             result.congestion_by_day.setdefault(day, Counter()).update(capacity_congestion)
         requests = requests_for(assignments)
-        congestion = conflicts(requests, set(assignments) | set(fixed_jobs))
-        unresolved = set()
+        active_ids = set(assignments) | set(fixed_jobs)
         counted = set()
-        swapped = set()
-        while remaining := sorted(set(congestion) - unresolved):
-            edge = remaining[0]
-            pods = [pod_id for pod_id in assignments if route_key(*requests[pod_id]) == edge]
-            pair = swap_pair(assignments, edge, requests, swapped)
-            if pair:
-                a, b = pair
-                swapped.add((edge, a, b))
-                assignments[a], assignments[b] = assignments[b], assignments[a]
-                requests = requests_for(assignments)
-                congestion = conflicts(requests, set(assignments) | set(fixed_jobs))
-                count_congestion(edge, counted)
-                unresolved.intersection_update(congestion)
-                continue
-            alternatives = {pod_id: find_alternative(pod_id, edge) for pod_id in pods}
-            candidates = [pod_id for pod_id in pods if alternatives[pod_id] is not None]
-            if not candidates:
-                alternatives = {pod_id: find_alternative(pod_id, edge, False) for pod_id in pods}
-                candidates = [pod_id for pod_id in pods if alternatives[pod_id] is not None]
-            if candidates:
-                pod_id = min(candidates, key=lambda item: (alternatives[item][3], -alternatives[item][4], -item))
-                assignments, requests, congestion = alternatives[pod_id][:3]
-                count_congestion(edge, counted)
-                unresolved.intersection_update(congestion)
-            else:
-                unresolved.add(edge)
+        seen = set()
+        while True:
+            state_key = tuple(sorted(assignments.items()))
+            if state_key in seen:
+                break
+            seen.add(state_key)
+            congestion = conflicts(requests, active_ids)
+            swapped = False
+            for edge in sorted(congestion):
+                pods = [pod_id for pod_id in assignments if route_key(*requests[pod_id]) == edge]
+                for a in pods:
+                    for b in pods:
+                        if a >= b or assignments[a] == assignments[b] or requests[a] != requests[b][::-1] \
+                                or assignments[b] not in prefs[a] or assignments[a] not in prefs[b]:
+                            continue
+                        trial = dict(assignments)
+                        trial[a], trial[b] = trial[b], trial[a]
+                        trial_requests = requests_for(trial)
+                        if conflicts(trial_requests, active_ids)[edge]:
+                            continue
+                        assignments.clear()
+                        assignments.update(trial)
+                        requests = trial_requests
+                        count_congestion(edge, counted)
+                        swapped = True
+                        break
+                    if swapped:
+                        break
+                if swapped:
+                    break
+            if not swapped:
+                break
         return assignments, requests, self.allocate_tube_capacity(requests, state, result, day, False)
     def path_assignment_key(self, path: Load, pod_id: int, boarding: int, current: dict[int, int],
             delivered: Counter[int], graph: dict[int, list[int]]) -> tuple:
@@ -1274,9 +1248,7 @@ class Planner:
         return -path.priority, -boarding, distance, len(path.nodes) - 1, delivered[path.destination], \
             -path.cap, path.pool, path.destination, path.nodes
     def fix_load_assignments(self, assignments: dict[int, Load], prefs: dict[int, list[Load]],
-            current: dict[int, int], graph: dict[int, list[int]], state: State,
-            occupied: Counter[Pair], assignment_conflicts: Callable[[dict[int, Load], int], bool],
-            enforce_uniformity: bool = True) -> Counter[Pair]:
+            current: dict[int, int], graph: dict[int, list[int]], state: State, occupied: Counter[Pair]) -> Counter[Pair]:
         def load_cap(path: Load) -> int:
             return (path.cap + POD_SIZE - 1) // POD_SIZE
         def allocation(values: Counter[Load]) -> tuple[int, tuple[Load, bool]]:
@@ -1309,7 +1281,6 @@ class Planner:
         def uniform_conflicts(values: Counter[Load]) -> set[Load]:
             return {path for path in paths if values[path] and any(candidate.priority == path.priority and values[candidate] < values[path] - 1
                 and can_add(candidate, values) for candidate in paths)}
-        indices = {pod_id: prefs[pod_id].index(path) for pod_id, path in assignments.items()}
         counts = Counter(assignments.values())
         owners = {}
         for pod_id, path in assignments.items():
@@ -1317,76 +1288,36 @@ class Planner:
         paths = sorted({path for pod_paths in prefs.values() for path in pod_paths},
             key=lambda item: (item.pool, item.destination, item.nodes))
         path_edges = {path: edges_of(path.nodes) for path in paths}
-        slots = allocation(Counter({path: load_cap(path) for path in paths}))[0]
         distances = {(pod_id, path.nodes[0]): 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
             for pod_id in assignments for path in paths}
         congestion = Counter()
-        unresolved = set()
+        removed = []
         while True:
             exceeded = overflow(counts)
-            uneven_paths = uniform_conflicts(counts) if exceeded is None and enforce_uniformity else set()
-            for path in paths:
-                if path in unresolved:
-                    continue
-                pods = [pod_id for pod_id in owners.get(path, ())]
-                if not pods:
-                    continue
-                if path != (exceeded[0] if exceeded else None) and path not in uneven_paths:
-                    continue
-                if exceeded:
-                    base = counts.copy()
-                    base[path] = 0
-                    base_slots = allocation(base)[0]
-                    capacity = 0
-                    while capacity < counts[path]:
-                        trial = base.copy()
-                        trial[path] = capacity + 1
-                        if trial[path] > load_cap(path) or allocation(trial)[0] < base_slots + capacity + 1:
-                            break
-                        capacity += 1
-                    needed = counts[path] - capacity
-                else:
-                    minimum = min(counts[candidate] for candidate in paths if candidate.priority == path.priority
-                        and counts[candidate] < counts[path] - 1 and can_add(candidate, counts))
-                    needed = counts[path] - minimum - 1
-                alternatives = {}
-                for pod_id in sorted(pods):
-                    base = counts.copy()
-                    base[path] -= 1
-                    for index in range(indices[pod_id] + 1, len(prefs[pod_id])):
-                        candidate = prefs[pod_id][index]
-                        trial = base.copy()
-                        trial[candidate] += 1
-                        trial_exceeded = overflow(trial)
-                        trial_uneven = uniform_conflicts(trial) if trial_exceeded is None else set()
-                        capacity_fit = trial[candidate] <= load_cap(candidate) and allocation(trial)[0] == allocation(base)[0] + 1
-                        load_fit = (exceeded is not None and capacity_fit) or (trial_exceeded is None and not (trial_uneven - uneven_paths))
-                        if load_fit and not assignment_conflicts({**assignments, pod_id: candidate}, pod_id):
-                            alternatives[pod_id] = index, distances[pod_id, candidate.nodes[0]] - distances[pod_id, path.nodes[0]], \
-                                distances[pod_id, path.nodes[0]]
-                            break
-                if not alternatives and len(assignments) <= slots:
-                    unresolved.add(path)
-                    continue
-                if exceeded and exceeded[1]:
-                    congestion[min(path_edges[path], key=lambda edge: state.tubes[edge])] += 1
-                selected = sorted(alternatives, key=lambda item: (alternatives[item][1], -alternatives[item][2], -item))[:needed]
-                if not selected:
-                    selected = sorted(pods, key=lambda item: (-distances[item, path.nodes[0]], -item))[:min(needed, len(assignments) - slots)]
-                for pod_id in selected:
-                    owners[path].remove(pod_id)
-                    counts[path] -= 1
-                    if pod_id not in alternatives:
-                        del assignments[pod_id]
-                        continue
-                    indices[pod_id] = alternatives[pod_id][0]
-                    assignments[pod_id] = prefs[pod_id][indices[pod_id]]
-                    owners.setdefault(assignments[pod_id], set()).add(pod_id)
-                    counts[assignments[pod_id]] += 1
-                unresolved.clear()
+            uneven = uniform_conflicts(counts) if exceeded is None else set()
+            if exceeded is None and not uneven:
                 break
-            else:
-                return congestion
+            path = exceeded[0] if exceeded else min(uneven, key=lambda item: (item.pool, item.destination, item.nodes))
+            pod_id = max(owners[path], key=lambda item: (distances[item, path.nodes[0]], item))
+            owners[path].remove(pod_id)
+            counts[path] -= 1
+            del assignments[pod_id]
+            edge = min(path_edges[path], key=lambda item: state.tubes[item]) if exceeded and exceeded[1] else None
+            removed.append((pod_id, path, edge))
+        for pod_id, original, edge in sorted(removed, key=lambda item: (distances[item[0], item[1].nodes[0]], item[0])):
+            for path in prefs[pod_id]:
+                if path == original:
+                    continue
+                trial = counts.copy()
+                trial[path] += 1
+                if overflow(trial) is not None or uniform_conflicts(trial):
+                    continue
+                assignments[pod_id] = path
+                counts = trial
+                if edge:
+                    congestion[edge] = 1
+                break
+        return congestion
     def path_pod_requests(self, f_pods: list[tuple[int, PodPlan]], d_pods: list[tuple[int, PodPlan]],
             positions: dict[int, int], current: dict[int, int], pending: dict[int, Pair], assignments: dict[int, Load],
             fixed_jobs: dict[int, set[Load]], graph: dict[int, list[int]]) -> dict[int, Pair]:

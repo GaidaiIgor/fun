@@ -40,14 +40,13 @@ def table_debug(self, result: Result, state: State) -> str:
     headers = ["Day", "Loads", *("P{}{}".format(pod_id, "f" if not pod.dynamic else "")
         for pod_id, pod in sorted(state.pods.items()))]
     initial = format_assignment_table(headers, result.initial_table)
-    capacity = format_assignment_table(headers, result.capacity_table)
     assignments = format_assignment_table(headers, result.table)
     edges = sorted(result.congestion_by_edge)
     congestion_rows = [["Day", *(f"{a}-{b}" for a, b in edges)],
         *([str(day + 1), *(str(result.congestion_by_day.get(day, {}).get(edge, 0)) for edge in edges)]
             for day in range(semi.DAYS))]
-    stages = "\nInitial preferences:\n" + initial + "\nCapacity/uniformity resolved:\n" + capacity
-    return "Fixed reservations: " + result.reserved + stages + "\nEdge conflicts resolved:\n" + assignments + \
+    stages = "\nInitial preferences:\n" + initial + "\nCapacity/uniformity resolved:\n" + assignments
+    return "Fixed reservations: " + result.reserved + stages + \
         "\nCongestion:\n" + format_table(congestion_rows)
 
 

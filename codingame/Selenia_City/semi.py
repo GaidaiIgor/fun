@@ -1191,14 +1191,16 @@ class Planner:
             evaluated = []
             for path in options:
                 priority = path.priority
-                if priority > 0:
+                if len(inspection_batches[path.nodes[:2]]) < POD_SIZE:
+                    priority = -1
+                elif priority > 0:
                     balance = sum(passenger_priorities.get(((passenger.pad_id, passenger.kind), *path.nodes[:2]), 0)
                         for passenger in inspection_batches[path.nodes[:2]])
                     if balance < 0:
                         priority = -1
                 evaluated.append(path if priority == path.priority else replace(path, priority=priority))
             prefs[pod_id] = sorted(evaluated,
-                key=lambda path: self.path_assignment_key(path, pod_id, min(POD_SIZE, len(eligible[path.nodes[:2]])), current,
+                key=lambda path: self.path_assignment_key(path, pod_id, len(inspection_batches[path.nodes[:2]]), current,
                     delivered, graph))
             if prefs[pod_id]:
                 assignments[pod_id] = prefs[pod_id][0]

@@ -900,7 +900,7 @@ class Planner:
                 result.carrying_days.update(carrying)
                 if FULL_DEBUG:
                     loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
-                        "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
+                        "L" if path.priority < 0 or path.cap < POD_SIZE else "H" if path.priority > 0 else "N") for path in active)
                     cells = []
                     for pod_id, pod in f_pods:
                         paths = fixed_jobs.get(pod_id, set())
@@ -963,7 +963,7 @@ class Planner:
             result.carrying_days.update(carrying)
             if FULL_DEBUG:
                 loads = ", ".join("({})x{}{}".format("-".join(map(str, path.nodes)), path.cap,
-                    "H" if path.priority > 0 else "L" if path.priority < 0 else "N") for path in active)
+                    "L" if path.priority < 0 or path.cap < POD_SIZE else "H" if path.priority > 0 else "N") for path in active)
                 tables = ((result.initial_table, initial_assignments, initial_requests, initial_moves, initial_carrying, initial_locations),
                     (result.capacity_table, capacity_assignments, capacity_requests, capacity_moves, capacity_carrying, capacity_locations),
                     (result.table, assignments, requests, moves, carrying, locations))

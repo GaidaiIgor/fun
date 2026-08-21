@@ -1267,6 +1267,8 @@ class Planner:
                 for pod_id in pods:
                     original = assignments[pod_id]
                     for path in prefs[pod_id][prefs[pod_id].index(original) + 1:]:
+                        if original.priority == 0 and path.priority < 0:
+                            continue
                         trial = dict(assignments)
                         trial[pod_id] = path
                         conformed = dict(trial)

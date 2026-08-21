@@ -1218,86 +1218,80 @@ class Planner:
                 assignments[pod_id] = prefs[pod_id][0]
                 inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
         return assignments, prefs
-    def resolve_edge_conflicts(self, assignments: dict[int, Load], prefs: dict[int, list[Load]], locked: dict[int, Load],
+    def resolve_edge_conflicts(self, jobs: dict[int, Load], prefs: dict[int, list[Load]], locked: dict[int, Load],
             f_pods: list[tuple[int, PodPlan]], d_pods: list[tuple[int, PodPlan]], fixed_jobs: dict[int, set[Load]],
-            positions: dict[int, int], current: dict[int, int], pending: dict[int, Pair], graph: dict[int, list[int]],
+            positions: dict[int, int], at: dict[int, int], pending: dict[int, Pair], graph: dict[int, list[int]],
             occupied: Counter[Pair], result: Result, state: State, day: int) -> tuple:
-        def requests_for(values: dict[int, Load]) -> dict[int, Pair]:
-            return self.path_pod_requests(f_pods, d_pods, positions, current, pending, locked | values, fixed_jobs, graph)
-        def edge_load(values: dict[int, Pair], edge: Pair) -> int:
+        def make_req(values: dict[int, Load]) -> dict[int, Pair]:
+            return self.path_pod_requests(f_pods, d_pods, positions, at, pending, locked | values, fixed_jobs, graph)
+        def load(values: dict[int, Pair], edge: Pair) -> int:
             return sum(route_key(*move) == edge for move in values.values())
         def resolves(trial: dict[int, Load], edge: Pair) -> tuple[bool, dict[int, Pair]]:
-            trial_requests = requests_for(trial)
-            return edge_load(trial_requests, edge) <= state.tubes[edge], trial_requests
-        requests = requests_for(assignments)
-        fixed_ids = {pod_id for pod_id, _ in f_pods} | {pod_id for pod_id, _ in d_pods if pending[pod_id] != (-1, -1)}
+            tr = make_req(trial)
+            return load(tr, edge) <= state.tubes[edge], tr
+        def valid(trial: dict[int, Load], uniform: bool) -> bool:
+            checked = dict(trial)
+            self.fix_load_assignments(checked, prefs, at, graph, state, occupied, uniform)
+            return checked == trial
+        req = make_req(jobs)
+        fixed = {p for p, _ in f_pods} | {p for p, _ in d_pods if pending[p] != (-1, -1)}
         seen = set()
         while True:
-            state_key = tuple(sorted(assignments.items()))
-            if state_key in seen:
+            key = tuple(sorted(jobs.items()))
+            if key in seen:
                 break
-            seen.add(state_key)
+            seen.add(key)
             by_edge = {}
-            for pod_id, move in requests.items():
-                by_edge.setdefault(route_key(*move), []).append(pod_id)
+            for p, move in req.items():
+                by_edge.setdefault(route_key(*move), []).append(p)
             swapped = False
             for edge in sorted(edge for edge, pods in by_edge.items() if len(pods) > state.tubes[edge]):
-                pods = sorted(pod_id for pod_id in by_edge[edge] if pod_id in assignments)
+                pods = sorted(p for p in by_edge[edge] if p in jobs)
                 for a in pods:
                     for b in pods:
-                        if a >= b or assignments[a] == assignments[b] or requests[a] != requests[b][::-1] \
-                                or assignments[b] not in prefs[a] or assignments[a] not in prefs[b]:
+                        levels = jobs[a].priority, jobs[b].priority
+                        if a >= b or jobs[a] == jobs[b] or req[a] != req[b][::-1] or jobs[b] not in prefs[a] \
+                                or jobs[a] not in prefs[b] or 0 in levels and min(levels) < 0:
                             continue
-                        trial = dict(assignments)
+                        trial = dict(jobs)
                         trial[a], trial[b] = trial[b], trial[a]
-                        trial_requests = requests_for(trial)
-                        if edge_load(trial_requests, edge) >= len(by_edge[edge]):
+                        tr = make_req(trial)
+                        if load(tr, edge) >= len(by_edge[edge]):
                             continue
-                        assignments.clear()
-                        assignments.update(trial)
-                        requests = trial_requests
+                        jobs, req = trial, tr
                         swapped = True
                         break
                     if swapped:
                         break
                 if swapped:
                     break
-                if not fixed_ids.intersection(by_edge[edge]):
+                if not fixed.intersection(by_edge[edge]):
                     continue
-                for pod_id in pods:
-                    original = assignments[pod_id]
-                    for path in prefs[pod_id][prefs[pod_id].index(original) + 1:]:
-                        if original.priority == 0 and path.priority < 0:
+                for p in pods:
+                    old = jobs[p]
+                    for path in prefs[p][prefs[p].index(old) + 1:]:
+                        if old.priority == 0 and path.priority < 0:
                             continue
-                        trial = dict(assignments)
-                        trial[pod_id] = path
-                        conformed = dict(trial)
-                        self.fix_load_assignments(conformed, prefs, current, graph, state, occupied, True)
-                        if conformed == trial:
-                            swapped, trial_requests = resolves(trial, edge)
+                        trial = dict(jobs)
+                        trial[p] = path
+                        if valid(trial, True):
+                            swapped, tr = resolves(trial, edge)
                             if swapped:
-                                assignments.clear()
-                                assignments.update(trial)
-                                requests = trial_requests
+                                jobs, req = trial, tr
                                 break
-                        capacity_trial = dict(trial)
-                        self.fix_load_assignments(capacity_trial, prefs, current, graph, state, occupied, False)
-                        if capacity_trial == trial:
+                        if valid(trial, False):
                             continue
-                        others = sorted(other_id for other_id, other_path in assignments.items()
-                            if other_id != pod_id and other_path == path and original in prefs[other_id])
-                        for other_id in others:
-                            pod_distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
-                            other_distance = 0 if current[other_id] == -1 else graph_distance(graph, current[other_id], path.nodes[0])
-                            if pod_distance >= other_distance:
+                        others = sorted(q for q, other in jobs.items() if q != p and other == path and old in prefs[q])
+                        for q in others:
+                            d1 = 0 if at[p] == -1 else graph_distance(graph, at[p], path.nodes[0])
+                            d2 = 0 if at[q] == -1 else graph_distance(graph, at[q], path.nodes[0])
+                            if d1 >= d2:
                                 continue
-                            trial = dict(assignments)
-                            trial[pod_id], trial[other_id] = trial[other_id], trial[pod_id]
-                            swapped, trial_requests = resolves(trial, edge)
+                            trial = dict(jobs)
+                            trial[p], trial[q] = trial[q], trial[p]
+                            swapped, tr = resolves(trial, edge)
                             if swapped:
-                                assignments.clear()
-                                assignments.update(trial)
-                                requests = trial_requests
+                                jobs, req = trial, tr
                                 break
                         if swapped:
                             break
@@ -1307,8 +1301,25 @@ class Planner:
                     break
             if not swapped:
                 break
-        return assignments, requests, self.allocate_tube_capacity(requests, state, result, day,
-            set(assignments) | set(locked) | set(fixed_jobs))
+        levels = {p: path.priority for p, path in (locked | jobs).items()}
+        levels.update((p, next(iter(paths)).priority) for p, paths in fixed_jobs.items() if paths)
+        by_edge = {}
+        for p, move in req.items():
+            by_edge.setdefault(route_key(*move), []).append(p)
+        normal_edges = Counter(route_key(*move) for p, move in req.items() if levels.get(p) == 0)
+        for edge, pods in sorted(by_edge.items()):
+            excess = len(pods) - state.tubes[edge]
+            normal = [p for p in pods if levels.get(p) == 0]
+            for p in sorted(p for p in pods if p in jobs and levels[p] < 0):
+                if excess <= 0 or not any(p < q for q in normal):
+                    continue
+                moves = [(a, b) for a in graph for b in graph[a]] if at[p] == -1 else [(at[p], b) for b in graph[at[p]]]
+                moves = [move for move in moves if route_key(*move) != edge and
+                    normal_edges[route_key(*move)] < state.tubes[route_key(*move)]]
+                if moves:
+                    req[p] = min(moves)
+                    excess -= 1
+        return jobs, req, self.allocate_tube_capacity(req, state, result, day, set(jobs) | set(locked) | set(fixed_jobs))
     def path_assignment_key(self, path: Load, pod_id: int, boarding: int, current: dict[int, int],
             delivered: Counter[int], graph: dict[int, list[int]]) -> tuple:
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])

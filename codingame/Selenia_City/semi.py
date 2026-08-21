@@ -59,8 +59,8 @@ def assignment_text(paths: set[Load], pod_id: int, requests: dict[int, Pair], mo
         carrying: set[int]) -> str:
     values = []
     for path in paths:
-        status = "   " if pod_id not in requests else "E! " if pod_id not in moves else ".. " if pod_id in carrying else \
-            "-> " if requests[pod_id] not in zip(path.nodes, path.nodes[1:]) else "   "
+        status = "   " if pod_id not in requests else "E! " if pod_id not in moves else \
+            "-> " if requests[pod_id] not in zip(path.nodes, path.nodes[1:]) else ".. " if pod_id in carrying else "   "
         values.append(status + "-".join(map(str, path.nodes)))
     return "/".join(values) or "   -"
 @dataclass(slots=True)

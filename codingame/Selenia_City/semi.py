@@ -14,7 +14,7 @@ REROUTE_COST = 250
 TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;POD 3;POD 4;POD 2"
+OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;POD 1;POD 2;POD 3;POD 4;POD 5"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1344,33 +1344,36 @@ class Planner:
         path_edges = {path: edges_of(path.nodes) for path in paths}
         distances = {(pod_id, path.nodes[0]): 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
             for pod_id in assignments for path in paths}
+        indexes = {pod_id: prefs[pod_id].index(path) for pod_id, path in assignments.items()}
         congestion = Counter()
-        removed = []
         while True:
             exceeded = overflow(counts)
             uneven = uniform_conflicts(counts) if exceeded is None and uniformity else set()
             if exceeded is None and not uneven:
                 break
             path = exceeded[0] if exceeded else min(uneven, key=lambda item: (item.pool, item.destination, item.nodes))
-            pod_id = max(owners[path], key=lambda item: (distances[item, path.nodes[0]], item))
-            owners[path].remove(pod_id)
-            counts[path] -= 1
-            del assignments[pod_id]
             edge = min(path_edges[path], key=lambda item: state.tubes[item]) if exceeded and exceeded[1] else None
-            removed.append((pod_id, path, edge))
-        for pod_id, original, edge in removed:
-            for path in prefs[pod_id]:
-                if path == original:
+            removed = []
+            while True:
+                pod_id = max(owners[path], key=lambda item: (distances[item, path.nodes[0]], item))
+                owners[path].remove(pod_id)
+                counts[path] -= 1
+                del assignments[pod_id]
+                removed.append(pod_id)
+                next_exceeded = overflow(counts)
+                next_uneven = uniform_conflicts(counts) if next_exceeded is None and uniformity else set()
+                if not (next_exceeded and next_exceeded[0] == path or path in next_uneven):
+                    break
+            for pod_id in removed:
+                indexes[pod_id] += 1
+                if indexes[pod_id] == len(prefs[pod_id]):
                     continue
-                trial = counts.copy()
-                trial[path] += 1
-                if overflow(trial) is not None or uniformity and uniform_conflicts(trial):
-                    continue
-                assignments[pod_id] = path
-                counts = trial
+                next_path = prefs[pod_id][indexes[pod_id]]
+                assignments[pod_id] = next_path
+                owners.setdefault(next_path, set()).add(pod_id)
+                counts[next_path] += 1
                 if edge:
                     congestion[edge] = 1
-                break
         return congestion
     def path_pod_requests(self, f_pods: list[tuple[int, PodPlan]], d_pods: list[tuple[int, PodPlan]],
             positions: dict[int, int], current: dict[int, int], pending: dict[int, Pair], assignments: dict[int, Load],

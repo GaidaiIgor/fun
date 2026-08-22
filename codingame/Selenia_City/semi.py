@@ -1246,7 +1246,8 @@ class Planner:
                     for b in pods:
                         levels = jobs[a].priority, jobs[b].priority
                         if a >= b or jobs[a] == jobs[b] or req[a] != req[b][::-1] or jobs[b] not in prefs[a] \
-                                or jobs[a] not in prefs[b] or 0 in levels and min(levels) < 0:
+                                or jobs[a] not in prefs[b] or 0 in levels and min(levels) < 0 and \
+                                not (jobs[a].priority < 0 and pending[a] != (-1, -1)):
                             continue
                         trial = dict(jobs)
                         trial[a], trial[b] = trial[b], trial[a]

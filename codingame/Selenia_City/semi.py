@@ -4,14 +4,8 @@ from heapq import heappop, heappush
 from math import inf, isqrt
 from operator import attrgetter
 import sys
-DAYS = 20
-MAX_DEGREE = 5
-MAX_PODS = 500
-POD_SIZE = 10
-POD_COST = 1000
-POD_REFUND = 750
-REROUTE_COST = 250
-TELEPORT_COST = 5000
+DAYS, MAX_DEGREE, MAX_PODS, POD_SIZE = 20, 5, 500, 10
+POD_COST, POD_REFUND, REROUTE_COST, TELEPORT_COST = 1000, 750, 250, 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
 OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;TUBE 1 2;TUBE 1 8;UPGRADE 1 8;POD 1;POD 2;POD 3;POD 4"
@@ -57,12 +51,9 @@ class Load:
         return self.h
 def assignment_text(paths: set[Load], pod_id: int, requests: dict[int, Pair], moves: dict[int, Pair],
         carrying: set[int]) -> str:
-    values = []
-    for path in paths:
-        status = "   " if pod_id not in requests else "E! " if pod_id not in moves else \
-            "-> " if requests[pod_id] not in zip(path.nodes, path.nodes[1:]) else ".. " if pod_id in carrying else "   "
-        values.append(status + "-".join(map(str, path.nodes)))
-    return "/".join(values) or "   -"
+    return "/".join(("   " if pod_id not in requests else "E! " if pod_id not in moves else
+        "-> " if requests[pod_id] not in zip(path.nodes, path.nodes[1:]) else ".. " if pod_id in carrying else "   ") +
+        "-".join(map(str, path.nodes)) for path in paths) or "   -"
 @dataclass(slots=True)
 class PodPlan:
     path: list[int] = field(default_factory=list)
@@ -78,15 +69,12 @@ class Bundle:
     label: str = "empty"
     path_edges: tuple[Pair, ...] = ()
     destination: int = -1
-    path_length: int = 0
+    hops: int = 0
     path: tuple[int, ...] = ()
     debug_id: str = ""
-    debug_chosen: str = ""
-    round_number: int = 0
-    prune_unused: bool = False
-    @property
-    def fingerprint(self) -> tuple:
-        return self.tubes, self.teleport, self.pod_specs, self.upgrades
+    chosen: str = ""
+    rnd: int = 0
+    prune: bool = False
 @dataclass(slots=True)
 class State:
     tubes: dict[Pair, int]
@@ -406,7 +394,7 @@ class Planner:
         plans = []
         for option in options:
             bundle, state = option.bundle, option.state
-            if bundle.fingerprint == Bundle(owner).fingerprint and not bundle.path_edges:
+            if not bundle.tubes and bundle.teleport == (-1, -1) and not bundle.pod_specs and not bundle.upgrades and not bundle.path_edges:
                 continue
             state_key = tuple(sorted(state.tubes.items())), tuple(sorted(state.teleports.items())), \
                 tuple(sorted((pod_id, tuple(pod.path), pod.dynamic) for pod_id, pod in state.pods.items())), tuple(state.features)
@@ -418,7 +406,7 @@ class Planner:
             action_text = self.state_action_text(state, current_state) if FULL_DEBUG else ""
             plans.append((option, action_text))
         branch = None
-        round_number = -1
+        rnd = -1
         for option, action_text in plans:
             bundle, state = option.bundle, option.state
             next_branch = bundle.teleport != (-1, -1), bundle.path
@@ -427,11 +415,11 @@ class Planner:
                 path_text = ", ".join(map(str, bundle.path))
                 mode = "teleport" if next_branch[0] else "path"
                 debug(f"    Considering {mode}=[{path_text}]:")
-                round_number = -1
-            if not next_branch[0] and bundle.round_number != round_number:
-                round_number = bundle.round_number
-                debug(f"      Round {round_number}:")
-            prefix = "-> " if bundle.debug_chosen else ""
+                rnd = -1
+            if not next_branch[0] and bundle.rnd != rnd:
+                rnd = bundle.rnd
+                debug(f"      Round {rnd}:")
+            prefix = "-> " if bundle.chosen else ""
             indent = "      " if next_branch[0] else "        "
             text = f"{indent}{prefix}{bundle.debug_id}: action={action_text}, "
             costs = state.cost, state.cost - current_state.cost, state.cost - option.round_cost
@@ -471,7 +459,7 @@ class Planner:
             else:
                 bases.extend(self.shortest_route_bundles(owner, group, module_ids, hop_limit, state))
         for base in bases:
-            base.prune_unused = base.path_length < current_length
+            base.prune = base.hops < current_length
         options = []
         seen = set()
         for base in bases:
@@ -482,7 +470,7 @@ class Planner:
             options.extend(self.path_option_stack(owner, group, base, layouts, state, current_result.score, state.cost))
         if allow_shorter:
             for bundle in self.teleport_bundles(owner, group, module_ids, state):
-                bundle.prune_unused = True
+                bundle.prune = True
                 options.extend(option for option, _ in self.base_options(bundle, layouts, state, current_result.score, state.cost))
         return options
     def path_option_stack(self, owner: Owner, group: Pool, base: Bundle, layouts: tuple[Bundle, ...],
@@ -496,19 +484,19 @@ class Planner:
                 affordable.append((efficiency, gain, -cost, option))
         if not affordable:
             return result
-        parent_efficiency, _, _, parent = max(affordable, key=lambda item: item[:3])
-        parent.bundle.debug_chosen = parent.bundle.debug_id
-        result.extend(self.throughput_options(owner, group, parent, parent_efficiency))
+        parent_eff, _, _, parent = max(affordable, key=lambda item: item[:3])
+        parent.bundle.chosen = parent.bundle.debug_id
+        result.extend(self.throughput_options(owner, group, parent, parent_eff))
         return result
     def throughput_options(self, owner: Owner, group: Pool, parent: Option,
-            parent_efficiency: float) -> list[Option]:
+            parent_eff: float) -> list[Option]:
         result = []
-        round_number = 1
+        rnd = 1
         allow_reroute = True
         iteration_score = parent.round_score
         iteration_cost = parent.round_cost
-        positive_iteration = self.score_state(parent.state).score > iteration_score
-        parent_iteration_efficiency = parent_efficiency
+        positive = self.score_state(parent.state).score > iteration_score
+        iteration_efficiency = parent_eff
         while parent.state.cost <= self.resources:
             simulation = self.cached_simulate(parent.state)
             parent_score = self.score_state(parent.state).score
@@ -517,14 +505,13 @@ class Planner:
             if reroute_id is not None:
                 reroute_bundle = Bundle(owner, pod_specs=(reroute_id,), label=f"{parent.bundle.label}-reroute",
                     path_edges=parent.bundle.path_edges, destination=parent.bundle.destination,
-                    path_length=parent.bundle.path_length, path=parent.bundle.path, round_number=round_number)
+                    hops=parent.bundle.hops, path=parent.bundle.path, rnd=rnd)
                 reroute_option = Option(reroute_bundle, parent.layouts, parent.layout_key,
                     self.replay_bundle_on_state(parent.state, reroute_bundle), parent_score, parent.state.cost)
                 reroute_bundle.debug_id = self.bundle_debug_id(reroute_option.state)
                 options.append((reroute_option, self.option_metrics(reroute_option)))
             pod_bundle = Bundle(owner, pod_specs=(0,), label=f"{parent.bundle.label}-pod", path_edges=parent.bundle.path_edges,
-                destination=parent.bundle.destination, path_length=parent.bundle.path_length, path=parent.bundle.path,
-                round_number=round_number)
+                destination=parent.bundle.destination, hops=parent.bundle.hops, path=parent.bundle.path, rnd=rnd)
             pod_option = Option(pod_bundle, parent.layouts, parent.layout_key,
                 self.replay_bundle_on_state(parent.state, pod_bundle), parent_score, parent.state.cost)
             pod_bundle.debug_id = self.bundle_debug_id(pod_option.state)
@@ -535,8 +522,8 @@ class Planner:
             upgrade_edge = self.best_counter_edge(parent.bundle.path_edges, simulation.congestion_by_edge)
             if upgrade_edge != (-1, -1):
                 upgrade_bundle = Bundle(owner, upgrades=(upgrade_edge,), label=f"{parent.bundle.label}-upgrade",
-                    path_edges=parent.bundle.path_edges, destination=parent.bundle.destination, path_length=parent.bundle.path_length,
-                    path=parent.bundle.path, round_number=round_number)
+                    path_edges=parent.bundle.path_edges, destination=parent.bundle.destination, hops=parent.bundle.hops,
+                    path=parent.bundle.path, rnd=rnd)
                 upgrade_option = Option(upgrade_bundle, parent.layouts, parent.layout_key,
                     self.replay_bundle_on_state(parent.state, upgrade_bundle), parent_score, parent.state.cost)
                 upgrade_bundle.debug_id = self.bundle_debug_id(upgrade_option.state)
@@ -551,17 +538,17 @@ class Planner:
             else:
                 upgrade = None
             efficiency, _, _, next_parent = upgrade or max(affordable, key=lambda item: item[:3])
-            next_parent.bundle.debug_chosen = next_parent.bundle.debug_id
-            positive_iteration |= any(option.round_score + round_gain > iteration_score
+            next_parent.bundle.chosen = next_parent.bundle.debug_id
+            positive |= any(option.round_score + round_gain > iteration_score
                 for _, round_gain, _, option in affordable)
-            next_iteration_efficiency = score_efficiency(self.score_state(next_parent.state).score - iteration_score,
+            next_efficiency = score_efficiency(self.score_state(next_parent.state).score - iteration_score,
                 next_parent.state.cost - iteration_cost)
-            if positive_iteration and efficiency < parent_efficiency and next_iteration_efficiency < parent_iteration_efficiency:
+            if positive and efficiency < parent_eff and next_efficiency < iteration_efficiency:
                 break
             if len(next_parent.state.pods) > len(parent.state.pods):
                 allow_reroute = False
-            parent, parent_efficiency, parent_iteration_efficiency = next_parent, efficiency, next_iteration_efficiency
-            round_number += 1
+            parent, parent_eff, iteration_efficiency = next_parent, efficiency, next_efficiency
+            rnd += 1
         return result
     def option_metrics(self, option: Option) -> tuple[int, int, float]:
         cost = option.state.cost - option.round_cost
@@ -572,9 +559,9 @@ class Planner:
     def base_options(self, base: Bundle, layouts: tuple[Bundle, ...], inherited_state: State,
             checkpoint_score: int, checkpoint_cost: int) -> list[tuple[Option, float]]:
         next_layouts = layouts
-        if base.tubes or base.teleport != (-1, -1) or base.prune_unused:
+        if base.tubes or base.teleport != (-1, -1) or base.prune:
             layout = Bundle(base.pool, tubes=base.tubes, teleport=base.teleport, label=base.label, path_edges=base.path_edges,
-                destination=base.destination, path_length=base.path_length, path=base.path, prune_unused=base.prune_unused)
+                destination=base.destination, hops=base.hops, path=base.path, prune=base.prune)
             next_layouts = (*layouts, layout)
         layout_state = self.replay_bundle_sequence(next_layouts)
         key = self.layout_key(layout_state)
@@ -631,7 +618,7 @@ class Planner:
             return []
         tubes = tuple(edge for edge in path_edges if edge not in state.tubes)
         return [Bundle(owner, tubes=tubes, label=label, path_edges=path_edges,
-            destination=path[-1], path_length=len(path) - 1, path=tuple(path))]
+            destination=path[-1], hops=len(path) - 1, path=tuple(path))]
     def connected_path_edges(self, path: list[int], state: State) -> tuple[Pair, ...]:
         base_edges = edges_of(path)
         network_nodes = {node for edge in state.tubes for node in edge}
@@ -717,7 +704,7 @@ class Planner:
         state = State(dict(self.tubes), dict(self.teleports), pods)
         for bundle in selected:
             self.apply_bundle(state, bundle)
-            if bundle.prune_unused:
+            if bundle.prune:
                 self.prune_uncommitted_infrastructure(state)
         return state
     def prune_uncommitted_infrastructure(self, state: State):
@@ -1177,13 +1164,6 @@ class Planner:
             passenger_priorities: dict[tuple[Pool, int, int], int], reserved_passengers: set[int], delivered: Counter[int],
             graph: dict[int, list[int]], day: int) \
             -> tuple[dict[int, Load], dict[int, list[Load]]]:
-        def follows_lock(path: Load, pod_id: int) -> bool:
-            """Checks whether path follows the pending move of pod_id and returns the result."""
-            if pending[pod_id] == (-1, -1):
-                return True
-            source_id = current[pod_id]
-            target_id = path.nodes[1] if source_id == path.nodes[0] else next_step(graph, source_id, path.nodes[0])
-            return (source_id, target_id) == pending[pod_id]
         assignments = {}
         prefs = {}
         inspected = set(reserved_passengers)
@@ -1191,7 +1171,9 @@ class Planner:
         eligible = {edge: [passenger for passenger in queues.get(edge[0], [])
             if edge in wanted_edges[edge[0], passenger.kind]] for edge in edges}
         for pod_id, _ in d_pods:
-            options = [path for path in active if follows_lock(path, pod_id) and
+            source_id = current[pod_id]
+            options = [path for path in active if (pending[pod_id] == (-1, -1) or
+                (source_id, path.nodes[1] if source_id == path.nodes[0] else next_step(graph, source_id, path.nodes[0])) == pending[pod_id]) and
                 (0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])) + len(path.nodes) - 1 <= DAYS - day]
             inspection_batches = {edge: [passenger for passenger in eligible[edge] if passenger.id not in inspected][:POD_SIZE]
                 for edge in {path.nodes[:2] for path in options}}
@@ -1217,8 +1199,27 @@ class Planner:
             d_pods: list[tuple[int, PodPlan]], fixed_jobs: dict[int, set[Load]],
             positions: dict[int, int], at: dict[int, int], pending: dict[int, Pair], graph: dict[int, list[int]],
             occupied: Counter[Pair], result: Result, state: State, day: int) -> tuple:
-        def make_req(values: dict[int, Load]) -> dict[int, Pair]:
-            return self.path_pod_requests(f_pods, d_pods, positions, at, pending, values, fixed_jobs, graph)
+        def make_req(v: dict[int, Load]) -> dict[int, Pair]:
+            r = self.path_pod_requests(f_pods, d_pods, positions, at, pending, v, fixed_jobs, graph)
+            c = Counter(route_key(*move) for move in r.values())
+            for e in sorted(c):
+                while c[e] > state.tubes[e]:
+                    for p in sorted(p for p, move in r.items() if route_key(*move) == e and p in v):
+                        if pending[p] != (-1, -1) or at[p] in (-1, v[p].nodes[0]):
+                            continue
+                        t = v[p].nodes[0]
+                        d = graph_distance(graph, at[p], t)
+                        options = [n for n in graph[at[p]] if route_key(at[p], n) != e and c[route_key(at[p], n)] <
+                            state.tubes[route_key(at[p], n)] and graph_distance(graph, n, t) <= d]
+                        if options:
+                            n = min(options, key=lambda item: (graph_distance(graph, item, t), item))
+                            c[e] -= 1
+                            c[route_key(at[p], n)] += 1
+                            r[p] = at[p], n
+                            break
+                    else:
+                        break
+            return r
         def load(values: dict[int, Pair], edge: Pair) -> int:
             return sum(route_key(*move) == edge for move in values.values())
         def resolves(trial: dict[int, Load], edge: Pair) -> tuple[bool, dict[int, Pair]]:
@@ -1326,9 +1327,6 @@ class Planner:
             uniform: bool) -> Counter[Pair]:
         def load_cap(path: Load) -> int:
             return (path.cap + POD_SIZE - 1) // POD_SIZE
-        def slots(path: Load) -> int:
-            """Calculates the available capacity slots for path and returns their count."""
-            return min(load_cap(path), sum(max(0, state.tubes[edge] - occupied[edge]) for edge in path_edges[path]))
         def allocation(values: Counter[Load]) -> tuple[int, tuple[Load, bool]]:
             def assign(path: Load, seen: set[tuple[Pair, int]]) -> bool:
                 for edge in path_edges[path]:
@@ -1343,7 +1341,8 @@ class Planner:
                 return False
             matches = {}
             failure = None
-            for path in sorted(paths, key=lambda item: (slots(item), -item.priority, item.pool, item.destination, item.nodes)):
+            for path in sorted(paths, key=lambda item: (min(load_cap(item), sum(max(0, state.tubes[edge] - occupied[edge])
+                    for edge in path_edges[item])), -item.priority, item.pool, item.destination, item.nodes)):
                 if values[path] > load_cap(path) and failure is None:
                     failure = path, False
                 for _ in range(min(values[path], load_cap(path))):

@@ -1199,9 +1199,10 @@ class Planner:
             d_pods: list[tuple[int, PodPlan]], fixed_jobs: dict[int, set[Load]],
             positions: dict[int, int], at: dict[int, int], pending: dict[int, Pair], graph: dict[int, list[int]],
             occupied: Counter[Pair], result: Result, state: State, day: int) -> tuple:
-        def make_req(v: dict[int, Load]) -> dict[int, Pair]:
+        def make_req(v: dict[int, Load]) -> tuple[dict[int, Pair], set[Pair]]:
             r = self.path_pod_requests(f_pods, d_pods, positions, at, pending, v, fixed_jobs, graph)
             c = Counter(route_key(*move) for move in r.values())
+            extra = set()
             for e in sorted(c):
                 while c[e] > state.tubes[e]:
                     for p in sorted(p for p, move in r.items() if route_key(*move) == e and p in v):
@@ -1213,23 +1214,25 @@ class Planner:
                             state.tubes[route_key(at[p], n)] and graph_distance(graph, n, t) <= d]
                         if options:
                             n = min(options, key=lambda item: (graph_distance(graph, item, t), item))
+                            if graph_distance(graph, n, t) == d:
+                                extra.add(e)
                             c[e] -= 1
                             c[route_key(at[p], n)] += 1
                             r[p] = at[p], n
                             break
                     else:
                         break
-            return r
+            return r, extra
         def load(values: dict[int, Pair], edge: Pair) -> int:
             return sum(route_key(*move) == edge for move in values.values())
         def resolves(trial: dict[int, Load], edge: Pair) -> tuple[bool, dict[int, Pair]]:
-            tr = make_req(trial)
+            tr = make_req(trial)[0]
             return load(tr, edge) <= state.tubes[edge], tr
         def valid(trial: dict[int, Load], uniform: bool) -> bool:
             checked = dict(trial)
             self.fix_load_assignments(checked, prefs, at, graph, state, occupied, uniform)
             return checked == trial
-        req = make_req(jobs)
+        req = make_req(jobs)[0]
         fixed = {p for p, _ in f_pods} | {p for p, _ in d_pods if pending[p] != (-1, -1)}
         seen = set()
         while True:
@@ -1252,7 +1255,7 @@ class Planner:
                             continue
                         trial = dict(jobs)
                         trial[a], trial[b] = trial[b], trial[a]
-                        tr = make_req(trial)
+                        tr = make_req(trial)[0]
                         if load(tr, edge) >= len(by_edge[edge]):
                             continue
                         jobs, req = trial, tr
@@ -1298,6 +1301,10 @@ class Planner:
                     break
             if not swapped:
                 break
+        req, extra = make_req(jobs)
+        for edge in extra - result.congestion_by_day.get(day, Counter()).keys():
+            result.congestion_by_edge[edge] += 1
+            result.congestion_by_day.setdefault(day, Counter())[edge] = 1
         levels = {p: path.priority for p, path in jobs.items()}
         levels.update((p, next(iter(paths)).priority) for p, paths in fixed_jobs.items() if paths)
         by_edge = {}

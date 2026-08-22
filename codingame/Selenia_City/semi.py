@@ -1326,6 +1326,9 @@ class Planner:
             uniform: bool) -> Counter[Pair]:
         def load_cap(path: Load) -> int:
             return (path.cap + POD_SIZE - 1) // POD_SIZE
+        def slots(path: Load) -> int:
+            """Calculates the available capacity slots for path and returns their count."""
+            return min(load_cap(path), sum(max(0, state.tubes[edge] - occupied[edge]) for edge in path_edges[path]))
         def allocation(values: Counter[Load]) -> tuple[int, tuple[Load, bool]]:
             def assign(path: Load, seen: set[tuple[Pair, int]]) -> bool:
                 for edge in path_edges[path]:
@@ -1340,7 +1343,7 @@ class Planner:
                 return False
             matches = {}
             failure = None
-            for path in sorted(paths, key=lambda item: (-item.priority, item.pool, item.destination, item.nodes)):
+            for path in sorted(paths, key=lambda item: (slots(item), -item.priority, item.pool, item.destination, item.nodes)):
                 if values[path] > load_cap(path) and failure is None:
                     failure = path, False
                 for _ in range(min(values[path], load_cap(path))):

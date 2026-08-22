@@ -14,7 +14,7 @@ REROUTE_COST = 250
 TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;UPGRADE 3 4;POD 1;POD 3;POD 4"
+OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;TUBE 1 2;TUBE 1 8;UPGRADE 1 8;POD 1;POD 2;POD 3;POD 4"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1349,13 +1349,14 @@ class Planner:
             return len(matches), failure
         def overflow(values: Counter[Load]) -> tuple[Load, bool]:
             return allocation(values)[1]
-        def can_add(path: Load, values: Counter[Load]) -> bool:
+        def can_move(source: Load, target: Load, values: Counter[Load]) -> bool:
             trial = values.copy()
-            trial[path] += 1
+            trial[source] -= 1
+            trial[target] += 1
             return overflow(trial) is None
         def uniform_conflicts(values: Counter[Load]) -> set[Load]:
             return {path for path in paths if values[path] and any(candidate.priority == path.priority and values[candidate] < values[path] - 1
-                and can_add(candidate, values) for candidate in paths)}
+                and can_move(path, candidate, values) for candidate in paths)}
         counts = Counter(assignments.values())
         owners = {}
         for pod_id, path in assignments.items():

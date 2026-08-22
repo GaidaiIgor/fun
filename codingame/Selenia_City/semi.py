@@ -1351,14 +1351,9 @@ class Planner:
             return len(matches), failure
         def overflow(values: Counter[Load]) -> tuple[Load, bool]:
             return allocation(values)[1]
-        def can_move(source: Load, target: Load, values: Counter[Load]) -> bool:
-            trial = values.copy()
-            trial[source] -= 1
-            trial[target] += 1
-            return overflow(trial) is None
         def uniform_conflicts(values: Counter[Load]) -> set[Load]:
             return {path for path in paths if values[path] and any(candidate.priority == path.priority and values[candidate] < values[path] - 1
-                and can_move(path, candidate, values) for candidate in paths)}
+                and overflow(Counter({candidate: values[candidate] + 1})) is None for candidate in paths)}
         counts = Counter(assignments.values())
         owners = {}
         for pod_id, path in assignments.items():
@@ -1371,8 +1366,8 @@ class Planner:
         indexes = {pod_id: prefs[pod_id].index(path) for pod_id, path in assignments.items()}
         congestion = Counter()
         while True:
-            exceeded = overflow(counts)
-            uneven = uniform_conflicts(counts) if exceeded is None and uniform else set()
+            uneven = uniform_conflicts(counts) if uniform else set()
+            exceeded = None if uneven else overflow(counts)
             if exceeded is None and not uneven:
                 break
             path = exceeded[0] if exceeded else min(uneven, key=lambda item: (item.pool, item.destination, item.nodes))
@@ -1384,8 +1379,8 @@ class Planner:
                 counts[path] -= 1
                 del assignments[pod_id]
                 removed.append(pod_id)
-                next_exceeded = overflow(counts)
-                next_uneven = uniform_conflicts(counts) if next_exceeded is None and uniform else set()
+                next_uneven = uniform_conflicts(counts) if uniform else set()
+                next_exceeded = None if next_uneven else overflow(counts)
                 if not (next_exceeded and next_exceeded[0] == path or path in next_uneven):
                     break
             for pod_id in removed:

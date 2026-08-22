@@ -1210,10 +1210,10 @@ class Planner:
                             continue
                         t = v[p].nodes[0]
                         d = graph_distance(graph, at[p], t)
-                        options = [n for n in graph[at[p]] if route_key(at[p], n) != e and c[route_key(at[p], n)] <
+                        opts = [n for n in graph[at[p]] if route_key(at[p], n) != e and c[route_key(at[p], n)] <
                             state.tubes[route_key(at[p], n)] and graph_distance(graph, n, t) <= d]
-                        if options:
-                            n = min(options, key=lambda item: (graph_distance(graph, item, t), item))
+                        if opts:
+                            n = min(opts, key=lambda item: (graph_distance(graph, item, t), item))
                             if graph_distance(graph, n, t) == d:
                                 extra.add(e)
                             c[e] -= 1
@@ -1233,7 +1233,8 @@ class Planner:
             self.fix_load_assignments(checked, prefs, at, graph, state, occupied, uniform)
             return checked == trial
         req = make_req(jobs)[0]
-        fixed = {p for p, _ in f_pods} | {p for p, _ in d_pods if pending[p] != (-1, -1)}
+        self.allocate_tube_capacity(req, state, result, day, set(jobs) | set(fixed_jobs))
+        lock = {p for p, _ in f_pods} | {p for p, _ in d_pods if pending[p] != (-1, -1)}
         seen = set()
         while True:
             key = tuple(sorted(jobs.items()))
@@ -1243,7 +1244,7 @@ class Planner:
             by_edge = {}
             for p, move in req.items():
                 by_edge.setdefault(route_key(*move), []).append(p)
-            swapped = False
+            done = False
             for edge in sorted(edge for edge, pods in by_edge.items() if len(pods) > state.tubes[edge]):
                 pods = sorted(p for p in by_edge[edge] if p in jobs)
                 for a in pods:
@@ -1259,13 +1260,13 @@ class Planner:
                         if load(tr, edge) >= len(by_edge[edge]):
                             continue
                         jobs, req = trial, tr
-                        swapped = True
+                        done = True
                         break
-                    if swapped:
+                    if done:
                         break
-                if swapped:
+                if done:
                     break
-                if not fixed.intersection(by_edge[edge]):
+                if not lock & set(by_edge[edge]):
                     continue
                 for p in pods:
                     old = jobs[p]
@@ -1275,8 +1276,8 @@ class Planner:
                         trial = dict(jobs)
                         trial[p] = path
                         if valid(trial, True):
-                            swapped, tr = resolves(trial, edge)
-                            if swapped:
+                            done, tr = resolves(trial, edge)
+                            if done:
                                 jobs, req = trial, tr
                                 break
                         if valid(trial, False):
@@ -1289,17 +1290,17 @@ class Planner:
                                 continue
                             trial = dict(jobs)
                             trial[p], trial[q] = trial[q], trial[p]
-                            swapped, tr = resolves(trial, edge)
-                            if swapped:
+                            done, tr = resolves(trial, edge)
+                            if done:
                                 jobs, req = trial, tr
                                 break
-                        if swapped:
+                        if done:
                             break
-                    if swapped:
+                    if done:
                         break
-                if swapped:
+                if done:
                     break
-            if not swapped:
+            if not done:
                 break
         req, extra = make_req(jobs)
         for edge in extra - result.congestion_by_day.get(day, Counter()).keys():
@@ -1551,10 +1552,10 @@ class Planner:
             capacity = state.tubes[edge]
             selected = sorted(pods)[:capacity]
             if any(pod_id in assigned for pod_id, _ in sorted(pods)[capacity:]):
-                day_congestion = result.congestion_by_day.setdefault(day, Counter())
-                if not day_congestion[edge]:
+                daily = result.congestion_by_day.setdefault(day, Counter())
+                if not daily[edge]:
                     result.congestion_by_edge[edge] += 1
-                    day_congestion[edge] = 1
+                    daily[edge] = 1
             for pod_id, move in selected:
                 moves[pod_id] = move
         return moves

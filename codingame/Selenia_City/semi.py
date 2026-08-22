@@ -14,7 +14,7 @@ REROUTE_COST = 250
 TELEPORT_COST = 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;POD 1;POD 2;POD 3;POD 4;POD 5"
+OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;UPGRADE 3 4;POD 1;POD 3;POD 4"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -867,7 +867,6 @@ class Planner:
         positions = {pod_id: 0 for pod_id, _ in f_pods}
         dynamic_current = {pod_id: -1 for pod_id, _ in d_pods}
         dynamic_pending = {pod_id: (-1, -1) for pod_id, _ in d_pods}
-        locked_assignments = {}
         dynamic_paths = {pod_id: [] for pod_id, _ in d_pods}
         pod_assignments = {pod_id: [] for pod_id in state.pods}
         arrivals = Counter()
@@ -920,39 +919,33 @@ class Planner:
                 next_index = fixed_next_index(pod.path, index)
                 if pod_id in fixed_jobs and next_index != index:
                     occupied[route_key(pod.path[index], pod.path[next_index])] += 1
-            locked_ids = {pod_id for pod_id, _ in d_pods if dynamic_pending[pod_id] != (-1, -1)}
-            locked = {pod_id: locked_assignments[pod_id] for pod_id in locked_ids if pod_id in locked_assignments}
-            for pod_id in locked_ids:
-                occupied[route_key(*dynamic_pending[pod_id])] += 1
-            free_pods = [(pod_id, pod) for pod_id, pod in d_pods if pod_id not in locked_ids]
-            assignments, prefs = self.dispatch_dynamic_paths(active, free_pods, dynamic_current, queues,
+            assignments, prefs = self.dispatch_dynamic_paths(active, d_pods, dynamic_current, dynamic_pending, queues,
                 wanted_edges, passenger_priorities, reserved_passengers, result.delivered_by_module, graph, day)
             if FULL_DEBUG:
-                i_jobs = locked | assignments
-                i_req = self.path_pod_requests(f_pods, d_pods, positions, dynamic_current, dynamic_pending, i_jobs, fixed_jobs, graph)
+                i_jobs = assignments.copy()
+                i_req = self.path_pod_requests(f_pods, d_pods, positions, dynamic_current, dynamic_pending, assignments, fixed_jobs, graph)
                 i_moves = self.allocate_tube_capacity(i_req, state, result, day, set())
                 i_at = {pod_id: pod.path[positions[pod_id]] if not pod.dynamic else
                     dynamic_current[pod_id] if dynamic_current[pod_id] != -1 else i_req.get(pod_id, ("-",))[0]
                     for pod_id, pod in state.pods.items()}
                 i_carry = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, i_moves, positions.copy(), dynamic_current.copy(), dynamic_pending.copy())
-            cap = self.fix_load_assignments(assignments, prefs, dynamic_current, graph, state, occupied,
-                True, Counter(path.nodes for path in locked.values()))
+            cap = self.fix_load_assignments(assignments, prefs, dynamic_current, graph, state, occupied, True)
             result.congestion_by_edge.update(cap)
             if cap:
                 result.congestion_by_day.setdefault(day, Counter()).update(cap)
             if FULL_DEBUG:
-                c_jobs = locked | assignments
-                c_req = self.path_pod_requests(f_pods, d_pods, positions, dynamic_current, dynamic_pending, c_jobs, fixed_jobs, graph)
+                c_jobs = assignments.copy()
+                c_req = self.path_pod_requests(f_pods, d_pods, positions, dynamic_current, dynamic_pending, assignments, fixed_jobs, graph)
                 c_moves = self.allocate_tube_capacity(c_req, state, result, day, set())
                 c_at = {pod_id: pod.path[positions[pod_id]] if not pod.dynamic else
                     dynamic_current[pod_id] if dynamic_current[pod_id] != -1 else c_req.get(pod_id, ("-",))[0]
                     for pod_id, pod in state.pods.items()}
                 c_carry = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, c_moves, positions.copy(), dynamic_current.copy(), dynamic_pending.copy())
-            assignments, requests, moves = self.resolve_edge_conflicts(assignments, prefs, locked, f_pods, d_pods,
+            assignments, requests, moves = self.resolve_edge_conflicts(assignments, prefs, f_pods, d_pods,
                 fixed_jobs, positions, dynamic_current, dynamic_pending, graph, occupied, result, state, day)
-            day_assignments = locked | assignments
+            day_assignments = assignments
             for pod_id, _ in d_pods:
                 pod_assignments[pod_id].append(day_assignments[pod_id].nodes if pod_id in day_assignments else ())
             locations = {pod_id: pod.path[positions[pod_id]] if not pod.dynamic else
@@ -962,10 +955,6 @@ class Planner:
                 if dynamic_pending[pod_id] != (-1, -1) or pod_id not in requests:
                     continue
                 dynamic_pending[pod_id] = requests[pod_id]
-                if pod_id in assignments:
-                    locked_assignments[pod_id] = assignments[pod_id]
-                else:
-                    locked_assignments.pop(pod_id, None)
                 if dynamic_current[pod_id] == -1:
                     dynamic_current[pod_id] = requests[pod_id][0]
                     dynamic_paths[pod_id].append(requests[pod_id][0])
@@ -1184,10 +1173,17 @@ class Planner:
             runs.append(tuple(run))
         return runs
     def dispatch_dynamic_paths(self, active: list[Load], d_pods: list[tuple[int, PodPlan]], current: dict[int, int],
-            queues: dict[int, list[Person]], wanted_edges: dict[tuple[int, int], tuple[Pair, ...]],
+            pending: dict[int, Pair], queues: dict[int, list[Person]], wanted_edges: dict[tuple[int, int], tuple[Pair, ...]],
             passenger_priorities: dict[tuple[Pool, int, int], int], reserved_passengers: set[int], delivered: Counter[int],
             graph: dict[int, list[int]], day: int) \
             -> tuple[dict[int, Load], dict[int, list[Load]]]:
+        def follows_lock(path: Load, pod_id: int) -> bool:
+            """Checks whether path follows the pending move of pod_id and returns the result."""
+            if pending[pod_id] == (-1, -1):
+                return True
+            source_id = current[pod_id]
+            target_id = path.nodes[1] if source_id == path.nodes[0] else next_step(graph, source_id, path.nodes[0])
+            return (source_id, target_id) == pending[pod_id]
         assignments = {}
         prefs = {}
         inspected = set(reserved_passengers)
@@ -1195,8 +1191,8 @@ class Planner:
         eligible = {edge: [passenger for passenger in queues.get(edge[0], [])
             if edge in wanted_edges[edge[0], passenger.kind]] for edge in edges}
         for pod_id, _ in d_pods:
-            options = [path for path in active if (0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0]))
-                + len(path.nodes) - 1 <= DAYS - day]
+            options = [path for path in active if follows_lock(path, pod_id) and
+                (0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])) + len(path.nodes) - 1 <= DAYS - day]
             inspection_batches = {edge: [passenger for passenger in eligible[edge] if passenger.id not in inspected][:POD_SIZE]
                 for edge in {path.nodes[:2] for path in options}}
             evaluated = []
@@ -1217,12 +1213,12 @@ class Planner:
                 assignments[pod_id] = prefs[pod_id][0]
                 inspected.update(passenger.id for passenger in inspection_batches[assignments[pod_id].nodes[:2]])
         return assignments, prefs
-    def resolve_edge_conflicts(self, jobs: dict[int, Load], prefs: dict[int, list[Load]], locked: dict[int, Load],
-            f_pods: list[tuple[int, PodPlan]], d_pods: list[tuple[int, PodPlan]], fixed_jobs: dict[int, set[Load]],
+    def resolve_edge_conflicts(self, jobs: dict[int, Load], prefs: dict[int, list[Load]], f_pods: list[tuple[int, PodPlan]],
+            d_pods: list[tuple[int, PodPlan]], fixed_jobs: dict[int, set[Load]],
             positions: dict[int, int], at: dict[int, int], pending: dict[int, Pair], graph: dict[int, list[int]],
             occupied: Counter[Pair], result: Result, state: State, day: int) -> tuple:
         def make_req(values: dict[int, Load]) -> dict[int, Pair]:
-            return self.path_pod_requests(f_pods, d_pods, positions, at, pending, locked | values, fixed_jobs, graph)
+            return self.path_pod_requests(f_pods, d_pods, positions, at, pending, values, fixed_jobs, graph)
         def load(values: dict[int, Pair], edge: Pair) -> int:
             return sum(route_key(*move) == edge for move in values.values())
         def resolves(trial: dict[int, Load], edge: Pair) -> tuple[bool, dict[int, Pair]]:
@@ -1230,8 +1226,7 @@ class Planner:
             return load(tr, edge) <= state.tubes[edge], tr
         def valid(trial: dict[int, Load], uniform: bool) -> bool:
             checked = dict(trial)
-            self.fix_load_assignments(checked, prefs, at, graph, state, occupied, uniform,
-                Counter(path.nodes for path in locked.values()))
+            self.fix_load_assignments(checked, prefs, at, graph, state, occupied, uniform)
             return checked == trial
         req = make_req(jobs)
         fixed = {p for p, _ in f_pods} | {p for p, _ in d_pods if pending[p] != (-1, -1)}
@@ -1301,7 +1296,7 @@ class Planner:
                     break
             if not swapped:
                 break
-        levels = {p: path.priority for p, path in (locked | jobs).items()}
+        levels = {p: path.priority for p, path in jobs.items()}
         levels.update((p, next(iter(paths)).priority) for p, paths in fixed_jobs.items() if paths)
         by_edge = {}
         for p, move in req.items():
@@ -1319,7 +1314,7 @@ class Planner:
                 if moves:
                     req[p] = min(moves)
                     excess -= 1
-        return jobs, req, self.allocate_tube_capacity(req, state, result, day, set(jobs) | set(locked) | set(fixed_jobs))
+        return jobs, req, self.allocate_tube_capacity(req, state, result, day, set(jobs) | set(fixed_jobs))
     def path_assignment_key(self, path: Load, pod_id: int, boarding: int, current: dict[int, int],
             delivered: Counter[int], graph: dict[int, list[int]]) -> tuple:
         distance = 0 if current[pod_id] == -1 else graph_distance(graph, current[pod_id], path.nodes[0])
@@ -1327,9 +1322,9 @@ class Planner:
             -path.cap, path.pool, path.destination, path.nodes
     def fix_load_assignments(self, assignments: dict[int, Load], prefs: dict[int, list[Load]],
             current: dict[int, int], graph: dict[int, list[int]], state: State, occupied: Counter[Pair],
-            uniform: bool, cap: Counter[Path]) -> Counter[Pair]:
+            uniform: bool) -> Counter[Pair]:
         def load_cap(path: Load) -> int:
-            return max(0, (path.cap + POD_SIZE - 1) // POD_SIZE - cap[path.nodes])
+            return (path.cap + POD_SIZE - 1) // POD_SIZE
         def allocation(values: Counter[Load]) -> tuple[int, tuple[Load, bool]]:
             def assign(path: Load, seen: set[tuple[Pair, int]]) -> bool:
                 for edge in path_edges[path]:

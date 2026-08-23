@@ -106,7 +106,7 @@ the pod via the alternative path.
       1. Do not consider swaps between normal and low priority loads.
          1. Exception: if the pod assigned to the low priority load is a lower id pod that has to move on the conflicting edge on that day
          (e.g. if it's performing a locked move or if there is no other way to go).
-   2. If a dynamic and a fixed pod have edge conflict, consider reassigning dynamic pod to one of its lower priority assignments if that resolves the conflict.
+   2. If a dynamic and a fixed pod have edge conflict, consider reassigning dynamic pod to one of its non-conflicting lower priority assignments if they exist.
       1. When considering alternative assignments in excess of their capacity, the conflicting pod can swap with one of the currently assigned pods if its
       distance to load origin is smaller than the assigned pod's distance.
       2. Do not consider reassignments from normal to low priority loads.

@@ -8,7 +8,7 @@ DAYS, MAX_DEGREE, MAX_PODS, POD_SIZE = 20, 5, 500, 10
 POD_COST, POD_REFUND, REROUTE_COST, TELEPORT_COST = 1000, 750, 250, 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;TUBE 1 2;TUBE 1 8;UPGRADE 1 8;POD 1;POD 2;POD 3;POD 4"
+OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3;POD 4"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1225,8 +1225,9 @@ class Planner:
             return r, extra
         def load(values: dict[int, Pair], edge: Pair) -> int:
             return sum(route_key(*move) == edge for move in values.values())
-        def resolves(trial: dict[int, Load], edge: Pair) -> tuple[bool, dict[int, Pair]]:
+        def resolves(trial: dict[int, Load], pod_id: int) -> tuple[bool, dict[int, Pair]]:
             tr = make_req(trial)[0]
+            edge = route_key(*tr[pod_id])
             return load(tr, edge) <= state.tubes[edge], tr
         def valid(trial: dict[int, Load], uniform: bool) -> bool:
             checked = dict(trial)
@@ -1276,7 +1277,7 @@ class Planner:
                         trial = dict(jobs)
                         trial[p] = path
                         if valid(trial, True):
-                            done, tr = resolves(trial, edge)
+                            done, tr = resolves(trial, p)
                             if done:
                                 jobs, req = trial, tr
                                 break
@@ -1290,7 +1291,7 @@ class Planner:
                                 continue
                             trial = dict(jobs)
                             trial[p], trial[q] = trial[q], trial[p]
-                            done, tr = resolves(trial, edge)
+                            done, tr = resolves(trial, p)
                             if done:
                                 jobs, req = trial, tr
                                 break

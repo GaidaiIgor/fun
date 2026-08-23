@@ -1388,7 +1388,8 @@ class Planner:
             path = exceeded[0] if exceeded else min(uneven, key=lambda item: (item.pool, item.destination, item.nodes))
             removed = []
             while True:
-                pod_id = max(owners[path], key=lambda item: (distances[item, path.nodes[0]], item))
+                pod_id = min(owners[path], key=lambda item: (INF if indexes[item] + 1 == len(prefs[item]) else
+                    distances[item, prefs[item][indexes[item] + 1].nodes[0]] - distances[item, path.nodes[0]], -distances[item, path.nodes[0]], -item))
                 owners[path].remove(pod_id)
                 counts[path] -= 1
                 del assignments[pod_id]

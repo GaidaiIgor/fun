@@ -8,7 +8,7 @@ DAYS, MAX_DEGREE, MAX_PODS, POD_SIZE = 20, 5, 500, 10
 POD_COST, POD_REFUND, REROUTE_COST, TELEPORT_COST = 1000, 750, 250, 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3;POD 4"
+OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 1;POD 2;POD 3;POD 4;POD 5;POD 6"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -924,9 +924,9 @@ class Planner:
             self.fix_load_assignments(assignments, prefs, at, graph, state, occupied, True)
             capped = {pod_id for pod_id, path in ideal.items() if assignments.get(pod_id) != path}
             if FULL_DEBUG:
-                c_jobs = assignments.copy()
-                c_req = self.path_pod_requests(f_pods, d_pods, positions, at, pending, assignments, fixed_jobs, graph)
-                c_moves = self.allocate_tube_capacity(c_req, state, result, day, set())
+                c_jobs = ideal.copy()
+                c_req = ideal_req
+                c_moves = c_req
                 c_at = {pod_id: pod.path[positions[pod_id]] if not pod.dynamic else
                     at[pod_id] if at[pod_id] != -1 else c_req.get(pod_id, ("-",))[0]
                     for pod_id, pod in state.pods.items()}

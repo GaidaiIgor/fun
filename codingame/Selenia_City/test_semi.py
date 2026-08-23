@@ -46,8 +46,8 @@ def table_debug(self, result: Result, state: State) -> str:
     congestion_rows = [["Day", *(f"{a}-{b}" for a, b in edges)],
         *([str(day + 1), *(str(result.congestion_by_day.get(day, {}).get(edge, 0)) for edge in edges)]
             for day in range(semi.DAYS))]
-    stages = "\nInitial preferences:\n" + initial + "\nCapacity/uniformity resolved:\n" + capacity
-    return "Fixed reservations: " + result.reserved + stages + "\nEdge conflicts resolved:\n" + assignments + \
+    stages = "\nInitial preferences:\n" + initial + "\nIdeal paths (infinite edge capacity):\n" + capacity
+    return "Fixed reservations: " + result.reserved + stages + "\nPath capacity/edge conflicts resolved:\n" + assignments + \
         "\nCongestion:\n" + format_table(congestion_rows)
 
 

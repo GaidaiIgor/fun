@@ -7,7 +7,7 @@ import sys
 DAYS, MAX_DEGREE, MAX_PODS, POD_SIZE = 20, 5, 500, 10
 POD_COST, POD_REFUND, REROUTE_COST, TELEPORT_COST = 1000, 750, 250, 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 10
+OVERRIDE_MONTH = -1
 OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 1;POD 2;POD 3;POD 4;POD 5;POD 6"
 FULL_DEBUG = False
 _G = {}
@@ -904,7 +904,7 @@ class Planner:
                 next_index = fixed_next_index(pod.path, index)
                 if pod_id in fixed_jobs and next_index != index:
                     occupied[route_key(pod.path[index], pod.path[next_index])] += 1
-            assignments, prefs = self.dispatch_dynamic_paths(active, d_pods, at, pending, queues, wanted_edges,
+            assignments, prefs, efficiency_context = self.dispatch_dynamic_paths(active, d_pods, at, pending, queues, wanted_edges,
                 reserved_passengers, result.delivered_by_module, graph, day)
             ideal = assignments.copy()
             self.fix_passenger_capacity(ideal, prefs)
@@ -918,7 +918,8 @@ class Planner:
                     for pod_id, pod in state.pods.items()}
                 i_carry = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, i_moves, positions.copy(), at.copy(), pending.copy())
-            path_capped = self.fix_finite_capacity(assignments, prefs, state, occupied)
+            capacity_context = self.finite_capacity_context(prefs, state, occupied)
+            path_capped = self.fix_finite_capacity(assignments, prefs, capacity_context)
             if FULL_DEBUG:
                 c_jobs = ideal.copy()
                 c_req = ideal_req
@@ -928,9 +929,8 @@ class Planner:
                     for pod_id, pod in state.pods.items()}
                 c_carry = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, c_moves, positions.copy(), at.copy(), pending.copy())
-            assignments, requests, moves = self.resolve_edge_conflicts(assignments, prefs, active, queues, wanted_edges,
-                reserved_passengers, result.delivered_by_module, f_pods, d_pods, fixed_jobs, positions, at, pending,
-                graph, occupied, result, state, day)
+            assignments, requests, moves = self.resolve_edge_conflicts(assignments, prefs, efficiency_context, f_pods, d_pods,
+                fixed_jobs, positions, at, pending, graph, capacity_context, result, state, day)
             blocked = {min(edges_of(ideal[p].nodes), key=lambda edge: (state.tubes[edge],
                 min(ideal[p].nodes.index(edge[0]), ideal[p].nodes.index(edge[1])))) for p in path_capped if p in ideal}
             for p in (set(ideal) | set(fixed_jobs)) - path_capped:
@@ -1156,20 +1156,27 @@ class Planner:
             reserved_passengers, delivered, graph, day):
         assignments = {}
         prefs = {}
+        capacities = {}
+        options = {}
+        for path in active:
+            edge = path.nodes[:2]
+            key = edge, path.reserved
+            if key not in capacities:
+                capacities[key] = sum((passenger.id in reserved_passengers) == path.reserved and
+                    edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], ()))
+            options.setdefault((path.pool, path.reserved, edge), []).append(path)
+        paths = [(replace(path, cap=capacities[path.nodes[:2], path.reserved]),
+            (path.cap + POD_SIZE - 1) // POD_SIZE * (len(path.nodes) - 1)) for path in active]
+        options = {key: tuple(values) for key, values in options.items()}
+        context = {}, options, queues, wanted_edges, reserved_passengers, delivered, day, {}
         for pod_id, _ in d_pods:
             evaluated = []
-            for path in active:
-                delivery_time = (path.cap + POD_SIZE - 1) // POD_SIZE * (len(path.nodes) - 1)
-                edge = path.nodes[:2]
-                capacity = sum((passenger.id in reserved_passengers) == path.reserved and
-                    edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], ()))
-                path = replace(path, cap=capacity)
+            for path, delivery_time in paths:
                 reach = self.load_reach(pod_id, path, current, pending, graph)
                 if reach + len(path.nodes) - 1 > DAYS - day:
                     continue
                 edge = pending[pod_id] if current[pod_id] == path.nodes[0] and pending[pod_id] != (-1, -1) and reach == 0 else None
-                efficiency = self.load_efficiency(path, reach, 0, active, queues, wanted_edges,
-                    reserved_passengers, delivered, day, edge)
+                efficiency = self.load_efficiency(path, reach, 0, context, edge)
                 evaluated.append((path, efficiency, delivery_time))
             evaluated.sort(key=lambda item: (-item[0].priority, -item[1], -item[2], item[0].pool, item[0].destination, item[0].nodes))
             seen = set()
@@ -1177,7 +1184,7 @@ class Planner:
             prefs[pod_id].append((None, 0))
             if prefs[pod_id][0][0]:
                 assignments[pod_id] = prefs[pod_id][0][0]
-        return assignments, prefs
+        return assignments, prefs, context
     def load_reach(self, pod_id, path, current, pending, graph):
         if current[pod_id] == -1:
             return 0
@@ -1185,37 +1192,46 @@ class Planner:
             return 0 if current[pod_id] == path.nodes[0] and graph_distance(graph, pending[pod_id][1], path.nodes[-1]) == len(path.nodes) - 2 else \
                 1 + graph_distance(graph, pending[pod_id][1], path.nodes[0])
         return graph_distance(graph, current[pod_id], path.nodes[0])
-    def load_efficiency(self, path, reach, wait, active, queues,
-            wanted_edges, reserved, delivered, day, edge = None):
+    def load_efficiency(self, path, reach, wait, context, edge = None):
+        batches, options_by_load, queues, wanted_edges, reserved, delivered, day, cache = context
         edge = edge or path.nodes[:2]
-        batch = [passenger for passenger in queues.get(edge[0], []) if (passenger.id in reserved) == path.reserved and
-            edge in wanted_edges[edge[0], passenger.kind]][:POD_SIZE]
-        added = Counter()
+        cache_key = path, reach, wait, edge
+        if cache_key in cache:
+            return cache[cache_key]
+        batch_key = edge, path.reserved
+        if batch_key not in batches:
+            batches[batch_key] = [passenger for passenger in queues.get(edge[0], []) if (passenger.id in reserved) == path.reserved and
+                edge in wanted_edges[edge[0], passenger.kind]][:POD_SIZE]
+        added = {}
         efficiency = 0
-        for passenger in batch:
+        for passenger in batches[batch_key]:
             pool = passenger.pad_id, passenger.kind
-            options = [candidate for candidate in active if candidate.pool == pool and candidate.reserved == path.reserved and
-                candidate.nodes[:2] == edge]
+            options = options_by_load.get((pool, path.reserved, edge), ())
             if path.pool == pool and path.nodes[:2] == edge:
-                options.append(path)
+                options = (*options, path)
             if not options:
                 continue
-            target = min(options, key=lambda item: (-(max(0, 50 - day - reach - len(item.nodes) + 1 - wait) +
-                max(0, 50 - delivered[item.destination] - added[item.destination])) / (reach + len(item.nodes) - 1 + wait), load_id(item)))
-            travel = reach + len(target.nodes) - 1 + wait
-            points = max(0, 50 - day - travel) + max(0, 50 - delivered[target.destination] - added[target.destination])
-            efficiency += points / travel
-            added[target.destination] += 1
+            best = None
+            for candidate in options:
+                travel = reach + len(candidate.nodes) - 1 + wait
+                value = (max(0, 50 - day - travel) +
+                    max(0, 50 - delivered[candidate.destination] - added.get(candidate.destination, 0))) / travel
+                key = -value, load_id(candidate)
+                if best is None or key < best[0]:
+                    best = key, candidate.destination, value
+            efficiency += best[2]
+            added[best[1]] = added.get(best[1], 0) + 1
+        cache[cache_key] = efficiency
         return efficiency
-    def resolve_edge_conflicts(self, jobs, prefs, active, queues,
-            wanted_edges, reserved, delivered, f_pods, d_pods,
-            fixed_jobs, positions, at, pending, graph, occupied,
+    def resolve_edge_conflicts(self, jobs, prefs, efficiency_context, f_pods, d_pods,
+            fixed_jobs, positions, at, pending, graph, capacity_context,
             result, state, day):
         overrides = {}
         def requests():
             return self.path_pod_requests(f_pods, d_pods, positions, at, pending, jobs, fixed_jobs, graph, overrides)
         req = requests()
         seen = set()
+        valid = {}
         while True:
             key = tuple(sorted(jobs.items())), tuple(sorted(overrides.items()))
             if key in seen:
@@ -1229,8 +1245,7 @@ class Planner:
                 for pod_id in sorted(pod_id for pod_id in by_edge[edge] if pod_id in jobs):
                     old = jobs[pod_id]
                     wait = sum(other_id < pod_id for other_id in by_edge[edge]) // state.tubes[edge]
-                    current_efficiency = self.load_efficiency(old, self.option_reach(pod_id, old, req[pod_id], at, graph),
-                        wait, active, queues, wanted_edges, reserved, delivered, day)
+                    current_efficiency = self.load_efficiency(old, self.option_reach(pod_id, old, req[pod_id], at, graph), wait, efficiency_context)
                     for path, _ in prefs[pod_id]:
                         if path is None or path.priority < old.priority:
                             continue
@@ -1239,16 +1254,18 @@ class Planner:
                                 continue
                             trial = dict(jobs)
                             trial[pod_id] = path
-                            checked = dict(trial)
-                            self.fix_passenger_capacity(checked, prefs)
-                            self.fix_finite_capacity(checked, prefs, state, occupied)
-                            if checked != trial:
+                            trial_key = tuple(sorted(trial.items()))
+                            if trial_key not in valid:
+                                checked = dict(trial)
+                                self.fix_passenger_capacity(checked, prefs)
+                                self.fix_finite_capacity(checked, prefs, capacity_context)
+                                valid[trial_key] = checked == trial
+                            if not valid[trial_key]:
                                 continue
                             candidate_edge = route_key(*move)
                             candidate_wait = sum(other_id < pod_id for other_id, other_move in req.items()
                                 if other_id != pod_id and route_key(*other_move) == candidate_edge) // state.tubes[candidate_edge]
-                            efficiency = self.load_efficiency(evaluated, reach, candidate_wait, active, queues, wanted_edges,
-                                reserved, delivered, day, evaluated.nodes[:2])
+                            efficiency = self.load_efficiency(evaluated, reach, candidate_wait, efficiency_context, evaluated.nodes[:2])
                             gain = efficiency - current_efficiency
                             if gain > 0:
                                 proposals.append((gain, pod_id, path, move))
@@ -1287,12 +1304,22 @@ class Planner:
                 return
             pods = [pod_id for pod_id, assigned in assignments.items() if assigned == path]
             self.advance_assignment(min(pods, key=lambda pod_id: (self.preference_loss(pod_id, path, prefs), pod_id)), assignments, prefs)
-    def fix_finite_capacity(self, assignments, prefs, state, occupied):
+    def finite_capacity_context(self, prefs, state, occupied):
+        paths = sorted({path for values in prefs.values() for path, _ in values if path}, key=load_id)
+        path_edges = {path: edges_of(path.nodes) for path in paths}
+        path_capacity = {path: sum(state.tubes[edge] - occupied[edge] for edge in path_edges[path]) for path in paths}
+        return paths, sorted(paths, key=lambda path: (path_capacity[path], load_id(path))), path_edges, \
+            {path: (path.cap + POD_SIZE - 1) // POD_SIZE for path in paths}, state.tubes, occupied, {}
+    def fix_finite_capacity(self, assignments, prefs, context):
+        paths, capacity_order, path_edges, load_capacity, tubes, occupied, overflow_cache = context
         def overflow(values):
+            cache_key = tuple(values[path] for path in paths)
+            if cache_key in overflow_cache:
+                return overflow_cache[cache_key]
             matches = {}
             def assign(path, seen):
-                for edge in edges_of(path.nodes):
-                    for slot in range(occupied[edge], state.tubes[edge]):
+                for edge in path_edges[path]:
+                    for slot in range(occupied[edge], tubes[edge]):
                         key = edge, slot
                         if key not in seen:
                             seen.add(key)
@@ -1300,12 +1327,16 @@ class Planner:
                                 matches[key] = path
                                 return True
                 return False
-            paths = sorted(values, key=lambda path: (sum(state.tubes[edge] - occupied[edge] for edge in edges_of(path.nodes)), load_id(path)))
-            for path in paths:
+            failure = None
+            for path in capacity_order:
                 for _ in range(values[path]):
                     if not assign(path, set()):
-                        return path
-            return None
+                        failure = path
+                        break
+                if failure:
+                    break
+            overflow_cache[cache_key] = failure
+            return failure
         capped = set()
         while True:
             self.fix_passenger_capacity(assignments, prefs)
@@ -1317,8 +1348,7 @@ class Planner:
                 capped.add(pod_id)
                 self.advance_assignment(pod_id, assignments, prefs)
                 continue
-            paths = sorted({path for values in prefs.values() for path, _ in values if path}, key=load_id)
-            noncapped = {path for path in paths if counts[path] < (path.cap + POD_SIZE - 1) // POD_SIZE and
+            noncapped = {path for path in paths if counts[path] < load_capacity[path] and
                 overflow(counts + Counter({path: 1})) is None}
             uneven = [path for path in counts if any(other.priority == path.priority and counts[path] > counts[other] + 1
                 for other in noncapped)]

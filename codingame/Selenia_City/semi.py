@@ -1156,10 +1156,10 @@ class Planner:
             reserved_passengers, delivered, graph, day):
         assignments = {}
         prefs = {}
-        delivery_times = {}
         for pod_id, _ in d_pods:
             evaluated = []
             for path in active:
+                delivery_time = (path.cap + POD_SIZE - 1) // POD_SIZE * (len(path.nodes) - 1)
                 edge = path.nodes[:2]
                 capacity = sum((passenger.id in reserved_passengers) == path.reserved and
                     edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], ()))
@@ -1170,9 +1170,7 @@ class Planner:
                 edge = pending[pod_id] if current[pod_id] == path.nodes[0] and pending[pod_id] != (-1, -1) and reach == 0 else None
                 efficiency = self.load_efficiency(path, reach, 0, active, queues, wanted_edges,
                     reserved_passengers, delivered, day, edge)
-                if path not in delivery_times:
-                    delivery_times[path] = self.load_delivery_time(path, active, queues, wanted_edges, reserved_passengers)
-                evaluated.append((path, efficiency, delivery_times[path]))
+                evaluated.append((path, efficiency, delivery_time))
             evaluated.sort(key=lambda item: (-item[0].priority, -item[1], -item[2], item[0].pool, item[0].destination, item[0].nodes))
             seen = set()
             prefs[pod_id] = [item[:2] for item in evaluated if item[0].nodes[:2] not in seen and not seen.add(item[0].nodes[:2])]
@@ -1209,20 +1207,6 @@ class Planner:
             efficiency += points / travel
             added[target.destination] += 1
         return efficiency
-    def load_delivery_time(self, path, active, queues, wanted_edges, reserved):
-        edge = path.nodes[:2]
-        total = 0
-        for passenger in queues.get(edge[0], []):
-            if (passenger.id in reserved) != path.reserved or edge not in wanted_edges[edge[0], passenger.kind]:
-                continue
-            pool = passenger.pad_id, passenger.kind
-            options = [candidate for candidate in active if candidate.pool == pool and candidate.reserved == path.reserved and
-                candidate.nodes[:2] == edge]
-            if path.pool != pool and not options:
-                continue
-            target = path if path.pool == pool else min(options, key=lambda item: (len(item.nodes), load_id(item)))
-            total += len(target.nodes) - 1
-        return total
     def resolve_edge_conflicts(self, jobs, prefs, active, queues,
             wanted_edges, reserved, delivered, f_pods, d_pods,
             fixed_jobs, positions, at, pending, graph, occupied,

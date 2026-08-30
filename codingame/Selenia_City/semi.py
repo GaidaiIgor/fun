@@ -7,8 +7,8 @@ import sys
 DAYS, MAX_DEGREE, MAX_PODS, POD_SIZE = 20, 5, 500, 10
 POD_COST, POD_REFUND, REROUTE_COST, TELEPORT_COST = 1000, 750, 250, 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = -1
-OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 1;POD 2;POD 3;POD 4;POD 5;POD 6"
+OVERRIDE_MONTH = 10
+OVERRIDE_COMMAND = "TUBE 1 2;TUBE 1 8;TUBE 2 7;POD 1"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1178,10 +1178,11 @@ class Planner:
                 edge = pending[pod_id] if current[pod_id] == path.nodes[0] and pending[pod_id] != (-1, -1) and reach == 0 else None
                 efficiency = self.load_efficiency(path, reach, 0, context, edge)
                 evaluated.append((path, efficiency, delivery_time))
-            evaluated.sort(key=lambda item: (-item[0].priority, -item[1], -item[2], item[0].pool, item[0].destination, item[0].nodes))
+            evaluated.sort(key=lambda item: (-item[0].priority, -item[1][0], -item[1][1], -item[2],
+                item[0].pool, item[0].destination, item[0].nodes))
             seen = set()
             prefs[pod_id] = [item[:2] for item in evaluated if item[0].nodes[:2] not in seen and not seen.add(item[0].nodes[:2])]
-            prefs[pod_id].append((None, 0))
+            prefs[pod_id].append((None, (0, 0)))
             if prefs[pod_id][0][0]:
                 assignments[pod_id] = prefs[pod_id][0][0]
         return assignments, prefs, context
@@ -1203,7 +1204,7 @@ class Planner:
             batches[batch_key] = [passenger for passenger in queues.get(edge[0], []) if (passenger.id in reserved) == path.reserved and
                 edge in wanted_edges[edge[0], passenger.kind]][:POD_SIZE]
         added = {}
-        efficiency = 0
+        efficiency = [0, 0]
         for passenger in batches[batch_key]:
             pool = passenger.pad_id, passenger.kind
             options = options_by_load.get((pool, path.reserved, edge), ())
@@ -1214,15 +1215,16 @@ class Planner:
             best = None
             for candidate in options:
                 travel = reach + len(candidate.nodes) - 1 + wait
-                value = (max(0, 50 - day - travel) +
-                    max(0, 50 - delivered[candidate.destination] - added.get(candidate.destination, 0))) / travel
-                key = -value, load_id(candidate)
+                value = (max(0, 50 - day - travel) / travel,
+                    max(0, 50 - delivered[candidate.destination] - added.get(candidate.destination, 0)) / travel)
+                key = -value[0], -value[1], load_id(candidate)
                 if best is None or key < best[0]:
                     best = key, candidate.destination, value
-            efficiency += best[2]
+            efficiency[0] += best[2][0]
+            efficiency[1] += best[2][1]
             added[best[1]] = added.get(best[1], 0) + 1
-        cache[cache_key] = efficiency
-        return efficiency
+        cache[cache_key] = tuple(efficiency)
+        return cache[cache_key]
     def resolve_edge_conflicts(self, jobs, prefs, efficiency_context, f_pods, d_pods,
             fixed_jobs, positions, at, pending, graph, capacity_context,
             result, state, day):
@@ -1266,12 +1268,13 @@ class Planner:
                             candidate_wait = sum(other_id < pod_id for other_id, other_move in req.items()
                                 if other_id != pod_id and route_key(*other_move) == candidate_edge) // state.tubes[candidate_edge]
                             efficiency = self.load_efficiency(evaluated, reach, candidate_wait, efficiency_context, evaluated.nodes[:2])
-                            gain = efficiency - current_efficiency
-                            if gain > 0:
+                            gain = tuple(value - current for value, current in zip(efficiency, current_efficiency))
+                            if gain > (0, 0):
                                 proposals.append((gain, pod_id, path, move))
             if not proposals:
                 break
-            _, pod_id, path, move = min(proposals, key=lambda item: (-item[0], item[1], load_id(item[2]), item[3]))
+            _, pod_id, path, move = min(proposals,
+                key=lambda item: (-item[0][0], -item[0][1], item[1], load_id(item[2]), item[3]))
             jobs[pod_id] = path
             overrides[pod_id] = move
             req = requests()
@@ -1359,7 +1362,7 @@ class Planner:
             self.advance_assignment(min(pods, key=lambda item: (self.preference_loss(item, path, prefs), item)), assignments, prefs)
     def preference_loss(self, pod_id, path, prefs):
         index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == path)
-        return prefs[pod_id][index][1] - prefs[pod_id][index + 1][1]
+        return tuple(value - following for value, following in zip(prefs[pod_id][index][1], prefs[pod_id][index + 1][1]))
     def advance_assignment(self, pod_id, assignments, prefs):
         path = assignments[pod_id]
         index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == path)

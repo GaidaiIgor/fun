@@ -108,3 +108,5 @@ Such locked pods should take it into account when calculating their distances to
 If the pod was not able to take its stage-2 path due to path capacity, bottleneck edge is defined as the closest to origin edge with the smallest capacity
 along the delivery way. Otherwise, bottleneck edge is defined as the first edge of the stage-2 path.
    1. Exception: assigning an alternative paths of the same length to the same target as the original stage-2 path does not count as congestion.
+9. If there is a pair of pods whose current paths are predicted to cause an edge conflict down the line, and one of the pods has an equal length alternative
+path to the same target without predicted edge conflict, prefer to take the alternative path.

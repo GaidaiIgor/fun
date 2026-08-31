@@ -1232,6 +1232,8 @@ class Planner:
         def requests():
             return self.path_pod_requests(f_pods, d_pods, positions, at, pending, jobs, fixed_jobs, graph, overrides)
         req = requests()
+        overrides.update(self.avoid_predicted_conflicts(jobs, req, f_pods, d_pods, positions, at, pending, graph, state, day))
+        req = requests()
         seen = set()
         valid = {}
         while True:
@@ -1279,6 +1281,49 @@ class Planner:
             overrides[pod_id] = move
             req = requests()
         return jobs, req, self.allocate_tube_capacity(req, state, result, day, set())
+    def avoid_predicted_conflicts(self, jobs, requests, f_pods, d_pods, positions, current, pending, graph, state, day):
+        routes = {}
+        for pod_id, pod in f_pods:
+            index = positions[pod_id]
+            route = [pod.path[index]]
+            for _ in range(DAYS - day):
+                index = fixed_next_index(pod.path, index)
+                if pod.path[index] == route[-1]:
+                    break
+                route.append(pod.path[index])
+            routes[pod_id] = tuple(route)
+        for pod_id, _ in d_pods:
+            if pod_id not in jobs or pod_id not in requests:
+                continue
+            path = jobs[pod_id]
+            target_id = path.nodes[-1] if current[pod_id] in (-1, path.nodes[0]) else path.nodes[0]
+            routes[pod_id] = graph_route(graph, requests[pod_id][0], target_id, requests[pod_id][1])
+        usage = Counter((index, route_key(*edge)) for route in routes.values() for index, edge in enumerate(zip(route, route[1:])))
+        overrides = {}
+        for pod_id, _ in d_pods:
+            route = routes.get(pod_id)
+            if pending[pod_id] != (-1, -1) or not route or not any(usage[index, route_key(*edge)] > state.tubes[route_key(*edge)]
+                    for index, edge in enumerate(zip(route, route[1:]))):
+                continue
+            distance = len(route) - 1
+            alternatives = []
+            for neighbor_id in graph[route[0]]:
+                if neighbor_id == route[1] or graph_distance(graph, neighbor_id, route[-1]) != distance - 1:
+                    continue
+                alternative = graph_route(graph, route[0], route[-1], neighbor_id)
+                if all(usage[index, route_key(*edge)] - (route_key(*edge) == route_key(*route[index:index + 2])) <
+                        state.tubes[route_key(*edge)] for index, edge in enumerate(zip(alternative, alternative[1:]))):
+                    alternatives.append(alternative)
+            if not alternatives:
+                continue
+            alternative = min(alternatives)
+            for index, edge in enumerate(zip(route, route[1:])):
+                usage[index, route_key(*edge)] -= 1
+            for index, edge in enumerate(zip(alternative, alternative[1:])):
+                usage[index, route_key(*edge)] += 1
+            routes[pod_id] = alternative
+            overrides[pod_id] = alternative[:2]
+        return overrides
     def load_move_options(self, pod_id, path, current, pending, graph):
         source_id = path.nodes[0]
         if pending[pod_id] != (-1, -1):

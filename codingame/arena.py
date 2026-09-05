@@ -18,7 +18,7 @@ def main(game: str, user_id: int):
     """Prints the finished battles of the player user_id in the game arena, most recent first."""
     stdout.reconfigure(encoding="utf-8")
     me = call("Leaderboards", "getCodinGamerPuzzleRanking", [user_id, game])
-    pseudo, my_rank = me["pseudo"], me["rank"]
+    pseudo, my_rank, my_score = me["pseudo"], me["rank"], me["score"]
     battles = [battle for battle in call("gamesPlayersRanking", "findLastBattlesByAgentId", [me["agentId"], None]) if battle["done"]]
     if not battles:
         raise SystemExit(f"the current {pseudo} submission has no finished battle yet")
@@ -30,7 +30,7 @@ def main(game: str, user_id: int):
         ranks.update(zip(unranked, pool.map(lambda player_id: opponent_rank(game, player_id), unranked)))
 
     rows = []
-    for number, (battle, by_agent) in enumerate(zip(battles, scores), 1):
+    for index, (battle, by_agent) in enumerate(zip(battles, scores)):
         mine = next(player for player in battle["players"] if player["userId"] == user_id)
         others = [player for player in battle["players"] if player is not mine]
         best = min(player["position"] for player in others)
@@ -38,11 +38,12 @@ def main(game: str, user_id: int):
         names = ", ".join(player["nickname"] for player in others)
         opponent_ranks = ", ".join(str(ranks[player["userId"]]) for player in others)
         score = " - ".join("{:g}".format(by_agent[player["playerAgentId"]]) for player in [mine, *others])
-        rows.append([number, names, opponent_ranks, score, result])
+        rows.append([len(battles) - index, names, opponent_ranks, score, result])
 
     tally = Counter(row[-1] for row in rows)
     wins, losses, draws = tally["win"], tally["loss"], tally["draw"]
-    print(f"{pseudo} is rank {my_rank} in the {game} arena")
+    print(f"{pseudo} is rank {my_rank} ({my_score:.2f})")
+    print("Last round games:")
     print(tabulate(rows, headers=["#", "opponent", "rank", "score", "result"], tablefmt="simple_outline"))
     print(f"{len(rows)} battles, {wins} won, {losses} lost, {draws} drawn, {wins / len(rows):.0%} win rate")
 

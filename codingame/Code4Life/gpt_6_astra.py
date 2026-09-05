@@ -47,6 +47,7 @@ class Plan:
     points: int
     rating: float
     completions: tuple[int, ...]
+    batch: tuple[int, ...] = ()
 
 
 class Bot:
@@ -60,6 +61,7 @@ class Bot:
         self.last_move = None
         self.commitment = ()
         self.collection_order = ()
+        self.collection_batch = ()
         self.deferred_diagnosis = ()
         self.catalog = {1: {}, 2: {}, 3: {}}
         self.seen = set()
@@ -103,6 +105,7 @@ class Bot:
         self.last_enemy = enemy_state
         if me.target != "MOLECULES":
             self.collection_order = ()
+            self.collection_batch = ()
         self.deferred_diagnosis = tuple(identity for identity in self.deferred_diagnosis if any(sample.id == identity for sample in self.known))
         self.enemy_need = tuple(max((max(0, sample.cost[i] - opponent.expertise[i] - opponent.storage[i])
                                     for sample in self.enemy), default=0) for i in range(5))
@@ -123,7 +126,7 @@ class Bot:
         if revealed:
             self.debug += f" revealed={revealed}"
         if plan is not None:
-            self.debug += f" plan={plan.order} take={plan.takes} finish={plan.completions} pts={plan.points} rate={plan.rating:.2f}"
+            self.debug += f" plan={plan.order} batch={plan.batch} take={plan.takes} finish={plan.completions} pts={plan.points} rate={plan.rating:.2f}"
         self.debug += f" action={action} ms={(perf_counter() - started) * 1000:.2f}"
         return action
 
@@ -167,22 +170,22 @@ class Bot:
         if self.me.target == "DIAGNOSIS":
             return self.at_diagnosis(unknown)
         plan = self.search(self.known)
+        if self.known and self.me.target == "MOLECULES":
+            waiting = self.wait_for_release(plan)
+            if waiting is not None:
+                return waiting
         if plan is not None:
             if self.me.target == "LABORATORY" and not plan.action.startswith("CONNECT") and self.should_refill(plan):
                 self.reason = "refill-batch"
                 self.commitment = ()
                 return "GOTO SAMPLES"
             return self.use(plan, "produce" if plan.action.startswith("CONNECT") and self.me.target == "LABORATORY" else "batch")
-        if self.known and self.me.target == "MOLECULES":
-            waiting = self.wait_for_release()
-            if waiting is not None:
-                return waiting
-        elif self.known:
+        if self.known and self.me.target != "MOLECULES":
             forecast = self.release_forecast()
             if forecast is not None:
                 pool, delay = forecast
                 arrival = self.travel(self.me.target, "MOLECULES")
-                future = self.search(self.known, pool=pool, delay=max(0, delay - arrival))
+                future = self.search(self.known, pool=pool, release_after=delay)
                 if future is not None and delay <= arrival + 2:
                     return self.use(future, "route-to-release")
         if self.known or self.cloud:
@@ -203,6 +206,11 @@ class Bot:
 
     def at_diagnosis(self, unknown: list[Sample]) -> str:
         """Chooses a feasible combination of held and cloud samples, paying exchange costs."""
+        if not unknown and self.remaining > 30:
+            unreachable = self.unreachable_samples()
+            if unreachable:
+                self.reason = "drop-locked-sample"
+                return f"CONNECT {min(unreachable, key=self.sample_value).id}"
         plan = self.search(self.diagnosis_candidates(), exchange=True)
         if plan is not None:
             missing = [sample_id for sample_id in plan.order if all(sample.id != sample_id for sample in self.own)]
@@ -224,7 +232,7 @@ class Bot:
             returned = self.release_forecast()
             if returned is not None:
                 pool, delay = returned
-                future = self.search(self.known, pool=pool)
+                future = self.search(self.known, pool=pool, release_after=delay)
                 if future is not None and delay <= self.travel("DIAGNOSIS", "MOLECULES") + 2:
                     return self.use(future, "incoming-release")
             if len(self.own) < 3 and self.remaining >= self.travel("DIAGNOSIS", "SAMPLES") + self.new_sample_time():
@@ -240,7 +248,23 @@ class Bot:
             return "GOTO SAMPLES"
         return self.deny()
 
-    def search(self, candidates: list[Sample], position: str = "", delay: int = 0, exchange: bool = False, pool: tuple[int, ...] = ()) -> Plan | None:
+    def unreachable_samples(self) -> list[Sample]:
+        """Finds samples that no expertise sequence in the current hand can make producible."""
+        pending = self.known.copy()
+        expertise = list(self.me.expertise)
+        while pending:
+            for sample in pending:
+                need = [max(0, sample.cost[i] - expertise[i]) for i in range(5)]
+                if sum(need) <= 10 and all(need[i] <= max(5, self.me.storage[i]) for i in range(5)):
+                    expertise[sample.gain] += 1
+                    pending.remove(sample)
+                    break
+            else:
+                break
+        return pending
+
+    def search(self, candidates: list[Sample], position: str = "", delay: int = 0, exchange: bool = False,
+               pool: tuple[int, ...] = (), release_after: int = 0) -> Plan | None:
         """Finds the highest-value feasible ordered subset, including split laboratory visits."""
         position = position or self.me.target
         pool = pool or self.available
@@ -287,6 +311,8 @@ class Bot:
                     location = position
                     begin = 0
                     first_takes = None
+                    first_batch = ()
+                    all_takes = [0] * 5
                     action = ""
                     completions = []
                     utility = 0
@@ -301,13 +327,20 @@ class Bot:
                             break
                         if first_takes is None:
                             first_takes = takes
+                            first_batch = tuple(sample.id for sample in order[:end])
                             if pickups:
                                 action = f"CONNECT {TYPES[self.pick_type(takes)]}" if location == "MOLECULES" else "GOTO MOLECULES"
                             else:
                                 action = f"CONNECT {order[0].id}" if location == "LABORATORY" else "GOTO LABORATORY"
                         if pickups:
-                            elapsed += self.travel(location, "MOLECULES") + pickups
+                            elapsed += self.travel(location, "MOLECULES")
+                            safe_pickups = sum(min(takes[i], max(0, self.available[i])) for i in range(5))
+                            if safe_pickups < pickups:
+                                elapsed = max(elapsed, release_after - safe_pickups)
+                            elapsed += pickups
                             location = "MOLECULES"
+                            for i in range(5):
+                                all_takes[i] += takes[i]
                         elapsed += self.travel(location, "LABORATORY")
                         location = "LABORATORY"
                         for j in range(begin, end):
@@ -327,19 +360,23 @@ class Bot:
                     else:
                         risk = 0
                         if self.opponent.target == "MOLECULES" and self.opponent.eta <= 3 and first_takes is not None:
-                            risk = sum(min(first_takes[i], self.enemy_need[i]) / (max(0, pool[i] - first_takes[i]) + 1) for i in range(5))
+                            risk = sum(min(all_takes[i], self.enemy_need[i]) / (max(0, pool[i] - all_takes[i]) + 1) for i in range(5))
                         rating = utility / (elapsed + 9 + min(4, risk)) ** exponent
                         if self.remaining > 30:
                             rating += 0.025 * (sum(self.me.storage) - sum(storage))
                             if tuple(sample.id for sample in order) == self.commitment:
                                 rating *= 1.035
                         if best is None or (rating, -elapsed) > (best.rating, -best.duration):
-                            best = Plan(tuple(sample.id for sample in order), action, first_takes, elapsed, points, rating, tuple(completions))
+                            best = Plan(tuple(sample.id for sample in order), action, first_takes, elapsed, points, rating, tuple(completions), first_batch)
                         if not exchange and position == "MOLECULES" and tuple(sample.id for sample in order) == self.collection_order:
-                            if committed is None or (rating, -elapsed) > (committed.rating, -committed.duration):
-                                committed = Plan(self.collection_order, action, first_takes, elapsed, points, rating, tuple(completions))
-        if committed is not None and not (best.points >= committed.points and best.duration <= committed.duration):
-            return committed
+                            if (not self.collection_batch or first_batch == self.collection_batch) and \
+                                    (committed is None or (rating, -elapsed) > (committed.rating, -committed.duration)):
+                                committed = Plan(self.collection_order, action, first_takes, elapsed, points, rating, tuple(completions), first_batch)
+        if committed is not None:
+            preserves_batch = all(identity in best.batch for identity in committed.batch)
+            dominates = best.points > committed.points and best.duration <= committed.duration
+            if not preserves_batch and not dominates:
+                return committed
         return best
 
     def use(self, plan: Plan, reason: str) -> str:
@@ -348,6 +385,7 @@ class Bot:
         self.commitment = plan.order
         if self.me.target == "MOLECULES" and plan.action.startswith("CONNECT"):
             self.collection_order = plan.order
+            self.collection_batch = plan.batch
         self.reason = reason
         return plan.action
 
@@ -439,7 +477,7 @@ class Bot:
 
     def release_forecast(self) -> tuple[tuple[int, ...], int] | None:
         """Forecasts molecules a rival already at or approaching the laboratory can return."""
-        if self.opponent.target != "LABORATORY" or self.enemy_idle >= 4:
+        if self.opponent.target != "LABORATORY" or self.enemy_idle >= 12:
             return None
         choices = []
         for count in range(1, len(self.enemy) + 1):
@@ -462,7 +500,7 @@ class Bot:
         returned = tuple(min(choice[2][i] for choice in choices) for i in range(5))
         return tuple(self.available[i] + returned[i] for i in range(5)), self.opponent.eta + max(choice[1] for choice in choices)
 
-    def wait_for_release(self) -> str | None:
+    def wait_for_release(self, current: Plan | None = None) -> str | None:
         """Collects safe requirements or waits briefly for an imminent useful molecule return."""
         forecast = self.release_forecast()
         if forecast is None or self.stalled >= 4:
@@ -470,14 +508,16 @@ class Bot:
         pool, delay = forecast
         if delay > 4:
             return None
-        plan = self.search(self.known, pool=pool, delay=delay)
-        if plan is None:
+        plan = self.search(self.known, pool=pool, release_after=delay)
+        if plan is None or current is not None and plan.rating <= current.rating * 1.015:
             return None
+        if not any(plan.takes):
+            return self.use(plan, "release-batch")
         self.selected = plan
         takes = tuple(plan.takes[i] if self.available[i] > 0 else 0 for i in range(5))
         if any(takes) and sum(self.me.storage) < 10:
-            self.reason = "collect-before-release"
-            return f"CONNECT {TYPES[self.pick_type(takes)]}"
+            plan.action = f"CONNECT {TYPES[self.pick_type(takes)]}"
+            return self.use(plan, "collect-before-release")
         self.reason = "wait-release"
         return "WAIT"
 

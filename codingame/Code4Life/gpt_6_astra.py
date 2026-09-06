@@ -62,6 +62,7 @@ class Bot:
         self.commitment = ()
         self.collection_order = ()
         self.collection_batch = ()
+        self.blocked_age = {}
         self.deferred_diagnosis = ()
         self.catalog = {1: {}, 2: {}, 3: {}}
         self.seen = set()
@@ -103,6 +104,11 @@ class Bot:
         enemy_state = (opponent.target, opponent.eta, opponent.storage, opponent.expertise, tuple(sample.id for sample in self.enemy))
         self.enemy_idle = self.enemy_idle + 1 if enemy_state == self.last_enemy else 0
         self.last_enemy = enemy_state
+        supply = tuple(max(me.storage[i], 5 - opponent.storage[i]) for i in range(5))
+        returned = self.release_forecast()
+        if returned is not None and returned[1] <= self.travel(me.target, "MOLECULES") + 2:
+            supply = tuple(max(supply[i], me.storage[i] + returned[0][i]) for i in range(5))
+        self.blocked_age = {sample.id: self.blocked_age.get(sample.id, 0) + 1 for sample in self.unreachable_samples(supply)}
         if me.target != "MOLECULES":
             self.collection_order = ()
             self.collection_batch = ()
@@ -121,6 +127,8 @@ class Bot:
         self.debug = f"t={self.turn} at={me.target}/{me.eta} score={me.score}:{opponent.score} xp={me.expertise} stock={me.storage} pool={available}"
         self.debug += f" enemy={opponent.target}/{opponent.eta}:{opponent.expertise}:{opponent.storage}"
         self.debug += f" own=[{details}] projects={sorted(self.claimed)} travel+={self.travel_extra} why={self.reason}"
+        if self.blocked_age:
+            self.debug += f" blocked={self.blocked_age}"
         if self.turn == 1:
             self.debug += f" goals={self.projects}"
         if revealed:
@@ -194,6 +202,10 @@ class Bot:
                 self.reason = "exchange"
                 self.commitment = ()
                 return "GOTO DIAGNOSIS"
+        if self.remaining > 30 and any(age >= 12 for age in self.blocked_age.values()):
+            self.reason = "retire-blocked-hand"
+            self.commitment = ()
+            return "GOTO DIAGNOSIS"
         if len(self.own) < 3 and self.remaining >= self.travel(self.me.target, "SAMPLES") + self.new_sample_time():
             self.reason = "restock"
             self.commitment = ()
@@ -211,6 +223,10 @@ class Bot:
             if unreachable:
                 self.reason = "drop-locked-sample"
                 return f"CONNECT {min(unreachable, key=self.sample_value).id}"
+            stale = [sample for sample in self.known if self.blocked_age.get(sample.id, 0) >= 12]
+            if stale:
+                self.reason = "drop-stale-sample"
+                return f"CONNECT {min(stale, key=self.sample_value).id}"
         plan = self.search(self.diagnosis_candidates(), exchange=True)
         if plan is not None:
             missing = [sample_id for sample_id in plan.order if all(sample.id != sample_id for sample in self.own)]
@@ -248,14 +264,16 @@ class Bot:
             return "GOTO SAMPLES"
         return self.deny()
 
-    def unreachable_samples(self) -> list[Sample]:
-        """Finds samples that no expertise sequence in the current hand can make producible."""
+    def unreachable_samples(self, supply: tuple[int, ...] = (5, 5, 5, 5, 5)) -> list[Sample]:
+        """Finds samples no held expertise chain can unlock within the supplied molecule limits.
+        :param supply: Maximum usable molecules per type, including molecules already held.
+        :return: Held samples that remain unreachable after every feasible expertise gain."""
         pending = self.known.copy()
         expertise = list(self.me.expertise)
         while pending:
             for sample in pending:
                 need = [max(0, sample.cost[i] - expertise[i]) for i in range(5)]
-                if sum(need) <= 10 and all(need[i] <= max(5, self.me.storage[i]) for i in range(5)):
+                if sum(need) <= 10 and all(need[i] <= max(supply[i], self.me.storage[i]) for i in range(5)):
                     expertise[sample.gain] += 1
                     pending.remove(sample)
                     break
@@ -383,7 +401,7 @@ class Bot:
         """Records the selected plan and returns its next module action."""
         self.selected = plan
         self.commitment = plan.order
-        if self.me.target == "MOLECULES" and plan.action.startswith("CONNECT"):
+        if plan.action == "GOTO MOLECULES" or self.me.target == "MOLECULES" and plan.action.startswith("CONNECT"):
             self.collection_order = plan.order
             self.collection_batch = plan.batch
         self.reason = reason
@@ -415,10 +433,11 @@ class Bot:
 
     def pick_type(self, takes: tuple[int, ...]) -> int:
         """Prioritizes required molecules that have little spare supply or rival demand."""
-        competing = self.opponent.target == "MOLECULES" and self.opponent.eta <= 3
+        competing = self.opponent.target == "MOLECULES" and self.opponent.eta <= 3 or self.opponent.target == "LABORATORY" and self.opponent.eta == 0
         return max((i for i in range(5) if takes[i] > 0), key=lambda i: (
             competing and self.enemy_picking[i] > 0 and self.available[i] < 2 * takes[i],
-            6 / (max(0, self.available[i] - takes[i]) + 1) + competing * (2 * self.enemy_picking[i] + 0.4 * self.enemy_need[i]) + 0.2 * takes[i]))
+            6 / (max(0, self.available[i] - takes[i]) + 1) + competing *
+            (2 * self.enemy_picking[i] + 4 * min(1, self.enemy_need[i]) + 2 / max(1, self.available[i])) + 0.2 * takes[i]))
 
     def diagnosis_candidates(self) -> list[Sample]:
         """Keeps held samples and a bounded shortlist of promising cloud alternatives."""

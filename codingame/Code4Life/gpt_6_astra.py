@@ -51,7 +51,11 @@ class Plan:
 
 
 class Bot:
-    """Chooses actions using persistent project, sample, timing, and plan observations."""
+    """Chooses actions using persistent project, sample, timing, and plan observations.
+    :var enemy_unknown: Number of undiagnosed samples held by the opponent.
+    :var enemy_molecule_time: Estimated turns before the opponent can next collect molecules."""
+    enemy_unknown: int
+    enemy_molecule_time: int
 
     def __init__(self, projects: list[tuple[int, ...]]):
         self.projects = projects
@@ -83,6 +87,18 @@ class Bot:
         self.known = [sample for sample in self.own if sample.health >= 0]
         self.cloud = [sample for sample in samples if sample.carried_by == -1 and sample.health >= 0]
         self.enemy = [sample for sample in samples if sample.carried_by == 1 and sample.health >= 0]
+        self.enemy_unknown = sum(sample.carried_by == 1 and sample.health < 0 for sample in samples)
+        self.enemy_molecule_time = opponent.eta + self.travel(opponent.target, "MOLECULES")
+        if opponent.target == "DIAGNOSIS":
+            self.enemy_molecule_time += self.enemy_unknown
+        elif opponent.target in ("SAMPLES", "START_POS"):
+            draws = 3 - len(self.enemy) - self.enemy_unknown
+            self.enemy_molecule_time += 2 * draws + self.enemy_unknown + self.travel("SAMPLES", "DIAGNOSIS")
+            if opponent.target == "START_POS":
+                self.enemy_molecule_time += self.travel("DIAGNOSIS", "MOLECULES")
+        elif opponent.target == "LABORATORY" and not self.enemy_unknown and all(
+                sum(max(0, sample.cost[i] - opponent.expertise[i]) for sample in self.enemy) <= opponent.storage[i] for i in range(5)):
+            self.enemy_molecule_time += len(self.enemy) + 6 + self.travel("LABORATORY", "SAMPLES") + self.travel("SAMPLES", "DIAGNOSIS")
         for index, project in enumerate(self.projects):
             if any(all(expertise[i] >= project[i] for i in range(5)) for expertise in (me.expertise, opponent.expertise)):
                 self.claimed.add(index)
@@ -335,6 +351,7 @@ class Bot:
                     completions = []
                     utility = 0
                     points = 0
+                    exposure = 0
                     for end in range(1, count + 1):
                         if end < count and not cuts & (1 << (end - 1)):
                             continue
@@ -352,6 +369,9 @@ class Bot:
                                 action = f"CONNECT {order[0].id}" if location == "LABORATORY" else "GOTO LABORATORY"
                         if pickups:
                             elapsed += self.travel(location, "MOLECULES")
+                            if begin and elapsed >= self.enemy_molecule_time:
+                                exposure += sum(takes[i] / (max(0, supply[i] - takes[i]) + 1)
+                                                for i in range(5) if takes[i] and supply[i] - takes[i] <= 1)
                             safe_pickups = sum(min(takes[i], max(0, self.available[i])) for i in range(5))
                             if safe_pickups < pickups:
                                 elapsed = max(elapsed, release_after - safe_pickups)
@@ -379,7 +399,7 @@ class Bot:
                         risk = 0
                         if self.opponent.target == "MOLECULES" and self.opponent.eta <= 3 and first_takes is not None:
                             risk = sum(min(all_takes[i], self.enemy_need[i]) / (max(0, pool[i] - all_takes[i]) + 1) for i in range(5))
-                        rating = utility / (elapsed + 9 + min(4, risk)) ** exponent
+                        rating = utility / (elapsed + 9 + min(6, min(4, risk) + 2 * exposure)) ** exponent
                         if self.remaining > 30:
                             rating += 0.025 * (sum(self.me.storage) - sum(storage))
                             if tuple(sample.id for sample in order) == self.commitment:
@@ -495,8 +515,9 @@ class Bot:
         return self.known[0].health <= 10 and sum(self.me.expertise) >= 5 and plan.points < 50
 
     def release_forecast(self) -> tuple[tuple[int, ...], int] | None:
-        """Forecasts molecules a rival already at or approaching the laboratory can return."""
-        if self.opponent.target != "LABORATORY" or self.enemy_idle >= 12:
+        """Forecasts molecule returns from a rival at the laboratory or ready to depart for it."""
+        departing = self.opponent.target == "MOLECULES" and self.opponent.eta == 0 and self.enemy_idle <= 1 and not self.enemy_unknown
+        if not departing and (self.opponent.target != "LABORATORY" or self.enemy_idle >= 12):
             return None
         choices = []
         for count in range(1, len(self.enemy) + 1):
@@ -516,8 +537,11 @@ class Bot:
             return None
         value = max(choice[0] for choice in choices)
         choices = [choice for choice in choices if choice[0] == value]
+        if departing and max(choice[1] for choice in choices) != len(self.enemy):
+            return None
         returned = tuple(min(choice[2][i] for choice in choices) for i in range(5))
-        return tuple(self.available[i] + returned[i] for i in range(5)), self.opponent.eta + max(choice[1] for choice in choices)
+        delay = self.opponent.eta + max(choice[1] for choice in choices) + (self.travel("MOLECULES", "LABORATORY") if departing else 0)
+        return tuple(self.available[i] + returned[i] for i in range(5)), delay
 
     def wait_for_release(self, current: Plan | None = None) -> str | None:
         """Collects safe requirements or waits briefly for an imminent useful molecule return."""
@@ -525,7 +549,7 @@ class Bot:
         if forecast is None or self.stalled >= 4:
             return None
         pool, delay = forecast
-        if delay > 4:
+        if delay > self.travel("MOLECULES", "LABORATORY") + 3:
             return None
         plan = self.search(self.known, pool=pool, release_after=delay)
         if plan is None or current is not None and plan.rating <= current.rating * 1.015:

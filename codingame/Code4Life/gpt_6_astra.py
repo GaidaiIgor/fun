@@ -1,6 +1,7 @@
 """Plays Code4Life by planning ordered batches, expertise gains, and molecule collection."""
 
 import sys
+from collections import deque
 from dataclasses import dataclass
 from itertools import permutations
 from time import perf_counter
@@ -53,9 +54,13 @@ class Plan:
 class Bot:
     """Chooses actions using persistent project, sample, timing, and plan observations.
     :var enemy_unknown: Number of undiagnosed samples held by the opponent.
-    :var enemy_molecule_time: Estimated turns before the opponent can next collect molecules."""
+    :var enemy_molecule_time: Estimated turns before the opponent can next collect molecules.
+    :var enemy_stocks: Recent opponent molecule holdings used to distinguish sustained shortages.
+    :var supply_ceiling: Molecule limits after sustained withholding and supported imminent returns."""
     enemy_unknown: int
     enemy_molecule_time: int
+    enemy_stocks: deque[tuple[int, ...]]
+    supply_ceiling: tuple[int, ...]
 
     def __init__(self, projects: list[tuple[int, ...]]):
         self.projects = projects
@@ -74,6 +79,7 @@ class Bot:
         self.last_stock = None
         self.enemy_idle = 0
         self.last_enemy = None
+        self.enemy_stocks = deque(maxlen=12)
         self.debug = ""
 
     def decide(self, me: Robot, opponent: Robot, available: tuple[int, ...], samples: list[Sample]) -> str:
@@ -120,10 +126,15 @@ class Bot:
         enemy_state = (opponent.target, opponent.eta, opponent.storage, opponent.expertise, tuple(sample.id for sample in self.enemy))
         self.enemy_idle = self.enemy_idle + 1 if enemy_state == self.last_enemy else 0
         self.last_enemy = enemy_state
+        self.enemy_stocks.append(opponent.storage)
+        self.supply_ceiling = (5,) * 5
+        if len(self.enemy_stocks) == self.enemy_stocks.maxlen:
+            self.supply_ceiling = tuple(max(me.storage[i], 5 - min(stock[i] for stock in self.enemy_stocks)) for i in range(5))
         supply = tuple(max(me.storage[i], 5 - opponent.storage[i]) for i in range(5))
         returned = self.release_forecast()
-        if returned is not None and returned[1] <= self.travel(me.target, "MOLECULES") + 2:
+        if returned is not None and returned[1] <= self.travel(me.target, "MOLECULES") + 3:
             supply = tuple(max(supply[i], me.storage[i] + returned[0][i]) for i in range(5))
+            self.supply_ceiling = tuple(max(self.supply_ceiling[i], me.storage[i] + returned[0][i]) for i in range(5))
         self.blocked_age = {sample.id: self.blocked_age.get(sample.id, 0) + 1 for sample in self.unreachable_samples(supply)}
         if me.target != "MOLECULES":
             self.collection_order = ()
@@ -234,16 +245,24 @@ class Bot:
 
     def at_diagnosis(self, unknown: list[Sample]) -> str:
         """Chooses a feasible combination of held and cloud samples, paying exchange costs."""
+        candidates = self.diagnosis_candidates()
+        plan = self.search(candidates, exchange=True)
+        returned = self.release_forecast()
+        if returned is not None and returned[1] <= self.travel("DIAGNOSIS", "MOLECULES") + 3:
+            future = self.search(candidates, exchange=True, pool=returned[0], release_after=returned[1])
+            if future is not None and (plan is None or future.rating > plan.rating * 1.015):
+                plan = future
+        protected = plan.order if plan is not None else ()
         if not unknown and self.remaining > 30:
-            unreachable = self.unreachable_samples()
+            unreachable = [sample for sample in self.unreachable_samples() if sample.id not in protected]
             if unreachable:
                 self.reason = "drop-locked-sample"
                 return f"CONNECT {min(unreachable, key=self.sample_value).id}"
-            stale = [sample for sample in self.known if self.blocked_age.get(sample.id, 0) >= 12]
+            denied = {sample.id for sample in self.unreachable_samples(self.supply_ceiling)}
+            stale = [sample for sample in self.known if sample.id not in protected and (self.blocked_age.get(sample.id, 0) >= 12 or sample.id in denied)]
             if stale:
                 self.reason = "drop-stale-sample"
                 return f"CONNECT {min(stale, key=self.sample_value).id}"
-        plan = self.search(self.diagnosis_candidates(), exchange=True)
         if plan is not None:
             missing = [sample_id for sample_id in plan.order if all(sample.id != sample_id for sample in self.own)]
             if missing:
@@ -260,16 +279,8 @@ class Bot:
             self.reason = "diagnose-last"
             return f"CONNECT {unknown[0].id}"
         if self.known and self.remaining > self.new_sample_time() + 4:
-            # A rival already heading to production may make this hand feasible shortly.
-            returned = self.release_forecast()
-            if returned is not None:
-                pool, delay = returned
-                future = self.search(self.known, pool=pool, release_after=delay)
-                if future is not None and delay <= self.travel("DIAGNOSIS", "MOLECULES") + 2:
-                    return self.use(future, "incoming-release")
             if len(self.own) < 3 and self.remaining >= self.travel("DIAGNOSIS", "SAMPLES") + self.new_sample_time():
-                viable = [sample for sample in self.known if max(sample.cost[i] - self.me.expertise[i] for i in range(5)) <= 5]
-                if len(viable) == len(self.known):
+                if not self.unreachable_samples(self.supply_ceiling):
                     self.reason = "refill-blocked-hand"
                     return "GOTO SAMPLES"
             self.reason = "drop-unworkable"
@@ -455,6 +466,7 @@ class Bot:
         """Prioritizes required molecules that have little spare supply or rival demand."""
         competing = self.opponent.target == "MOLECULES" and self.opponent.eta <= 3 or self.opponent.target == "LABORATORY" and self.opponent.eta == 0
         return max((i for i in range(5) if takes[i] > 0), key=lambda i: (
+            not competing or not self.enemy_picking[i] or takes[i] <= max(self.available[i] - max(1, self.enemy_need[i]), (self.available[i] + 1) // 2),
             competing and self.enemy_picking[i] > 0 and self.available[i] < 2 * takes[i],
             6 / (max(0, self.available[i] - takes[i]) + 1) + competing *
             (2 * self.enemy_picking[i] + 4 * min(1, self.enemy_need[i]) + 2 / max(1, self.available[i])) + 0.2 * takes[i]))
@@ -498,13 +510,14 @@ class Bot:
             rank = 1
         # Observed recipes improve rank selection without assuming an undocumented catalog.
         recipes = list(self.catalog[rank].values())
-        if rank > 1 and len(recipes) >= 5:
+        if rank > 1 and len(recipes) >= 3:
             feasible = 0
             for sample in recipes:
                 need = [max(0, sample.cost[i] - self.me.expertise[i]) for i in range(5)]
-                if max(need) <= 5 and sum(max(0, need[i] - self.me.storage[i]) for i in range(5)) + sum(self.me.storage) <= 10:
+                if all(need[i] <= self.supply_ceiling[i] for i in range(5)) and \
+                        sum(max(0, need[i] - self.me.storage[i]) for i in range(5)) + sum(self.me.storage) <= 10:
                     feasible += 1
-            if feasible < len(recipes) / 2:
+            if len(recipes) >= 5 and feasible < len(recipes) / 2 or feasible == 0 and min(self.supply_ceiling) < 5:
                 rank -= 1
         return rank
 

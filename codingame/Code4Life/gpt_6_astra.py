@@ -56,11 +56,13 @@ class Bot:
     :var enemy_unknown: Number of undiagnosed samples held by the opponent.
     :var enemy_molecule_time: Estimated turns before the opponent can next collect molecules.
     :var enemy_stocks: Recent opponent molecule holdings used to distinguish sustained shortages.
-    :var supply_ceiling: Molecule limits after sustained withholding and supported imminent returns."""
+    :var supply_ceiling: Molecule limits after sustained withholding and supported imminent returns.
+    :var race_pickups: Contested molecule types whose attainable share can fund a held medicine."""
     enemy_unknown: int
     enemy_molecule_time: int
     enemy_stocks: deque[tuple[int, ...]]
     supply_ceiling: tuple[int, ...]
+    race_pickups: set[int]
 
     def __init__(self, projects: list[tuple[int, ...]]):
         self.projects = projects
@@ -142,6 +144,12 @@ class Bot:
         self.deferred_diagnosis = tuple(identity for identity in self.deferred_diagnosis if any(sample.id == identity for sample in self.known))
         self.enemy_need = tuple(max((max(0, sample.cost[i] - opponent.expertise[i] - opponent.storage[i])
                                     for sample in self.enemy), default=0) for i in range(5))
+        self.race_pickups = set()
+        for sample in self.known:
+            missing = [max(0, sample.cost[i] - me.expertise[i] - me.storage[i]) for i in range(5)]
+            if sum(me.storage) + sum(missing) <= 10 and all(missing[i] <= available[i] for i in range(5)):
+                self.race_pickups.update(i for i in range(5) if 0 < missing[i] <=
+                                         max(available[i] - max(1, self.enemy_need[i]), (available[i] + 1) // 2))
         self.project_deadlines = self.opponent_project_times()
         self.reason = ""
         self.selected = None
@@ -466,7 +474,8 @@ class Bot:
         """Prioritizes required molecules that have little spare supply or rival demand."""
         competing = self.opponent.target == "MOLECULES" and self.opponent.eta <= 3 or self.opponent.target == "LABORATORY" and self.opponent.eta == 0
         return max((i for i in range(5) if takes[i] > 0), key=lambda i: (
-            not competing or not self.enemy_picking[i] or takes[i] <= max(self.available[i] - max(1, self.enemy_need[i]), (self.available[i] + 1) // 2),
+            not competing or not self.enemy_picking[i] or i in self.race_pickups or
+            takes[i] <= max(self.available[i] - max(1, self.enemy_need[i]), (self.available[i] + 1) // 2),
             competing and self.enemy_picking[i] > 0 and self.available[i] < 2 * takes[i],
             6 / (max(0, self.available[i] - takes[i]) + 1) + competing *
             (2 * self.enemy_picking[i] + 4 * min(1, self.enemy_need[i]) + 2 / max(1, self.available[i])) + 0.2 * takes[i]))
@@ -550,7 +559,7 @@ class Bot:
             return None
         value = max(choice[0] for choice in choices)
         choices = [choice for choice in choices if choice[0] == value]
-        if departing and max(choice[1] for choice in choices) != len(self.enemy):
+        if departing and sum(self.opponent.storage) < 10 and max(choice[1] for choice in choices) != len(self.enemy):
             return None
         returned = tuple(min(choice[2][i] for choice in choices) for i in range(5))
         delay = self.opponent.eta + max(choice[1] for choice in choices) + (self.travel("MOLECULES", "LABORATORY") if departing else 0)

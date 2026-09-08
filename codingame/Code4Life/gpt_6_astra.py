@@ -256,7 +256,8 @@ class Bot:
         candidates = self.diagnosis_candidates()
         plan = self.search(candidates, exchange=True)
         returned = self.release_forecast()
-        if returned is not None and returned[1] <= self.travel("DIAGNOSIS", "MOLECULES") + 3:
+        horizon = self.travel("DIAGNOSIS", "MOLECULES") + 3 + (self.opponent.eta if self.opponent.target == "MOLECULES" else 0)
+        if returned is not None and returned[1] <= horizon:
             future = self.search(candidates, exchange=True, pool=returned[0], release_after=returned[1])
             if future is not None and (plan is None or future.rating > plan.rating * 1.015):
                 plan = future
@@ -538,7 +539,7 @@ class Bot:
 
     def release_forecast(self) -> tuple[tuple[int, ...], int] | None:
         """Forecasts molecule returns from a rival at the laboratory or ready to depart for it."""
-        departing = self.opponent.target == "MOLECULES" and self.opponent.eta == 0 and self.enemy_idle <= 1 and not self.enemy_unknown
+        departing = self.opponent.target == "MOLECULES" and self.enemy_idle <= 1 and not self.enemy_unknown
         if not departing and (self.opponent.target != "LABORATORY" or self.enemy_idle >= 12):
             return None
         choices = []
@@ -559,11 +560,11 @@ class Bot:
             return None
         value = max(choice[0] for choice in choices)
         choices = [choice for choice in choices if choice[0] == value]
-        if departing and sum(self.opponent.storage) < 10 and max(choice[1] for choice in choices) != len(self.enemy):
+        if departing and (self.opponent.eta > 0 or sum(self.opponent.storage) < 10) and max(choice[1] for choice in choices) != len(self.enemy):
             return None
         returned = tuple(min(choice[2][i] for choice in choices) for i in range(5))
         delay = self.opponent.eta + max(choice[1] for choice in choices) + (self.travel("MOLECULES", "LABORATORY") if departing else 0)
-        return tuple(self.available[i] + returned[i] for i in range(5)), delay
+        return tuple(max(0, 5 - self.me.storage[i] - self.opponent.storage[i] + returned[i]) for i in range(5)), delay
 
     def wait_for_release(self, current: Plan | None = None) -> str | None:
         """Collects safe requirements or waits briefly for an imminent useful molecule return."""
@@ -593,13 +594,42 @@ class Bot:
                 self.reason = "endgame-denial-travel"
                 return "GOTO MOLECULES"
         elif sum(self.me.storage) < 10:
-            needed = [i for i in range(5) if self.enemy_need[i] > 0 and self.available[i] > 0]
-            if needed:
-                index = max(needed, key=lambda i: self.enemy_need[i] / self.available[i])
+            index = self.denial_pickup()
+            if index is not None:
                 self.reason = "endgame-denial"
                 return f"CONNECT {TYPES[index]}"
         self.reason = "no-completable-work"
         return "WAIT"
+
+    def denial_pickup(self) -> int | None:
+        """Finds a molecule that can block a live rival medicine before its last required pickup.
+        :return: Molecule index for a feasible reservation, or None when no known threat can be blocked."""
+        choices = []
+        for count in range(1, len(self.enemy) + 1):
+            for order in permutations(self.enemy, count):
+                expertise = list(self.opponent.expertise)
+                storage = list(self.opponent.storage)
+                supply = list(self.available)
+                location, elapsed = self.opponent.target, self.opponent.eta
+                for sample in order:
+                    need = [max(0, sample.cost[i] - expertise[i]) for i in range(5)]
+                    missing = [max(0, need[i] - storage[i]) for i in range(5)]
+                    if any(missing):
+                        arrival = elapsed + self.travel(location, "MOLECULES")
+                        finish = arrival + sum(missing) + self.travel("MOLECULES", "LABORATORY") + 1
+                        if finish <= self.remaining and sum(storage) + sum(missing) <= 10 and all(missing[i] <= supply[i] for i in range(5)):
+                            for i in range(5):
+                                captures = supply[i] - missing[i] + 1
+                                deadline = arrival + missing[i] - 1
+                                if missing[i] and 0 < captures <= min(self.available[i], 10 - sum(self.me.storage), deadline):
+                                    choices.append((deadline, finish, -sample.health, captures, i))
+                        break
+                    elapsed += self.travel(location, "LABORATORY") + 1
+                    location = "LABORATORY"
+                    storage = [storage[i] - need[i] for i in range(5)]
+                    supply = [max(0, 5 - self.me.storage[i] - storage[i]) for i in range(5)]
+                    expertise[sample.gain] += 1
+        return min(choices)[-1] if choices else None
 
 
 def read_robot(line: str) -> Robot:

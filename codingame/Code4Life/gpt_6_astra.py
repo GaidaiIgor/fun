@@ -187,7 +187,7 @@ class Bot:
             if ready is not None and ready.action.startswith("CONNECT"):
                 return self.use(ready, "produce")
         if self.me.target == "SAMPLES":
-            if len(self.own) < 3 and self.remaining >= self.new_sample_time():
+            if len(self.own) < 3 and self.remaining >= self.new_sample_time() + len(unknown):
                 self.reason = "draw"
                 return f"CONNECT {self.choose_rank()}"
             if unknown:
@@ -321,7 +321,8 @@ class Bot:
                pool: tuple[int, ...] = (), release_after: int = 0) -> Plan | None:
         """Finds the highest-value feasible ordered subset, including split laboratory visits."""
         position = position or self.me.target
-        pool = pool or self.available
+        # Preserve shared-last debt until a later laboratory return actually repays it.
+        pool = pool or tuple(5 - self.me.storage[i] - self.opponent.storage[i] for i in range(5))
         owned = {sample.id for sample in self.own}
         best = None
         committed = None
@@ -439,6 +440,15 @@ class Bot:
 
     def use(self, plan: Plan, reason: str) -> str:
         """Records the selected plan and returns its next module action."""
+        if self.me.target == "MOLECULES" and plan.action == "GOTO LABORATORY" and self.remaining <= 30 and \
+                plan.batch == plan.order and sum(self.me.storage) < 10 and plan.duration < self.remaining:
+            index = self.denial_pickup(plan)
+            if index is not None:
+                delayed = self.search(self.known, delay=1)
+                if delayed is not None and delayed.order == plan.order and delayed.batch == plan.batch and delayed.points >= plan.points:
+                    self.selected = plan
+                    self.reason = "reserve-before-final-delivery"
+                    return f"CONNECT {TYPES[index]}"
         self.selected = plan
         self.commitment = plan.order
         if plan.action == "GOTO MOLECULES" or self.me.target == "MOLECULES" and plan.action.startswith("CONNECT"):
@@ -538,7 +548,7 @@ class Bot:
         return self.known[0].health <= 10 and sum(self.me.expertise) >= 5 and plan.points < 50
 
     def release_forecast(self) -> tuple[tuple[int, ...], int] | None:
-        """Forecasts molecule returns from a rival at the laboratory or ready to depart for it."""
+        """Forecasts signed supply after rival production, preserving any unpaid shared-last debt."""
         departing = self.opponent.target == "MOLECULES" and self.enemy_idle <= 1 and not self.enemy_unknown
         if not departing and (self.opponent.target != "LABORATORY" or self.enemy_idle >= 12):
             return None
@@ -564,7 +574,7 @@ class Bot:
             return None
         returned = tuple(min(choice[2][i] for choice in choices) for i in range(5))
         delay = self.opponent.eta + max(choice[1] for choice in choices) + (self.travel("MOLECULES", "LABORATORY") if departing else 0)
-        return tuple(max(0, 5 - self.me.storage[i] - self.opponent.storage[i] + returned[i]) for i in range(5)), delay
+        return tuple(5 - self.me.storage[i] - self.opponent.storage[i] + returned[i] for i in range(5)), delay
 
     def wait_for_release(self, current: Plan | None = None) -> str | None:
         """Collects safe requirements or waits briefly for an imminent useful molecule return."""
@@ -601,9 +611,18 @@ class Bot:
         self.reason = "no-completable-work"
         return "WAIT"
 
-    def denial_pickup(self) -> int | None:
+    def denial_pickup(self, delivery: Plan | None = None) -> int | None:
         """Finds a molecule that can block a live rival medicine before its last required pickup.
+        :param delivery: Funded own delivery requiring a single pickup and no subsequent spending of its molecule type.
         :return: Molecule index for a feasible reservation, or None when no known threat can be blocked."""
+        spent = set()
+        if delivery is not None:
+            expertise = list(self.me.expertise)
+            own = {sample.id: sample for sample in self.known}
+            for identity in delivery.order:
+                sample = own[identity]
+                spent.update(i for i in range(5) if sample.cost[i] > expertise[i])
+                expertise[sample.gain] += 1
         choices = []
         for count in range(1, len(self.enemy) + 1):
             for order in permutations(self.enemy, count):
@@ -621,7 +640,8 @@ class Bot:
                             for i in range(5):
                                 captures = supply[i] - missing[i] + 1
                                 deadline = arrival + missing[i] - 1
-                                if missing[i] and 0 < captures <= min(self.available[i], 10 - sum(self.me.storage), deadline):
+                                if missing[i] and 0 < captures <= min(self.available[i], 10 - sum(self.me.storage), deadline) and \
+                                        (delivery is None or captures == 1 and i not in spent):
                                     choices.append((deadline, finish, -sample.health, captures, i))
                         break
                     elapsed += self.travel(location, "LABORATORY") + 1

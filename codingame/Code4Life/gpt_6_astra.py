@@ -417,6 +417,9 @@ class Bot:
                             supply[i] += demand[i] - takes[i]
                         begin = end
                     else:
+                        # Expertise already discounts this order; future bonuses require time after its last delivery.
+                        if self.remaining - elapsed <= 22:
+                            utility = points
                         risk = 0
                         if self.opponent.target == "MOLECULES" and self.opponent.eta <= 3 and first_takes is not None:
                             risk = sum(min(all_takes[i], self.enemy_need[i]) / (max(0, pool[i] - all_takes[i]) + 1) for i in range(5))
@@ -425,11 +428,12 @@ class Bot:
                             rating += 0.025 * (sum(self.me.storage) - sum(storage))
                             if tuple(sample.id for sample in order) == self.commitment:
                                 rating *= 1.035
-                        if best is None or (rating, -elapsed) > (best.rating, -best.duration):
+                        if best is None or (rating, -elapsed, -sum(completions)) > (best.rating, -best.duration, -sum(best.completions)):
                             best = Plan(tuple(sample.id for sample in order), action, first_takes, elapsed, points, rating, tuple(completions), first_batch)
                         if not exchange and position == "MOLECULES" and tuple(sample.id for sample in order) == self.collection_order:
                             if (not self.collection_batch or first_batch == self.collection_batch) and \
-                                    (committed is None or (rating, -elapsed) > (committed.rating, -committed.duration)):
+                                    (committed is None or (rating, -elapsed, -sum(completions)) >
+                                     (committed.rating, -committed.duration, -sum(committed.completions))):
                                 committed = Plan(self.collection_order, action, first_takes, elapsed, points, rating, tuple(completions), first_batch)
         if committed is not None:
             preserves_batch = all(identity in best.batch for identity in committed.batch)

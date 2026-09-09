@@ -233,6 +233,12 @@ class Bot:
                     return self.use(future, "route-to-release")
         if self.known or self.cloud:
             candidate = self.search(self.diagnosis_candidates(), position="DIAGNOSIS", delay=self.travel(self.me.target, "DIAGNOSIS"), exchange=True)
+            forecast = self.release_forecast()
+            if forecast is not None and forecast[1] <= self.travel(self.me.target, "DIAGNOSIS") + self.travel("DIAGNOSIS", "MOLECULES") + 3:
+                future = self.search(self.diagnosis_candidates(), position="DIAGNOSIS", delay=self.travel(self.me.target, "DIAGNOSIS"),
+                                     exchange=True, pool=forecast[0], release_after=forecast[1])
+                if future is not None and (candidate is None or future.rating > candidate.rating * 1.015):
+                    candidate = future
             if candidate is not None:
                 self.reason = "exchange"
                 self.commitment = ()
@@ -390,7 +396,7 @@ class Bot:
                                 action = f"CONNECT {order[0].id}" if location == "LABORATORY" else "GOTO LABORATORY"
                         if pickups:
                             elapsed += self.travel(location, "MOLECULES")
-                            if begin and elapsed >= self.enemy_molecule_time:
+                            if (begin or position == "LABORATORY") and elapsed >= self.enemy_molecule_time:
                                 exposure += sum(takes[i] / (max(0, supply[i] - takes[i]) + 1)
                                                 for i in range(5) if takes[i] and supply[i] - takes[i] <= 1)
                             safe_pickups = sum(min(takes[i], max(0, self.available[i])) for i in range(5))
@@ -616,7 +622,7 @@ class Bot:
         return "WAIT"
 
     def denial_pickup(self, delivery: Plan | None = None) -> int | None:
-        """Finds a molecule that can block a live rival medicine before its last required pickup.
+        """Finds a molecule that can block a live rival medicine after feasible production prefixes.
         :param delivery: Funded own delivery requiring a single pickup and no subsequent spending of its molecule type.
         :return: Molecule index for a feasible reservation, or None when no known threat can be blocked."""
         spent = set()
@@ -640,14 +646,17 @@ class Bot:
                     if any(missing):
                         arrival = elapsed + self.travel(location, "MOLECULES")
                         finish = arrival + sum(missing) + self.travel("MOLECULES", "LABORATORY") + 1
-                        if finish <= self.remaining and sum(storage) + sum(missing) <= 10 and all(missing[i] <= supply[i] for i in range(5)):
-                            for i in range(5):
-                                captures = supply[i] - missing[i] + 1
-                                deadline = arrival + missing[i] - 1
-                                if missing[i] and 0 < captures <= min(self.available[i], 10 - sum(self.me.storage), deadline) and \
-                                        (delivery is None or captures == 1 and i not in spent):
-                                    choices.append((deadline, finish, -sample.health, captures, i))
-                        break
+                        if finish > self.remaining or sum(storage) + sum(missing) > 10 or any(missing[i] > supply[i] for i in range(5)):
+                            break
+                        for i in range(5):
+                            captures = supply[i] - missing[i] + 1
+                            deadline = self.opponent.eta + self.travel(self.opponent.target, "MOLECULES") + max(0, need[i] - self.opponent.storage[i]) - 1
+                            if missing[i] and 0 < captures <= min(self.available[i], 10 - sum(self.me.storage), deadline) and \
+                                    (delivery is None or captures == 1 and i not in spent):
+                                choices.append((deadline, finish, -sample.health, captures, i))
+                        storage = [storage[i] + missing[i] for i in range(5)]
+                        elapsed = arrival + sum(missing)
+                        location = "MOLECULES"
                     elapsed += self.travel(location, "LABORATORY") + 1
                     location = "LABORATORY"
                     storage = [storage[i] - need[i] for i in range(5)]

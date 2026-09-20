@@ -8,7 +8,7 @@ DAYS, MAX_DEGREE, MAX_PODS, POD_SIZE = 20, 5, 500, 10
 POD_COST, POD_REFUND, REROUTE_COST, TELEPORT_COST = 1000, 750, 250, 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;TUBE 1 2; TUBE 1 8;POD 1;POD 2;POD 3;POD 4"
+OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;TUBE 1 2;TUBE 1 8;POD 1;POD 2;POD 3;POD 4"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -38,21 +38,16 @@ class Person:
     id: int
 @dataclass(slots=True, frozen=True)
 class Load:
-    pool: Pool
-    destination: int
-    nodes: Path
-    cap: int
-    priority: int = field(default=0, compare=False)
-    reserved: bool = False
-    h: int = field(init=False, compare=False)
-    def __post_init__(self):
-        object.__setattr__(self, "h", hash((self.pool, self.destination, self.nodes, self.cap, self.reserved)))
-    def __hash__(self):
-        return self.h
-def assignment_text(paths, pod_id, requests, moves,
-        carrying):
+    """Groups passengers on nodes; cap counts them, priority ranks them, batch holds delivery lengths, edges holds depth/edge pairs."""
+    nodes: Pair
+    cap: int = field(compare=False)
+    priority: int = field(compare=False)
+    batch: tuple[int, ...] = field(compare=False)
+    edges: tuple[tuple[int, Pair], ...] = field(compare=False)
+def assignment_text(paths: set[Load], pod_id: int, requests: dict, moves: dict, carrying: set) -> str:
+    """Formats paths for pod_id using requests, accepted moves and the actual carrying pods."""
     return "/".join(("   " if pod_id not in requests else "E! " if pod_id not in moves else
-        "-> " if requests[pod_id] not in zip(path.nodes, path.nodes[1:]) else ".. " if pod_id in carrying else "   ") +
+        ".. " if pod_id in carrying and any(requests[pod_id] == edge for _, edge in path.edges) else "-> ") +
         "-".join(map(str, path.nodes)) for path in paths) or "   -"
 @dataclass(slots=True)
 class PodPlan:
@@ -712,8 +707,8 @@ class Planner:
             distances, module_distances = self.distances_to_targets(state)
             demands = self.path_demands(state, distances, module_distances)
             for demand in demands:
-                used.update(edges_of(demand.nodes))
-            origins = sorted({demand.nodes[0] for demand in demands})
+                used.update(edges_of(demand))
+            origins = sorted({demand[0] for demand in demands})
             graph = tube_graph(state.tubes)
             for index, source_id in enumerate(origins):
                 for target_id in origins[index + 1:]:
@@ -831,11 +826,10 @@ class Planner:
     def simulate(self, state, keep_dynamic_paths = False):
         network_key = tuple(sorted(state.tubes)), tuple(sorted(state.teleports.items()))
         if network_key not in self.fs_cache:
-            distances, module_distances = self.distances_to_targets(state)
+            distances, _ = self.distances_to_targets(state)
             graph = tube_graph(state.tubes)
-            self.fs_cache[network_key] = distances, module_distances, graph, self.wanted_edges(distances, graph), \
-                self.initial_queues(distances), {}, {}
-        distances, module_distances, graph, wanted_edges, initial, route_cache, choice_cache = self.fs_cache[network_key]
+            self.fs_cache[network_key] = distances, graph, self.wanted_edges(distances, graph), self.initial_queues(distances), {}
+        distances, graph, wanted_edges, initial, route_cache = self.fs_cache[network_key]
         queues = {building_id: passengers[:] for building_id, passengers in initial.items()}
         result = Result()
         f_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if not pod.dynamic]
@@ -844,8 +838,7 @@ class Planner:
         shared_capacities = tuple((edge, state.tubes[edge]) for edge, count in sorted(fixed_usage.items()) if count > 1)
         key = network_key, shared_capacities, tuple((pod_id, tuple(pod.path), tuple(pod.assignments)) for pod_id, pod in f_pods)
         if d_pods and key not in self.fs_cache:
-            self.fs_cache[key] = self.fixed_assignment_schedule(state, distances, module_distances, wanted_edges, f_pods,
-                route_cache, choice_cache)
+            self.fs_cache[key] = self.fixed_assignment_schedule(state, distances, f_pods)
         fixed_reservations, summary = self.fs_cache[key] if d_pods else ([], Counter())
         if keep_dynamic_paths:
             result.reserved = ", ".join("({})x{}".format("-".join(map(str, path)), count)
@@ -864,22 +857,25 @@ class Planner:
             if not d_pods and not FULL_DEBUG and not keep_dynamic_paths:
                 if not any(wanted_edges[node_id, passenger.kind] for node_id, passengers in queues.items() for passenger in passengers):
                     break
-                requests = self.path_pod_requests(f_pods, [], positions, {}, {}, {}, {}, graph)
+                routes = self.pod_routes(f_pods, [], positions, {}, {}, {}, graph, day=day)
+                requests = {pod_id: route[:2] for pod_id, route in routes.items() if len(route) > 1}
                 assigned = {pod_id for pod_id, pod in f_pods if day < len(pod.assignments) and pod.assignments[day]}
                 moves = self.allocate_tube_capacity(requests, state, result, day, assigned)
                 result.carrying_days.update(self.board_and_launch(queues, distances, state, moves, positions, {}, {}))
                 self.settle(day + 1, queues, arrivals, result)
                 continue
             reserved_passengers = fixed_reservations[day] if d_pods else set()
-            active = self.daily_loads(state, queues, module_distances, reserved_passengers, route_cache, choice_cache)
+            active = self.daily_loads(state, queues, distances, wanted_edges, reserved_passengers, route_cache)
             if not active:
                 break
-            fixed_jobs, _, _ = self.fixed_load_assignments(f_pods, positions, active, queues, wanted_edges, day)
+            by_edge = {load.nodes: load for load in active}
+            fixed_jobs = {pod_id: {by_edge[pod.assignments[day][:2]]} for pod_id, pod in f_pods if pod.assignments[day][:2] in by_edge}
             for pod_id, _ in f_pods:
                 paths = fixed_jobs.get(pod_id)
                 pod_assignments[pod_id].append(next(iter(paths)).nodes if paths else ())
             if not d_pods:
-                requests = self.path_pod_requests(f_pods, [], positions, {}, {}, {}, {}, graph)
+                routes = self.pod_routes(f_pods, [], positions, {}, {}, {}, graph, day=day)
+                requests = {pod_id: route[:2] for pod_id, route in routes.items() if len(route) > 1}
                 moves = self.allocate_tube_capacity(requests, state, result, day, set(fixed_jobs))
                 locations = {pod_id: pod.path[positions[pod_id]] for pod_id, pod in f_pods} if FULL_DEBUG else {}
                 carrying = self.board_and_launch(queues, distances, state, moves, positions, {}, {})
@@ -904,22 +900,23 @@ class Planner:
                 next_index = fixed_next_index(pod.path, index)
                 if pod_id in fixed_jobs and next_index != index:
                     occupied[route_key(pod.path[index], pod.path[next_index])] += 1
-            assignments, prefs, efficiency_context = self.dispatch_dynamic_paths(active, d_pods, at, pending, queues, wanted_edges,
-                reserved_passengers, result.delivered_by_module, graph, day)
+            assignments, prefs = self.dispatch_dynamic_loads(active, d_pods, at, pending, graph, day)
             ideal = assignments.copy()
             self.fix_passenger_capacity(ideal, prefs)
-            ideal_req = self.path_pod_requests(f_pods, d_pods, positions, at, pending, ideal, fixed_jobs, graph)
+            ideal_routes = self.pod_routes(f_pods, d_pods, positions, at, pending, ideal, graph, day=day, fixed_jobs=fixed_jobs)
+            ideal_req = {pod_id: route[:2] for pod_id, route in ideal_routes.items() if len(route) > 1}
             if FULL_DEBUG:
                 i_jobs = assignments.copy()
-                i_req = self.path_pod_requests(f_pods, d_pods, positions, at, pending, assignments, fixed_jobs, graph)
+                i_routes = self.pod_routes(f_pods, d_pods, positions, at, pending, assignments, graph, day=day, fixed_jobs=fixed_jobs)
+                i_req = {pod_id: route[:2] for pod_id, route in i_routes.items() if len(route) > 1}
                 i_moves = i_req
                 i_at = {pod_id: pod.path[positions[pod_id]] if not pod.dynamic else
                     at[pod_id] if at[pod_id] != -1 else i_req.get(pod_id, ("-",))[0]
                     for pod_id, pod in state.pods.items()}
                 i_carry = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, i_moves, positions.copy(), at.copy(), pending.copy())
-            capacity_context = self.finite_capacity_context(prefs, state, occupied)
-            path_capped = self.fix_finite_capacity(assignments, prefs, capacity_context)
+            assignments = ideal.copy()
+            bookings, path_capped = self.fix_finite_capacity(assignments, prefs, state, occupied, at, pending, graph)
             if FULL_DEBUG:
                 c_jobs = ideal.copy()
                 c_req = ideal_req
@@ -929,16 +926,18 @@ class Planner:
                     for pod_id, pod in state.pods.items()}
                 c_carry = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, c_moves, positions.copy(), at.copy(), pending.copy())
-            assignments, requests, moves = self.resolve_edge_conflicts(assignments, prefs, efficiency_context, f_pods, d_pods,
-                fixed_jobs, positions, at, pending, graph, capacity_context, result, state, day)
-            blocked = {min(edges_of(ideal[p].nodes), key=lambda edge: (state.tubes[edge],
-                min(ideal[p].nodes.index(edge[0]), ideal[p].nodes.index(edge[1])))) for p in path_capped if p in ideal}
+            routes = self.pod_routes(f_pods, d_pods, positions, at, pending, assignments, graph, bookings, day, fixed_jobs)
+            self.resolve_alternative_routes(routes, assignments, fixed_jobs, pending, graph, state, queues, wanted_edges, day)
+            self.idle_pod_routes(routes, assignments, fixed_jobs, at, pending, graph)
+            requests = {pod_id: route[:2] for pod_id, route in routes.items() if len(route) > 1}
+            moves = self.allocate_tube_capacity(requests, state, result, day, set())
+            blocked = {route_key(*min(ideal[p].edges, key=lambda item: (state.tubes[route_key(*item[1])], item))[1])
+                for p in path_capped if p in ideal and assignments.get(p) != ideal[p]}
             for p in (set(ideal) | set(fixed_jobs)) - path_capped:
                 if p not in ideal_req:
                     continue
-                final = assignments.get(p)
-                alternative = p in ideal and final and requests.get(p) != ideal_req[p] and moves.get(p) == requests.get(p) and \
-                    final.destination == ideal[p].destination and len(final.nodes) == len(ideal[p].nodes)
+                alternative = p in ideal and assignments.get(p) == ideal[p] and moves.get(p) == requests.get(p) and \
+                    routes[p][-1] == ideal_routes[p][-1] and len(routes[p]) == len(ideal_routes[p])
                 if moves.get(p) != ideal_req[p] and not alternative:
                     blocked.add(route_key(*ideal_req[p]))
             if blocked:
@@ -980,10 +979,8 @@ class Planner:
         if keep_dynamic_paths:
             result.dynamic_paths = {pod_id: normalize_month_path(path) for pod_id, path in dynamic_paths.items()}
         return result
-    def fixed_assignment_schedule(self, state, distances,
-            module_distances, wanted_edges,
-            f_pods, route_cache,
-            choice_cache):
+    def fixed_assignment_schedule(self, state: State, distances: dict, f_pods: list) -> tuple:
+        """Simulates f_pods on state using distances; returns daily reserved passenger ids and delivered edge counts."""
         if not f_pods:
             return [set() for _ in range(DAYS)], Counter()
         initial = self.initial_queues(distances)
@@ -992,115 +989,63 @@ class Planner:
         positions = {pod_id: 0 for pod_id, _ in f_pods}
         arrivals = Counter()
         schedule = []
-        summary = Counter()
         for day in range(DAYS):
             self.teleport_phase(queues, distances, state.teleports)
             self.settle(day, queues, arrivals, result)
             for passengers in queues.values():
                 passengers.sort(key=BY_ID)
-            active = self.daily_loads(state, queues, module_distances, set(), route_cache, choice_cache)
-            _, reservations, claimed = self.fixed_load_assignments(f_pods, positions, active, queues, wanted_edges, day, True)
-            schedule.append((reservations, claimed))
-            if not active:
-                schedule.extend((set(), {}) for _ in range(day + 1, DAYS))
-                break
-            requests = {}
-            for pod_id, pod in f_pods:
-                next_index = fixed_next_index(pod.path, positions[pod_id])
-                if next_index != positions[pod_id]:
-                    requests[pod_id] = pod.path[positions[pod_id]], pod.path[next_index]
+            before = {passenger.id: node for node, passengers in queues.items() for passenger in passengers}
+            requests = {pod_id: (pod.path[positions[pod_id]], pod.path[fixed_next_index(pod.path, positions[pod_id])])
+                for pod_id, pod in f_pods if fixed_next_index(pod.path, positions[pod_id]) != positions[pod_id]}
             moves = self.allocate_tube_capacity(requests, state, result, day, set())
             self.board_and_launch(queues, distances, state, moves, positions, {}, {})
+            schedule.append({passenger.id: (before[passenger.id], node) for node, passengers in queues.items()
+                for passenger in passengers if before[passenger.id] != node})
             self.settle(day + 1, queues, arrivals, result)
         delivered = {passenger.id for passengers in initial.values() for passenger in passengers} \
             - {passenger.id for passengers in queues.values() for passenger in passengers}
         future = set()
         filtered = [set() for _ in range(DAYS)]
+        summary = Counter()
         for day in range(DAYS - 1, -1, -1):
-            reservations, claimed = schedule[day]
-            future.update(reservations & delivered)
+            future.update(schedule[day].keys() & delivered)
             filtered[day] = set(future)
-            for path, passenger_ids in claimed.items():
-                summary[path.nodes] += len(passenger_ids & delivered)
+            summary.update(edge for passenger_id, edge in schedule[day].items() if passenger_id in delivered)
         return filtered, summary
-    def fixed_load_assignments(self, f_pods, positions,
-            active, queues,
-            wanted_edges, day, claims = False):
-        by_nodes = {}
-        for path in active:
-            by_nodes.setdefault(path.nodes, []).append(path)
-        assignments = {}
-        for pod_id, pod in f_pods:
-            matches = by_nodes.get(pod.assignments[day], ())
-            if matches:
-                assignments[pod_id] = {min(matches, key=lambda item: (-item.priority, item.pool, item.destination))}
-        if not claims:
-            return assignments, set(), {}
-        moves = {}
-        for pod_id, pod in f_pods:
-            next_index = fixed_next_index(pod.path, positions[pod_id])
-            if next_index != positions[pod_id]:
-                moves[pod_id] = pod.path[positions[pod_id]], pod.path[next_index]
-        paths = {}
-        for path in active:
-            paths.setdefault((path.pool, path.nodes[:2]), []).append(path)
-        claimed = {}
-        reservations = set()
-        seats = {pod_id: POD_SIZE for pod_id in moves}
-        by_source = {}
-        for pod_id, move in moves.items():
-            by_source.setdefault(move[0], []).append((pod_id, move[1]))
-        for source_id, passengers in queues.items():
-            candidates = sorted(by_source.get(source_id, []))
-            if not candidates:
-                continue
+    def daily_loads(self, state: State, queues: dict, distances: dict, wanted_edges: dict, reserved: set, route_cache: dict) -> list[Load]:
+        """Groups queues by wanted_edges using state and distances, marks reserved loads and caches delivery edges in route_cache."""
+        generating = {}
+        for node, passengers in queues.items():
             for passenger in passengers:
-                pod_id = next((candidate_id for candidate_id, target_id in candidates
-                    if seats[candidate_id] and (source_id, target_id) in wanted_edges[source_id, passenger.kind]), 0)
-                if not pod_id:
-                    continue
-                seats[pod_id] -= 1
-                pool = passenger.pad_id, passenger.kind
-                reservations.add(passenger.id)
-                edge = source_id, moves[pod_id][1]
-                options = [path for path in paths.get((pool, edge), []) if len(claimed.get(path, ())) < path.cap]
-                if options:
-                    path = min(options, key=lambda item: (-item.priority, item.destination, item.nodes))
-                    claimed.setdefault(path, set()).add(passenger.id)
-        return assignments, reservations, claimed
-    def daily_loads(self, state, queues, module_distances,
-            reserved, route_cache,
-            choice_cache):
-        counts = Counter(((passenger.pad_id, passenger.kind), node_id)
-            for node_id, passengers in queues.items() for passenger in passengers)
-        reserved_counts = Counter(((passenger.pad_id, passenger.kind), node_id)
-            for node_id, passengers in queues.items() for passenger in passengers if passenger.id in reserved)
-        choices = {}
-        for pool, node_id in sorted(counts):
-            key = pool[1], node_id
-            if key not in choice_cache:
-                modules = [building.id for building in self.buildings.values() if building.kind == pool[1]]
-                distance = min(module_distances[module_id][node_id] for module_id in modules)
-                choice_cache[key] = tuple(sorted(module_id for module_id in modules if module_distances[module_id][node_id] == distance))
-            options = choice_cache[key]
-            choices[pool, node_id] = options
+                for edge in wanted_edges[node, passenger.kind]:
+                    generating.setdefault(edge, []).append(passenger)
         loads = []
-        for (pool, node_id), count in sorted(counts.items()):
-            options = choices[pool, node_id]
-            for destination in options:
-                key = node_id, destination
+        for edge, passengers in sorted(generating.items()):
+            delivery_edges = {}
+            for kind in {passenger.kind for passenger in passengers}:
+                key = edge, kind
                 if key not in route_cache:
-                    path = self.concrete_path(node_id, destination, state)
-                    route_cache[key] = next((item for item in self.tube_path_runs(path, state) if item[0] == node_id), ())
-                run = route_cache[key]
-                if not run:
-                    continue
-                normal_count = count - reserved_counts[pool, node_id]
-                if normal_count:
-                    loads.append(Load(pool, destination, run, normal_count))
-                reserved_count = reserved_counts[pool, node_id]
-                if reserved_count:
-                    loads.append(Load(pool, destination, run, reserved_count, -1, True))
+                    edges = {edge: 0}
+                    todo = [edge[1]]
+                    seen = set()
+                    while todo:
+                        node = todo.pop()
+                        if node in seen or distances[kind][node] == 0:
+                            continue
+                        seen.add(node)
+                        exit_id = state.teleports.get(node)
+                        if exit_id is not None and distances[kind][exit_id] <= distances[kind][node]:
+                            todo.append(exit_id)
+                            continue
+                        for following in wanted_edges[node, kind]:
+                            edges[following] = distances[kind][edge[0]] - distances[kind][node]
+                            todo.append(following[1])
+                    route_cache[key] = tuple((depth, path_edge) for path_edge, depth in edges.items())
+                for depth, path_edge in route_cache[key]:
+                    delivery_edges[path_edge] = min(depth, delivery_edges.get(path_edge, INF))
+            batch = tuple(distances[passenger.kind][edge[0]] for passenger in passengers[:POD_SIZE])
+            loads.append(Load(edge, len(passengers), -int(all(passenger.id in reserved for passenger in passengers)), batch,
+                tuple(sorted((depth, path_edge) for path_edge, depth in delivery_edges.items()))))
         return loads
     def path_demands(self, state, distances,
             module_distances):
@@ -1108,11 +1053,10 @@ class Planner:
         for pool in self.speed_pools():
             options = [module.id for module in self.buildings.values() if module.kind == pool[1]
                 and module_distances[module.id][pool[0]] == distances[pool[1]][pool[0]]]
-            count = self.buildings[pool[0]].demand[pool[1]]
             for module_id in options:
                 path = self.concrete_path(pool[0], module_id, state)
                 for run in self.tube_path_runs(path, state):
-                    demands.append(Load(pool, module_id, run, count))
+                    demands.append(run)
         return demands
     def concrete_path(self, start_id, finish_id, state):
         edges = {}
@@ -1151,333 +1095,257 @@ class Planner:
         if run:
             runs.append(tuple(run))
         return runs
-    def dispatch_dynamic_paths(self, active, d_pods, current,
-            pending, queues, wanted_edges,
-            reserved_passengers, delivered, graph, day):
-        assignments = {}
-        prefs = {}
-        capacities = {}
-        options = {}
-        for path in active:
-            edge = path.nodes[:2]
-            key = edge, path.reserved
-            if key not in capacities:
-                capacities[key] = sum((passenger.id in reserved_passengers) == path.reserved and
-                    edge in wanted_edges[edge[0], passenger.kind] for passenger in queues.get(edge[0], ()))
-            options.setdefault((path.pool, path.reserved, edge), []).append(path)
-        paths = [(replace(path, cap=capacities[path.nodes[:2], path.reserved]),
-            (path.cap + POD_SIZE - 1) // POD_SIZE * (len(path.nodes) - 1)) for path in active]
-        options = {key: tuple(values) for key, values in options.items()}
-        context = {}, options, queues, wanted_edges, reserved_passengers, delivered, day, {}
+    def dispatch_dynamic_loads(self, active: list[Load], d_pods: list, current: dict, pending: dict, graph: dict, day: int) -> tuple:
+        """Ranks active loads for d_pods from current and pending positions on graph at day; returns assignments and preferences."""
+        assignments, prefs = {}, {}
+        scores = {}
         for pod_id, _ in d_pods:
             evaluated = []
-            for path, delivery_time in paths:
-                reach = self.load_reach(pod_id, path, current, pending, graph)
-                if reach + len(path.nodes) - 1 > DAYS - day:
-                    continue
-                edge = pending[pod_id] if current[pod_id] == path.nodes[0] and pending[pod_id] != (-1, -1) and reach == 0 else None
-                efficiency = self.load_efficiency(path, reach, 0, context, edge)
-                evaluated.append((path, efficiency, delivery_time))
-            evaluated.sort(key=lambda item: (-item[0].priority, -item[1][0], -item[1][1], -item[2],
-                item[0].pool, item[0].destination, item[0].nodes))
-            seen = set()
-            prefs[pod_id] = [item[:2] for item in evaluated if item[0].nodes[:2] not in seen and not seen.add(item[0].nodes[:2])]
-            prefs[pod_id].append((None, (0, 0)))
-            if prefs[pod_id][0][0]:
-                assignments[pod_id] = prefs[pod_id][0][0]
-        return assignments, prefs, context
-    def load_reach(self, pod_id, path, current, pending, graph):
+            for load in active:
+                reach = self.pod_distance(pod_id, load.nodes[0], current, pending, graph)
+                if current[pod_id] == load.nodes[0] and pending[pod_id] == load.nodes:
+                    reach = 0
+                key = load, reach
+                if key not in scores:
+                    scores[key] = sum((50 - day - reach - length) / (reach + length)
+                        for length in load.batch if reach + length <= DAYS - day)
+                if scores[key] > 0:
+                    evaluated.append((load, scores[key]))
+            evaluated.sort(key=lambda item: (-item[0].priority, -item[1], -item[0].cap, item[0].nodes))
+            prefs[pod_id] = [*evaluated, (None, 0)]
+            if evaluated:
+                assignments[pod_id] = evaluated[0][0]
+        return assignments, prefs
+    def pod_distance(self, pod_id: int, target: int, current: dict, pending: dict, graph: dict) -> int:
+        """Returns distance to target on graph for pod_id, respecting current location and pending movement."""
         if current[pod_id] == -1:
             return 0
         if pending[pod_id] != (-1, -1):
-            return 0 if current[pod_id] == path.nodes[0] and graph_distance(graph, pending[pod_id][1], path.nodes[-1]) == len(path.nodes) - 2 else \
-                1 + graph_distance(graph, pending[pod_id][1], path.nodes[0])
-        return graph_distance(graph, current[pod_id], path.nodes[0])
-    def load_efficiency(self, path, reach, wait, context, edge = None):
-        batches, options_by_load, queues, wanted_edges, reserved, delivered, day, cache = context
-        edge = edge or path.nodes[:2]
-        cache_key = path, reach, wait, edge
-        if cache_key in cache:
-            return cache[cache_key]
-        batch_key = edge, path.reserved
-        if batch_key not in batches:
-            batches[batch_key] = [passenger for passenger in queues.get(edge[0], []) if (passenger.id in reserved) == path.reserved and
-                edge in wanted_edges[edge[0], passenger.kind]][:POD_SIZE]
-        added = {}
-        efficiency = [0, 0]
-        for passenger in batches[batch_key]:
-            pool = passenger.pad_id, passenger.kind
-            options = options_by_load.get((pool, path.reserved, edge), ())
-            if path.pool == pool and path.nodes[:2] == edge:
-                options = (*options, path)
-            if not options:
-                continue
-            best = None
-            for candidate in options:
-                travel = reach + len(candidate.nodes) - 1 + wait
-                value = (max(0, 50 - day - travel) / travel,
-                    max(0, 50 - delivered[candidate.destination] - added.get(candidate.destination, 0)) / travel)
-                key = -value[0], -value[1], load_id(candidate)
-                if best is None or key < best[0]:
-                    best = key, candidate.destination, value
-            efficiency[0] += best[2][0]
-            efficiency[1] += best[2][1]
-            added[best[1]] = added.get(best[1], 0) + 1
-        cache[cache_key] = tuple(efficiency)
-        return cache[cache_key]
-    def resolve_edge_conflicts(self, jobs, prefs, efficiency_context, f_pods, d_pods,
-            fixed_jobs, positions, at, pending, graph, capacity_context,
-            result, state, day):
-        overrides = {}
-        def requests():
-            return self.path_pod_requests(f_pods, d_pods, positions, at, pending, jobs, fixed_jobs, graph, overrides)
-        req = requests()
-        overrides.update(self.avoid_predicted_conflicts(jobs, req, f_pods, d_pods, positions, at, pending, graph, state, day))
-        req = requests()
-        seen = set()
-        valid = {}
+            return 1 + graph_distance(graph, pending[pod_id][1], target)
+        return graph_distance(graph, current[pod_id], target)
+    def fix_passenger_capacity(self, assignments: dict, prefs: dict):
+        """Advances assignments through prefs until generating passengers can supply all assigned pods."""
         while True:
-            key = tuple(sorted(jobs.items())), tuple(sorted(overrides.items()))
-            if key in seen:
-                break
-            seen.add(key)
-            by_edge = {}
-            for pod_id, move in req.items():
-                by_edge.setdefault(route_key(*move), []).append(pod_id)
-            proposals = []
-            for edge in sorted(edge for edge, pods in by_edge.items() if len(pods) > state.tubes[edge]):
-                for pod_id in sorted(pod_id for pod_id in by_edge[edge] if pod_id in jobs):
-                    old = jobs[pod_id]
-                    wait = sum(other_id < pod_id for other_id in by_edge[edge]) // state.tubes[edge]
-                    current_efficiency = self.load_efficiency(old, self.option_reach(pod_id, old, req[pod_id], at, graph), wait, efficiency_context)
-                    for path, _ in prefs[pod_id]:
-                        if path is None or path.priority < old.priority:
-                            continue
-                        for evaluated, move, reach in self.load_move_options(pod_id, path, at, pending, graph):
-                            if path == old and move == req[pod_id]:
-                                continue
-                            trial = dict(jobs)
-                            trial[pod_id] = path
-                            trial_key = tuple(sorted(trial.items()))
-                            if trial_key not in valid:
-                                checked = dict(trial)
-                                self.fix_passenger_capacity(checked, prefs)
-                                self.fix_finite_capacity(checked, prefs, capacity_context)
-                                valid[trial_key] = checked == trial
-                            if not valid[trial_key]:
-                                continue
-                            candidate_edge = route_key(*move)
-                            candidate_wait = sum(other_id < pod_id for other_id, other_move in req.items()
-                                if other_id != pod_id and route_key(*other_move) == candidate_edge) // state.tubes[candidate_edge]
-                            efficiency = self.load_efficiency(evaluated, reach, candidate_wait, efficiency_context, evaluated.nodes[:2])
-                            gain = tuple(value - current for value, current in zip(efficiency, current_efficiency))
-                            if gain > (0, 0):
-                                proposals.append((gain, pod_id, path, move))
-            if not proposals:
-                break
-            _, pod_id, path, move = min(proposals,
-                key=lambda item: (-item[0][0], -item[0][1], item[1], load_id(item[2]), item[3]))
-            jobs[pod_id] = path
-            overrides[pod_id] = move
-            req = requests()
-        return jobs, req, self.allocate_tube_capacity(req, state, result, day, set())
-    def avoid_predicted_conflicts(self, jobs, requests, f_pods, d_pods, positions, current, pending, graph, state, day):
+            counts = Counter(assignments.values())
+            load = next((load for load in sorted(counts, key=load_id) if counts[load] > (load.cap + POD_SIZE - 1) // POD_SIZE), None)
+            if load is None:
+                return
+            pods = [pod_id for pod_id, assigned in assignments.items() if assigned == load]
+            self.advance_assignment(min(pods, key=lambda pod_id: (self.preference_loss(pod_id, load, prefs), pod_id)), assignments, prefs)
+    def fix_finite_capacity(self, assignments: dict, prefs: dict, state: State, occupied: Counter, current: dict, pending: dict, graph: dict) -> tuple:
+        """Resolves assignments using prefs and state slots minus occupied; returns bookings and capped pods using current/pending graph distances."""
+        def choices(pod_id: int, load: Load) -> list:
+            """Returns reachable-edge choices for pod_id and load in distance/depth order."""
+            key = pod_id, load
+            if key not in options:
+                options[key] = sorted((min(self.pod_distance(pod_id, node, current, pending, graph) for node in edge), depth, edge)
+                    for depth, edge in load.edges)
+            return options[key]
+        def reserve() -> tuple:
+            """Books current assignments upstream first; returns bookings, usage and the next conflict group."""
+            bookings, owners = {}, {}
+            usage = occupied.copy()
+            on_path = []
+            for pod_id, load in assignments.items():
+                location = current[pod_id]
+                depths = [depth + (location == edge[1]) for depth, edge in load.edges if location in edge]
+                if location == -1 or depths:
+                    on_path.append((min(depths, default=0), pod_id))
+            for _, pod_id in sorted(on_path):
+                load = assignments[pod_id]
+                eligible = [(reach, depth, edge) for reach, depth, edge in choices(pod_id, load)
+                    if reach < INF and usage[route_key(*edge)] < state.tubes[route_key(*edge)]]
+                if not eligible:
+                    group = {pod_id}
+                    todo = [pod_id]
+                    while todo:
+                        member = todo.pop()
+                        for _, _, edge in choices(member, assignments[member]):
+                            for other in owners.get(route_key(*edge), ()):
+                                if other not in group:
+                                    group.add(other)
+                                    todo.append(other)
+                    return bookings, usage, group
+                edge = min(eligible)[2]
+                bookings[pod_id] = edge
+                usage[route_key(*edge)] += 1
+                owners.setdefault(route_key(*edge), []).append(pod_id)
+            outside = set(assignments) - set(bookings)
+            while outside:
+                bids = {}
+                for pod_id in sorted(outside):
+                    eligible = [(reach, depth, edge) for reach, depth, edge in choices(pod_id, assignments[pod_id])
+                        if reach < INF and usage[route_key(*edge)] < state.tubes[route_key(*edge)]]
+                    if not eligible:
+                        return bookings, usage, {pod_id}
+                    bids[pod_id] = eligible
+                reach, _, edge, pod_id = min((*bid, pod_id) for pod_id, candidates in bids.items() for bid in candidates)
+                tied = {other for other, candidates in bids.items() if any(item[0] == reach and route_key(*item[2]) == route_key(*edge)
+                    for item in candidates)}
+                if len(tied) > state.tubes[route_key(*edge)] - usage[route_key(*edge)]:
+                    return bookings, usage, tied
+                bookings[pod_id] = edge
+                usage[route_key(*edge)] += 1
+                outside.remove(pod_id)
+            return bookings, usage, set()
+        options = {}
+        loads = sorted({load for values in prefs.values() for load, _ in values if load}, key=load_id)
+        capped = set()
+        while True:
+            self.fix_passenger_capacity(assignments, prefs)
+            bookings, usage, group = reserve()
+            if group:
+                pod_id = min(group, key=lambda pod_id: (self.preference_loss(pod_id, assignments[pod_id], prefs), pod_id))
+                capped.add(pod_id)
+                self.advance_assignment(pod_id, assignments, prefs)
+                continue
+            counts = Counter(assignments.values())
+            noncapped = [load for load in loads if counts[load] < (load.cap + POD_SIZE - 1) // POD_SIZE and
+                any(usage[route_key(*edge)] < state.tubes[route_key(*edge)] for _, edge in load.edges)]
+            uneven = next((load for load in loads if any(other.priority == load.priority and counts[load] > counts[other] + 1
+                for other in noncapped)), None)
+            if uneven is None:
+                return bookings, capped
+            pods = [pod_id for pod_id, assigned in assignments.items() if assigned == uneven]
+            self.advance_assignment(min(pods, key=lambda pod_id: (self.preference_loss(pod_id, uneven, prefs), pod_id)), assignments, prefs)
+    def preference_loss(self, pod_id: int, load: Load, prefs: dict) -> float:
+        """Returns pod_id's efficiency loss from leaving load for its next entry in prefs."""
+        index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == load)
+        return prefs[pod_id][index][1] - prefs[pod_id][index + 1][1]
+    def advance_assignment(self, pod_id: int, assignments: dict, prefs: dict):
+        """Advances pod_id in assignments to the next load in prefs."""
+        index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == assignments[pod_id])
+        del assignments[pod_id]
+        if prefs[pod_id][index + 1][0]:
+            assignments[pod_id] = prefs[pod_id][index + 1][0]
+    def pod_routes(self, f_pods: list, d_pods: list, positions: dict, current: dict, pending: dict, assignments: dict, graph: dict,
+            bookings: dict = None, day: int = 0, fixed_jobs: dict = None) -> dict:
+        """Routes f_pods from positions and d_pods from current/pending toward assignments/bookings on graph; day and fixed_jobs guide idle pods."""
+        bookings = bookings or {}
         routes = {}
         for pod_id, pod in f_pods:
             index = positions[pod_id]
             route = [pod.path[index]]
             for _ in range(DAYS - day):
-                index = fixed_next_index(pod.path, index)
-                if pod.path[index] == route[-1]:
+                following = fixed_next_index(pod.path, index)
+                if following == index:
                     break
+                index = following
                 route.append(pod.path[index])
             routes[pod_id] = tuple(route)
         for pod_id, _ in d_pods:
-            if pod_id not in jobs or pod_id not in requests:
-                continue
-            path = jobs[pod_id]
-            target_id = path.nodes[-1] if current[pod_id] in (-1, path.nodes[0]) else path.nodes[0]
-            routes[pod_id] = graph_route(graph, requests[pod_id][0], target_id, requests[pod_id][1])
-        usage = Counter((index, route_key(*edge)) for route in routes.values() for index, edge in enumerate(zip(route, route[1:])))
-        overrides = {}
-        for pod_id, _ in d_pods:
-            route = routes.get(pod_id)
-            if pending[pod_id] != (-1, -1) or not route or not any(usage[index, route_key(*edge)] > state.tubes[route_key(*edge)]
-                    for index, edge in enumerate(zip(route, route[1:]))):
-                continue
-            distance = len(route) - 1
-            alternatives = []
-            for neighbor_id in graph[route[0]]:
-                if neighbor_id == route[1] or graph_distance(graph, neighbor_id, route[-1]) != distance - 1:
-                    continue
-                alternative = graph_route(graph, route[0], route[-1], neighbor_id)
-                if all(usage[index, route_key(*edge)] - (route_key(*edge) == route_key(*route[index:index + 2])) <
-                        state.tubes[route_key(*edge)] for index, edge in enumerate(zip(alternative, alternative[1:]))):
-                    alternatives.append(alternative)
-            if not alternatives:
-                continue
-            alternative = min(alternatives)
-            for index, edge in enumerate(zip(route, route[1:])):
-                usage[index, route_key(*edge)] -= 1
-            for index, edge in enumerate(zip(alternative, alternative[1:])):
-                usage[index, route_key(*edge)] += 1
-            routes[pod_id] = alternative
-            overrides[pod_id] = alternative[:2]
-        return overrides
-    def load_move_options(self, pod_id, path, current, pending, graph):
-        source_id = path.nodes[0]
-        if pending[pod_id] != (-1, -1):
-            reach = self.load_reach(pod_id, path, current, pending, graph)
-            evaluated = replace(path, nodes=graph_route(graph, source_id, path.nodes[-1], pending[pod_id][1])) \
-                if reach == 0 and pending[pod_id] != path.nodes[:2] else path
-            return [(evaluated, pending[pod_id], reach)]
-        location = current[pod_id]
-        if location not in (-1, source_id):
-            return [(path, (location, neighbor_id), 1 + graph_distance(graph, neighbor_id, source_id))
-                for neighbor_id in graph[location] if graph_distance(graph, neighbor_id, source_id) < INF]
-        distance = len(path.nodes) - 1
-        return [(path if route == path.nodes else replace(path, nodes=route), route[:2], 0) for neighbor_id in graph[source_id]
-            if graph_distance(graph, neighbor_id, path.nodes[-1]) == distance - 1
-            for route in (graph_route(graph, source_id, path.nodes[-1], neighbor_id),)]
-    def option_reach(self, pod_id, path, move, current, graph):
-        if current[pod_id] in (-1, path.nodes[0]):
-            return 0
-        return 1 + graph_distance(graph, move[1], path.nodes[0])
-    def fix_passenger_capacity(self, assignments, prefs):
-        while True:
-            counts = Counter(assignments.values())
-            path = next((path for path in sorted(counts, key=load_id)
-                if counts[path] > (path.cap + POD_SIZE - 1) // POD_SIZE), None)
-            if path is None:
-                return
-            pods = [pod_id for pod_id, assigned in assignments.items() if assigned == path]
-            self.advance_assignment(min(pods, key=lambda pod_id: (self.preference_loss(pod_id, path, prefs), pod_id)), assignments, prefs)
-    def finite_capacity_context(self, prefs, state, occupied):
-        paths = sorted({path for values in prefs.values() for path, _ in values if path}, key=load_id)
-        path_edges = {path: edges_of(path.nodes) for path in paths}
-        path_capacity = {path: sum(state.tubes[edge] - occupied[edge] for edge in path_edges[path]) for path in paths}
-        return paths, sorted(paths, key=lambda path: (path_capacity[path], load_id(path))), path_edges, \
-            {path: (path.cap + POD_SIZE - 1) // POD_SIZE for path in paths}, state.tubes, occupied, {}
-    def fix_finite_capacity(self, assignments, prefs, context):
-        paths, capacity_order, path_edges, load_capacity, tubes, occupied, overflow_cache = context
-        def overflow(values):
-            cache_key = tuple(values[path] for path in paths)
-            if cache_key in overflow_cache:
-                return overflow_cache[cache_key]
-            matches = {}
-            def assign(path, seen):
-                for edge in path_edges[path]:
-                    for slot in range(occupied[edge], tubes[edge]):
-                        key = edge, slot
-                        if key not in seen:
-                            seen.add(key)
-                            if key not in matches or assign(matches[key], seen):
-                                matches[key] = path
-                                return True
-                return False
-            failure = None
-            for path in capacity_order:
-                for _ in range(values[path]):
-                    if not assign(path, set()):
-                        failure = path
-                        break
-                if failure:
-                    break
-            overflow_cache[cache_key] = failure
-            return failure
-        capped = set()
-        while True:
-            self.fix_passenger_capacity(assignments, prefs)
-            counts = Counter(assignments.values())
-            path = overflow(counts)
-            if path is not None:
-                pods = [pod_id for pod_id, assigned in assignments.items() if assigned == path]
-                pod_id = min(pods, key=lambda item: (self.preference_loss(item, path, prefs), item))
-                capped.add(pod_id)
-                self.advance_assignment(pod_id, assignments, prefs)
-                continue
-            noncapped = {path for path in paths if counts[path] < load_capacity[path] and
-                overflow(counts + Counter({path: 1})) is None}
-            uneven = [path for path in counts if any(other.priority == path.priority and counts[path] > counts[other] + 1
-                for other in noncapped)]
-            if not uneven:
-                return capped
-            path = min(uneven, key=load_id)
-            pods = [pod_id for pod_id, assigned in assignments.items() if assigned == path]
-            self.advance_assignment(min(pods, key=lambda item: (self.preference_loss(item, path, prefs), item)), assignments, prefs)
-    def preference_loss(self, pod_id, path, prefs):
-        index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == path)
-        return tuple(value - following for value, following in zip(prefs[pod_id][index][1], prefs[pod_id][index + 1][1]))
-    def advance_assignment(self, pod_id, assignments, prefs):
-        path = assignments[pod_id]
-        index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == path)
-        del assignments[pod_id]
-        if prefs[pod_id][index + 1][0]:
-            assignments[pod_id] = prefs[pod_id][index + 1][0]
-    def path_pod_requests(self, f_pods, d_pods,
-            positions, current, pending, assignments,
-            fixed_jobs, graph, forced = None):
-        forced = forced or {}
-        requests = {}
-        for pod_id, pod in f_pods:
-            index = positions[pod_id]
-            next_index = fixed_next_index(pod.path, index)
-            if next_index != index:
-                requests[pod_id] = pod.path[index], pod.path[next_index]
-        if not d_pods:
-            return requests
-        options = {}
-        protected_edges = set()
-        for pod_id, pod in f_pods:
-            index = positions[pod_id]
-            for path in fixed_jobs.get(pod_id, ()):
-                route = list(path.nodes) if pod.path[index] == path.nodes[0] else pod.path[index:] + \
-                    (pod.path[1:index + 1] if pod.path[0] == pod.path[-1] else [])
-                if path.nodes[0] in route[1:]:
-                    route = route[:route.index(path.nodes[0], 1) + 1]
-                protected_edges.update(edges_of(route))
-        all_edges = [(a, b) for a in sorted(graph) for b in graph[a] if a < b]
-        for pod_id, _ in d_pods:
-            if pending[pod_id] != (-1, -1):
-                options[pod_id] = [pending[pod_id]]
-                continue
             if pod_id not in assignments:
+                if pending[pod_id] != (-1, -1):
+                    routes[pod_id] = pending[pod_id]
                 continue
-            path = assignments[pod_id].nodes
-            if pod_id in forced:
-                options[pod_id] = [forced[pod_id]]
-                source_id = forced[pod_id][0]
-                target_id = path[-1] if current[pod_id] in (-1, path[0]) else path[0]
-                route = graph_route(graph, source_id, target_id, forced[pod_id][1])
-                protected_edges.update(edges_of(route))
-                continue
-            if current[pod_id] == -1:
-                options[pod_id] = [path[:2]]
-                delivering = True
+            edge = bookings.get(pod_id, assignments[pod_id].nodes)
+            source = edge[0] if current[pod_id] == -1 else current[pod_id]
+            if pod_id not in bookings or source in edge:
+                target = edge[1] if source == edge[0] else edge[0]
             else:
-                target_id = path[1] if current[pod_id] == path[0] else next_step(graph, current[pod_id], path[0])
-                options[pod_id] = [(current[pod_id], target_id)]
-                source_id = current[pod_id]
-                delivering = current[pod_id] == path[0]
-            if delivering:
-                protected_edges.update(edges_of(path))
-            else:
-                protected_edges.add(route_key(*options[pod_id][0]))
-                while source_id != path[0]:
-                    target_id = next_step(graph, source_id, path[0])
-                    protected_edges.add(route_key(source_id, target_id))
-                    source_id = target_id
-        requested_edges = {route_key(*move) for move in requests.values()} | {route_key(*moves[0]) for moves in options.values()}
-        for pod_id, _ in d_pods:
-            if pod_id in assignments:
-                continue
+                target = min(edge, key=lambda node: (self.pod_distance(pod_id, node, current, pending, graph), edge.index(node)))
+            first = pending[pod_id][1] if pending[pod_id] != (-1, -1) else next_step(graph, source, target)
+            routes[pod_id] = graph_route(graph, source, target, first)
+        self.idle_pod_routes(routes, assignments, fixed_jobs or {}, current, pending, graph)
+        return routes
+    def idle_pod_routes(self, routes: dict, assignments: dict, fixed_jobs: dict, current: dict, pending: dict, graph: dict):
+        """Updates idle routes from current/pending on graph to avoid assignments and fixed_jobs."""
+        protected = {edge for pod_id in assignments for edge in edges_of(routes[pod_id])}
+        for pod_id, loads in fixed_jobs.items():
+            route = routes[pod_id]
+            edge = next(iter(loads)).nodes
+            target = edge[1] if route[0] == edge[0] else edge[0]
+            end = route.index(target, 1) + 1 if target in route[1:] else len(route)
+            protected.update(edges_of(route[:end]))
+        idle = set(current) - set(assignments)
+        for pod_id in idle:
+            if pending[pod_id] == (-1, -1):
+                routes.pop(pod_id, None)
+        requested = {route_key(*route[:2]) for route in routes.values() if len(route) > 1}
+        for pod_id in sorted(idle):
             if pending[pod_id] != (-1, -1):
-                options[pod_id] = [pending[pod_id]]
                 continue
-            moves = all_edges if current[pod_id] == -1 else [(current[pod_id], neighbor_id) for neighbor_id in graph[current[pod_id]]]
-            options[pod_id] = [min(moves, key=lambda move: (route_key(*move) in protected_edges, route_key(*move) in requested_edges, move))]
-        requests.update((pod_id, moves[0]) for pod_id, moves in options.items())
-        return requests
+            candidates = [(node, neighbor) for node in sorted(graph) for neighbor in graph[node]] if current[pod_id] == -1 else \
+                [(current[pod_id], neighbor) for neighbor in graph[current[pod_id]]]
+            move = min(candidates, key=lambda edge: (route_key(*edge) in protected, route_key(*edge) in requested, edge))
+            routes[pod_id] = move
+            requested.add(route_key(*move))
+    def resolve_alternative_routes(self, routes: dict, assignments: dict, fixed_jobs: dict, pending: dict, graph: dict, state: State,
+            queues: dict, wanted_edges: dict, day: int):
+        """Reroutes assignments around state conflicts on graph; fixed_jobs, pending, queues, wanted_edges and day constrain route choices."""
+        def waiting(pod_id: int, edge: Pair) -> int:
+            """Returns consecutive days edge is blocked by pods preceding pod_id."""
+            return next((offset for offset, occupied in enumerate(schedule) if
+                sum(other < pod_id for other in occupied.get(route_key(*edge), ())) < state.tubes[route_key(*edge)]), len(schedule))
+        def free_route(pod_id: int, route: Path) -> Path:
+            """Finds an equal-length conflict-free alternative to route for pod_id."""
+            def search(node: int, step: int) -> Path:
+                """Returns a feasible suffix from node at step, or an empty tuple."""
+                if step == length:
+                    return (node,) if node == target else ()
+                key = node, step
+                if key in failed:
+                    return ()
+                for neighbor in graph[node]:
+                    if graph_distance(graph, neighbor, target) > length - step - 1:
+                        continue
+                    occupied = attempts[step].get(route_key(node, neighbor), ()) if step < len(attempts) else ()
+                    if sum(other != pod_id and (other < pod_id or other in assigned) for other in occupied) >= state.tubes[route_key(node, neighbor)]:
+                        continue
+                    tail = search(neighbor, step + 1)
+                    if tail:
+                        return (node, *tail)
+                failed.add(key)
+                return ()
+            length, target = len(route) - 1, route[-1]
+            failed = set()
+            return search(route[0], 0)
+        assigned = set(assignments) | set(fixed_jobs)
+        schedule, attempts = self.project_routes(routes, state.tubes, DAYS - day)
+        for pod_id in sorted(assignments):
+            if pending[pod_id] != (-1, -1):
+                continue
+            route = routes[pod_id]
+            current_cost = len(route) - 1 + waiting(pod_id, route[:2])
+            carrying = any(route[:2] in wanted_edges[route[0], passenger.kind] for passenger in queues.get(route[0], ()))
+            alternatives = []
+            for neighbor in graph[route[0]]:
+                candidate = graph_route(graph, route[0], route[-1], neighbor)
+                if route[0] in candidate[1:] or carrying and len(candidate) != len(route):
+                    continue
+                cost = len(candidate) - 1 + waiting(pod_id, candidate[:2])
+                if cost < current_cost:
+                    alternatives.append((cost, candidate))
+            if alternatives:
+                routes[pod_id] = min(alternatives)[1]
+                schedule, attempts = self.project_routes(routes, state.tubes, DAYS - day)
+        for pod_id in sorted(assignments):
+            if pending[pod_id] != (-1, -1):
+                continue
+            conflicts = any(pod_id in pods and sum(other <= pod_id or other in assigned for other in pods) > state.tubes[edge]
+                for requests in attempts for edge, pods in requests.items())
+            if conflicts and (alternative := free_route(pod_id, routes[pod_id])):
+                routes[pod_id] = alternative
+                schedule, attempts = self.project_routes(routes, state.tubes, DAYS - day)
+    def project_routes(self, routes: dict, tubes: dict, days: int) -> tuple:
+        """Projects routes through tubes for days; returns daily accepted and attempted edge usage."""
+        positions = dict.fromkeys(routes, 0)
+        schedule, attempts = [], []
+        for _ in range(days):
+            occupied, requests = {}, {}
+            for pod_id in sorted(routes):
+                route = routes[pod_id]
+                index = positions[pod_id]
+                if index == len(route) - 1:
+                    continue
+                edge = route_key(*route[index:index + 2])
+                requests.setdefault(edge, []).append(pod_id)
+                if len(occupied.get(edge, ())) < tubes[edge]:
+                    occupied.setdefault(edge, []).append(pod_id)
+                    positions[pod_id] += 1
+            schedule.append(occupied)
+            attempts.append(requests)
+        return schedule, attempts
     def distances_to_targets(self, state):
         demanded = {kind for pad in self.landing_pads() for kind in pad.demand}
         reverse_edges = {}
@@ -1748,7 +1616,7 @@ def route_key(a, b):
 def edges_of(path):
     return tuple(route_key(*edge) for edge in zip(path, path[1:]))
 def load_id(path):
-    return path.pool, path.destination, path.nodes, path.reserved
+    return path.nodes
 def tube_cost(a, b):
     return isqrt(100 * ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)))
 def orientation(a, b, c):

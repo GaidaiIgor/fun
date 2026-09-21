@@ -75,8 +75,10 @@ Load is defined as a directed edge such that >0 passengers want to take that edg
 4. Stage 2. Infinite edge capacity approximation.
    1. Passenger capacity of a load is defined as ceil(generating passengers / 10).
    If the number of pods assigned to a given load exceeds its passenger capacity, all pods assigned to it enter a conflict group.
-   For each conflict group, choose the pod with the largest efficiency of the next load on its list.
-   Reassign that pod to its next load. Repeat until all conflicts are resolved.
+   For each conflict group, prefer to keep the pods with:
+      1. Smaller distance to load origin.
+      2. Smaller efficiency of the next load on its list.
+      Reassign excess pods to their next loads. Repeat until all conflicts are resolved.
 5. Stage 3. Finite edge capacity.
    1. Path capacity / handoff chains. Each load has associated delivery paths that start from that load.
    In order to keep current assignment, each pod must reserve one edge slot in one of the edges of the associated delivery paths.

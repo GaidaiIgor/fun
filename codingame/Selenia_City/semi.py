@@ -902,7 +902,7 @@ class Planner:
                     occupied[route_key(pod.path[index], pod.path[next_index])] += 1
             assignments, prefs = self.dispatch_dynamic_loads(active, d_pods, at, pending, graph, day)
             ideal = assignments.copy()
-            self.fix_passenger_capacity(ideal, prefs)
+            self.fix_passenger_capacity(ideal, prefs, at, pending, graph)
             ideal_routes = self.pod_routes(f_pods, d_pods, positions, at, pending, ideal, graph, day=day, fixed_jobs=fixed_jobs)
             ideal_req = {pod_id: route[:2] for pod_id, route in ideal_routes.items() if len(route) > 1}
             if FULL_DEBUG:
@@ -1123,15 +1123,17 @@ class Planner:
         if pending[pod_id] != (-1, -1):
             return 1 + graph_distance(graph, pending[pod_id][1], target)
         return graph_distance(graph, current[pod_id], target)
-    def fix_passenger_capacity(self, assignments: dict, prefs: dict):
-        """Advances assignments through prefs until generating passengers can supply all assigned pods."""
+    def fix_passenger_capacity(self, assignments: dict, prefs: dict, current: dict, pending: dict, graph: dict):
+        """Resolves excess assignments through prefs using current/pending distances on graph."""
         while True:
             counts = Counter(assignments.values())
             load = next((load for load in sorted(counts, key=load_id) if counts[load] > (load.cap + POD_SIZE - 1) // POD_SIZE), None)
             if load is None:
                 return
             pods = [pod_id for pod_id, assigned in assignments.items() if assigned == load]
-            self.advance_assignment(min(pods, key=lambda pod_id: (-self.next_efficiency(pod_id, load, prefs), pod_id)), assignments, prefs)
+            pods.sort(key=lambda pod_id: self.reassignment_key(pod_id, load, prefs, current, pending, graph))
+            for pod_id in pods[:counts[load] - (load.cap + POD_SIZE - 1) // POD_SIZE]:
+                self.advance_assignment(pod_id, assignments, prefs)
     def fix_finite_capacity(self, assignments: dict, prefs: dict, state: State, occupied: Counter, current: dict, pending: dict, graph: dict) -> tuple:
         """Resolves assignments using prefs and state slots minus occupied; returns bookings and capped pods using current/pending graph distances."""
         def choices(pod_id: int, load: Load) -> list:
@@ -1192,10 +1194,10 @@ class Planner:
         loads = sorted({load for values in prefs.values() for load, _ in values if load}, key=load_id)
         capped = set()
         while True:
-            self.fix_passenger_capacity(assignments, prefs)
+            self.fix_passenger_capacity(assignments, prefs, current, pending, graph)
             bookings, usage, group = reserve()
             if group:
-                pod_id = min(group, key=lambda pod_id: (-self.next_efficiency(pod_id, assignments[pod_id], prefs), pod_id))
+                pod_id = min(group, key=lambda pod_id: self.reassignment_key(pod_id, assignments[pod_id], prefs, current, pending, graph))
                 capped.add(pod_id)
                 self.advance_assignment(pod_id, assignments, prefs)
                 continue
@@ -1207,11 +1209,14 @@ class Planner:
             if uneven is None:
                 return bookings, capped
             pods = [pod_id for pod_id, assigned in assignments.items() if assigned == uneven]
-            self.advance_assignment(min(pods, key=lambda pod_id: (-self.next_efficiency(pod_id, uneven, prefs), pod_id)), assignments, prefs)
-    def next_efficiency(self, pod_id: int, load: Load, prefs: dict) -> float:
-        """Returns efficiency of the entry after load in pod_id's prefs."""
+            pods.sort(key=lambda pod_id: self.reassignment_key(pod_id, uneven, prefs, current, pending, graph))
+            self.advance_assignment(pods[0], assignments, prefs)
+    def reassignment_key(self, pod_id: int, load: Load, prefs: dict, current: dict, pending: dict, graph: dict) -> tuple:
+        """Ranks pod_id for leaving load by current/pending distance on graph, next efficiency in prefs, then id."""
         index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == load)
-        return prefs[pod_id][index + 1][1]
+        distance = 0 if current[pod_id] == load.nodes[0] and pending[pod_id] == load.nodes else \
+            self.pod_distance(pod_id, load.nodes[0], current, pending, graph)
+        return -distance, -prefs[pod_id][index + 1][1], pod_id
     def advance_assignment(self, pod_id: int, assignments: dict, prefs: dict):
         """Advances pod_id in assignments to the next load in prefs."""
         index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == assignments[pod_id])

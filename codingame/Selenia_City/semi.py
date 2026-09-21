@@ -1131,7 +1131,7 @@ class Planner:
             if load is None:
                 return
             pods = [pod_id for pod_id, assigned in assignments.items() if assigned == load]
-            self.advance_assignment(min(pods, key=lambda pod_id: (self.preference_loss(pod_id, load, prefs), pod_id)), assignments, prefs)
+            self.advance_assignment(min(pods, key=lambda pod_id: (-self.next_efficiency(pod_id, load, prefs), pod_id)), assignments, prefs)
     def fix_finite_capacity(self, assignments: dict, prefs: dict, state: State, occupied: Counter, current: dict, pending: dict, graph: dict) -> tuple:
         """Resolves assignments using prefs and state slots minus occupied; returns bookings and capped pods using current/pending graph distances."""
         def choices(pod_id: int, load: Load) -> list:
@@ -1195,7 +1195,7 @@ class Planner:
             self.fix_passenger_capacity(assignments, prefs)
             bookings, usage, group = reserve()
             if group:
-                pod_id = min(group, key=lambda pod_id: (self.preference_loss(pod_id, assignments[pod_id], prefs), pod_id))
+                pod_id = min(group, key=lambda pod_id: (-self.next_efficiency(pod_id, assignments[pod_id], prefs), pod_id))
                 capped.add(pod_id)
                 self.advance_assignment(pod_id, assignments, prefs)
                 continue
@@ -1207,11 +1207,11 @@ class Planner:
             if uneven is None:
                 return bookings, capped
             pods = [pod_id for pod_id, assigned in assignments.items() if assigned == uneven]
-            self.advance_assignment(min(pods, key=lambda pod_id: (self.preference_loss(pod_id, uneven, prefs), pod_id)), assignments, prefs)
-    def preference_loss(self, pod_id: int, load: Load, prefs: dict) -> float:
-        """Returns pod_id's efficiency loss from leaving load for its next entry in prefs."""
+            self.advance_assignment(min(pods, key=lambda pod_id: (-self.next_efficiency(pod_id, uneven, prefs), pod_id)), assignments, prefs)
+    def next_efficiency(self, pod_id: int, load: Load, prefs: dict) -> float:
+        """Returns efficiency of the entry after load in pod_id's prefs."""
         index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == load)
-        return prefs[pod_id][index][1] - prefs[pod_id][index + 1][1]
+        return prefs[pod_id][index + 1][1]
     def advance_assignment(self, pod_id: int, assignments: dict, prefs: dict):
         """Advances pod_id in assignments to the next load in prefs."""
         index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == assignments[pod_id])

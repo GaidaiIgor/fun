@@ -927,6 +927,7 @@ class Planner:
                 c_carry = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, c_moves, positions.copy(), at.copy(), pending.copy())
             routes = self.pod_routes(f_pods, d_pods, positions, at, pending, assignments, graph, bookings, day, fixed_jobs)
+            self.swap_opposed_routes(routes, assignments, bookings, pending, graph, state)
             self.resolve_alternative_routes(routes, assignments, fixed_jobs, pending, graph, state, queues, wanted_edges, day)
             self.idle_pod_routes(routes, assignments, fixed_jobs, at, pending, graph)
             requests = {pod_id: route[:2] for pod_id, route in routes.items() if len(route) > 1}
@@ -1275,6 +1276,24 @@ class Planner:
             move = min(candidates, key=lambda edge: (route_key(*edge) in protected, route_key(*edge) in requested, edge))
             routes[pod_id] = move
             requested.add(route_key(*move))
+    def swap_opposed_routes(self, routes: dict, assignments: dict, bookings: dict, pending: dict, graph: dict, state: State):
+        """Swaps assignments/bookings for opposed routes exceeding state capacity; pending locks exclude pods and graph rebuilds movement."""
+        pods = sorted(pod_id for pod_id in assignments if pending[pod_id] == (-1, -1))
+        usage = Counter(route_key(*route[:2]) for route in routes.values() if len(route) > 1)
+        for index, first in enumerate(pods):
+            for second in pods[index + 1:]:
+                edge = routes[first][:2]
+                if edge != routes[second][:2][::-1] or usage[route_key(*edge)] <= state.tubes[route_key(*edge)]:
+                    continue
+                assignments[first], assignments[second] = assignments[second], assignments[first]
+                bookings[first], bookings[second] = bookings[second], bookings[first]
+                pair = {pod_id: assignments[pod_id] for pod_id in (first, second)}
+                current = {pod_id: routes[pod_id][0] for pod_id in pair}
+                updated = self.pod_routes([], [(pod_id, state.pods[pod_id]) for pod_id in pair], {}, current, pending, pair, graph, bookings)
+                for pod_id, route in updated.items():
+                    usage[route_key(*routes[pod_id][:2])] -= 1
+                    usage[route_key(*route[:2])] += 1
+                    routes[pod_id] = route
     def resolve_alternative_routes(self, routes: dict, assignments: dict, fixed_jobs: dict, pending: dict, graph: dict, state: State,
             queues: dict, wanted_edges: dict, day: int):
         """Reroutes assignments around state conflicts on graph; fixed_jobs, pending, queues, wanted_edges and day constrain route choices."""

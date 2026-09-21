@@ -96,6 +96,10 @@ Load is defined as a directed edge such that >0 passengers want to take that edg
    assigned to any other non-capped load by more than 1.
    Capped load is defined as the load with the number of assigned pods equal to load capacity (either passenger or path).
       1. Uniformity is evaluated separately for each priority level.
+   3. Remaining edge conflicts.
+      1. If a pair of pods is scheduled to move through the same edge in opposite directions in excess of edge capacity, swap their destinations.
+         1. Swap their load assignments and booked edges, then recalculate movement.
+         2. Fixed pods and pods with locked next moves cannot participate in swaps.
 6. Alternative paths.
    1. If the first edge in the initially chosen pod's path of length L is scheduled to be blocked by lower id pods in the next X days, the congestion-corrected
    travel time is defined as L + X. If an alternative path with lower congestion-corrected travel time exists, take that path.

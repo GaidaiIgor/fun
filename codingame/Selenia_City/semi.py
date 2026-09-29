@@ -895,8 +895,9 @@ class Planner:
                 self.settle(day + 1, queues, arrivals, result)
                 continue
             assignments, prefs = self.dispatch_dynamic_loads(active, d_pods, at, pending, graph, day)
+            fixed_counts = Counter(load for loads in fixed_jobs.values() for load in loads)
             ideal = assignments.copy()
-            self.fix_passenger_capacity(ideal, prefs, at, pending, graph)
+            self.fix_passenger_capacity(ideal, prefs, fixed_counts, at, pending, graph)
             ideal_routes = self.pod_routes(f_pods, d_pods, positions, at, pending, ideal, graph, day=day, fixed_jobs=fixed_jobs)
             ideal_req = {pod_id: route[:2] for pod_id, route in ideal_routes.items() if len(route) > 1}
             if FULL_DEBUG:
@@ -910,7 +911,7 @@ class Planner:
                 i_carry = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, i_moves, positions.copy(), at.copy(), pending.copy())
             assignments = ideal.copy()
-            path_capped = self.fix_finite_capacity(assignments, prefs, state, at, pending, graph)
+            path_capped = self.fix_finite_capacity(assignments, prefs, state, fixed_counts, at, pending, graph)
             if FULL_DEBUG:
                 c_jobs = ideal.copy()
                 c_req = ideal_req
@@ -1118,26 +1119,28 @@ class Planner:
         if pending[pod_id] != (-1, -1):
             return 1 + graph_distance(graph, pending[pod_id][1], target)
         return graph_distance(graph, current[pod_id], target)
-    def fix_passenger_capacity(self, assignments: dict, prefs: dict, current: dict, pending: dict, graph: dict):
-        """Resolves excess assignments through prefs using current/pending distances on graph."""
+    def fix_passenger_capacity(self, assignments: dict, prefs: dict, fixed_counts: Counter, current: dict, pending: dict, graph: dict):
+        """Resolves excess assignments including fixed_counts through prefs using current/pending distances on graph."""
         while True:
-            counts = Counter(assignments.values())
-            load = next((load for load in sorted(counts, key=load_id) if counts[load] > (load.cap + POD_SIZE - 1) // POD_SIZE), None)
+            counts = Counter(assignments.values()) + fixed_counts
+            load = next((load for load in sorted(set(assignments.values()), key=load_id)
+                if counts[load] > (load.cap + POD_SIZE - 1) // POD_SIZE), None)
             if load is None:
                 return
             pods = [pod_id for pod_id, assigned in assignments.items() if assigned == load]
             pods.sort(key=lambda pod_id: self.reassignment_key(pod_id, load, prefs, current, pending, graph))
             for pod_id in pods[:counts[load] - (load.cap + POD_SIZE - 1) // POD_SIZE]:
                 self.advance_assignment(pod_id, assignments, prefs)
-    def fix_finite_capacity(self, assignments: dict, prefs: dict, state: State, current: dict, pending: dict, graph: dict) -> set:
-        """Resolves assignments by path capacity in state and uniformity using prefs/current/pending/graph; returns path-displaced pods."""
-        loads = sorted({load for values in prefs.values() for load, _ in values if load}, key=load_id)
+    def fix_finite_capacity(self, assignments: dict, prefs: dict, state: State, fixed_counts: Counter, current: dict, pending: dict, graph: dict) -> set:
+        """Resolves assignments plus fixed_counts by state capacities and uniformity using prefs/current/pending/graph; returns path-displaced pods."""
+        loads = sorted(set(fixed_counts) | {load for values in prefs.values() for load, _ in values if load}, key=load_id)
         capacities = {load: sum(state.tubes[edge] for edge in {route_key(*edge) for _, edge in load.edges}) for load in loads}
         capped = set()
         while True:
-            self.fix_passenger_capacity(assignments, prefs, current, pending, graph)
-            counts = Counter(assignments.values())
-            overloaded = next((load for load in loads if counts[load] > capacities[load]), None)
+            self.fix_passenger_capacity(assignments, prefs, fixed_counts, current, pending, graph)
+            movable = set(assignments.values())
+            counts = Counter(assignments.values()) + fixed_counts
+            overloaded = next((load for load in loads if load in movable and counts[load] > capacities[load]), None)
             if overloaded is not None:
                 pods = [pod_id for pod_id, load in assignments.items() if load == overloaded]
                 pods.sort(key=lambda pod_id: self.reassignment_key(pod_id, overloaded, prefs, current, pending, graph))
@@ -1146,7 +1149,7 @@ class Planner:
                     self.advance_assignment(pod_id, assignments, prefs)
                 continue
             noncapped = [load for load in loads if counts[load] < min(capacities[load], (load.cap + POD_SIZE - 1) // POD_SIZE)]
-            uneven = next((load for load in loads if any(other.priority == load.priority and counts[load] > counts[other] + 1
+            uneven = next((load for load in loads if load in movable and any(other.priority == load.priority and counts[load] > counts[other] + 1
                 for other in noncapped)), None)
             if uneven is None:
                 return capped

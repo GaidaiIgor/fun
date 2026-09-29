@@ -80,18 +80,9 @@ Load is defined as a directed edge such that >0 passengers want to take that edg
       2. Smaller efficiency of the next load on its list.
       Reassign excess pods to their next loads. Repeat until all conflicts are resolved.
 5. Stage 3. Finite edge capacity.
-   1. Path capacity / handoff chains. Each load has associated delivery paths that start from that load.
-   In order to keep current assignment, each pod must reserve one edge slot in one of the edges of the associated delivery paths.
-   Once the slot is reserved the pod moves toward or within the corresponding edge (if already at one of its endpoints).
-   Eligible slots cover the union of all associated delivery paths. Pods shuttle across their booked edge even when empty.
-      1. Reservations start from pods that are already on the delivery path, starting from path origin and downstream.
-      2. Each pod books an edge on the delivery path adjacent to itself: downstream if already at the load, otherwise upstream.
-      If the required adjacent slots are full, it enters a conflict group with their owners even when other path edges have free slots.
-      3. If the number of pods on the path exceeds the number of edge slots, the pods enter a conflict group, resolved in the same way as stage-2 conflicts,
-      except rule 4.1.1.
-      4. If the number of pods on the path is less than the number of edge slots, pods outside of the path can book edges as well.
-      A given empty edge slot is given to the closest pod willing to take it.
-      When multiple willing pods are equidistant, they enter a conflict group, resolved in the same way as stage-2 conflicts.
+   1. Path capacity. Each load has associated delivery paths that start from that load.
+   The maximum number of pods assigned to it cannot exceed the total capacity of all edges in the associated delivery paths.
+   If the number of pods assigned exceeds path capacity, the pods enter a conflict group, resolved in the same way as stage-2 conflict.
    2. Uniformity. If current assignments are non-uniform, all pods assigned to the load violating uniformity enter a conflict group.
    Excess pods are reassigned in the same way as for passenger/path capacity conflicts.
    Uniform assignment is defined as a distribution of pods over loads such that for any load the number of assigned pods does not exceed the number of pods
@@ -100,8 +91,7 @@ Load is defined as a directed edge such that >0 passengers want to take that edg
       1. Uniformity is evaluated separately for each priority level.
    3. Remaining edge conflicts.
       1. If a pair of pods is scheduled to move through the same edge in opposite directions in excess of edge capacity, swap their destinations.
-         1. Swap their load assignments and booked edges, then recalculate movement.
-         2. Fixed pods and pods with locked next moves cannot participate in swaps.
+         1. Fixed pods and pods with locked next moves cannot participate in swaps.
 6. Alternative paths.
    1. If the first edge in the initially chosen pod's path of length L is scheduled to be blocked by lower id pods in the next X days, the congestion-corrected
    travel time is defined as L + X. If an alternative path with lower congestion-corrected travel time exists, take that path.

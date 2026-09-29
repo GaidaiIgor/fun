@@ -100,7 +100,8 @@ Load is defined as a directed edge such that >0 passengers want to take that edg
    path to the same target without predicted edge conflict, prefer to take the alternative path.
 7. Unassigned pods just do their best to stay out of the way of assigned pods.
    1. Unassigned pods should prefer edges outside assigned pods' current routes: to the load origin while approaching or to the destination while delivering.
-   2. Assigned pods with lower id disregard conflicts with unassigned pods with higher id.
+   2. If collision is unavoidable, unassigned pods should prefer to collide with pods with lower id.
+   3. Pods assigned to a low-priority load behave as unassigned if their scheduled move threatens to delay normal-priority assignments.
 8. If a pod could not move because of an edge conflict on a particular day, its next movement is predetermined on subsequent days until the pod performs it.
 Such locked pods should take it into account when calculating their distances to targets.
 9. If an assigned pod was not able to move along the next edge of its stage-2 path, increase congestion counter on that edge.

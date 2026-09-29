@@ -1170,13 +1170,13 @@ class Planner:
         self.idle_pod_routes(routes, assignments, current, pending, graph)
         return routes
     def idle_pod_routes(self, routes: dict, assignments: dict, current: dict, pending: dict, graph: dict, tubes: dict = None):
-        """Routes idle current/pending pods on graph away from assignments; tubes enables low-priority yielding and collision ranking."""
+        """Routes idle current/pending pods on graph; tubes enables yielding and collision ranking without changing assignments."""
+        yielding = set()
         if tubes is not None:
             requested = {}
             for pod_id, route in routes.items():
                 if len(route) > 1:
                     requested.setdefault(route_key(*route[:2]), set()).add(pod_id)
-            yielding = set()
             for pod_id, load in assignments.items():
                 if load.priority < 0 or len(routes[pod_id]) < 2:
                     continue
@@ -1184,16 +1184,16 @@ class Planner:
                 preceding = {other for other in requested[edge] if other < pod_id}
                 if len(preceding) >= tubes[edge]:
                     yielding.update(other for other in preceding if other in current and other in assignments and assignments[other].priority < 0)
-            for pod_id in yielding:
-                del assignments[pod_id]
         protected = set()
         for pod_id, load in assignments.items():
+            if pod_id in yielding:
+                continue
             route = routes[pod_id]
             edge = load.nodes
             target = edge[1] if route[0] == edge[0] else edge[0]
             end = route.index(target, 1) + 1 if target in route[1:] else len(route)
             protected.update(edges_of(route[:end]))
-        idle = set(current) - set(assignments)
+        idle = set(current) - set(assignments) | yielding
         for pod_id in idle:
             if pending[pod_id] == (-1, -1):
                 routes.pop(pod_id, None)

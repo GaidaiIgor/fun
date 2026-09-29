@@ -68,8 +68,7 @@ passenger. Preferred direction is defined as the direction towards the module wi
 Inbound passenger count is defined as the total number of decided passengers going to that module in this month (including the ones already arrived).
    1. Fixed-pod reservations are applied first. Balancing considers only the remaining passengers.
    2. Directions toward all alternatives tied for the smallest inbound count are preferred.
-   3. Equal numbers of preferred and non-preferred undecided passengers leave the priority unchanged.
-   4. If the first future batch containing undecided passengers favors this direction, decided batches ahead of it in boarding order also get high priority.
+   3. If any future batch containing undecided passengers favors this direction, decided batches ahead of it in boarding order also get high priority.
 4. Stage 1. Single pod approximation.
    1. Each pod makes an individual list of loads, assuming no other pods exist.
       1. Loads on the list are sorted as follows.
@@ -87,11 +86,13 @@ Inbound passenger count is defined as the total number of decided passengers goi
    For each conflict group, prefer to keep the pods with:
       1. Smaller distance to load origin.
       2. Smaller efficiency of the next load on its list.
+      3. Smaller id.
       Reassign excess pods to their next loads. Repeat until all conflicts are resolved.
 6. Stage 3. Finite edge capacity.
    1. Path capacity. Each load has associated delivery paths that start from that load.
    The maximum number of pods assigned to it cannot exceed the total capacity of all edges in the associated delivery paths.
    If the number of pods assigned exceeds path capacity, the pods enter a conflict group, resolved in the same way as stage-2 conflict.
+      1. The path capacity of high-priority loads corresponding to undecided passengers is equal to capacity of the first edge in the path.
    2. Uniformity. If current assignments are non-uniform, all pods assigned to the load violating uniformity enter a conflict group.
    Excess pods are reassigned in the same way as for passenger/path capacity conflicts.
    Uniform assignment is defined as a distribution of pods over loads such that for any load the number of assigned pods does not exceed the number of pods

@@ -893,7 +893,6 @@ class Planner:
                 c_carry = self.board_and_launch({building_id: passengers[:] for building_id, passengers in queues.items()},
                     distances, state, c_moves, positions.copy(), at.copy(), pending.copy())
             routes = self.pod_routes(f_pods, d_pods, positions, at, pending, assignments, graph, day)
-            self.idle_pod_routes(routes, assignments, at, pending, graph, state.tubes)
             self.swap_opposed_routes(routes, assignments, pending, graph, state)
             self.resolve_alternative_routes(routes, assignments, pending, graph, state, queues, wanted_edges, day)
             self.idle_pod_routes(routes, assignments, at, pending, graph, state.tubes)

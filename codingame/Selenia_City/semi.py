@@ -38,12 +38,13 @@ class Person:
     id: int
 @dataclass(slots=True, frozen=True)
 class Load:
-    """Groups passengers on nodes; cap counts them, priority ranks them, batch holds delivery lengths, edges holds depth/edge pairs."""
+    """Groups passengers on nodes: cap is count, priority is rank, batch holds delivery lengths, edges holds depth/edge pairs, inbound is batch mean."""
     nodes: Pair
     cap: int = field(compare=False)
     priority: int = field(compare=False)
     batch: tuple[int, ...] = field(compare=False)
     edges: tuple[tuple[int, Pair], ...] = field(compare=False)
+    inbound: float = field(compare=False)
 def assignment_text(paths: set[Load], pod_id: int, requests: dict, moves: dict, carrying: set) -> str:
     """Formats paths for pod_id using requests, accepted moves and the actual carrying pods."""
     return "/".join(("   " if pod_id not in requests else "E! " if pod_id not in moves else
@@ -994,7 +995,13 @@ class Planner:
             for passenger in passengers:
                 for edge in wanted_edges[node, passenger.kind]:
                     generating.setdefault(edge, []).append(passenger)
-        priorities = self.balanced_priorities(generating, queues, reserved, destinations, arrivals)
+        inbound = arrivals.copy()
+        for node, passengers in queues.items():
+            for kind, count in Counter(passenger.kind for passenger in passengers).items():
+                choices = destinations[node, kind]
+                if len(choices) == 1:
+                    inbound[choices[0]] += count
+        priorities = self.balanced_priorities(generating, reserved, destinations, inbound)
         loads = []
         for edge, passengers in sorted(generating.items()):
             delivery_edges = {}
@@ -1020,17 +1027,13 @@ class Planner:
                 for depth, path_edge in route_cache[key]:
                     delivery_edges[path_edge] = min(depth, delivery_edges.get(path_edge, INF))
             batch = tuple(distances[passenger.kind][edge[0]] for passenger in passengers[:POD_SIZE])
+            batch_inbound = sum(min(inbound[module] for module in destinations[edge[1], passenger.kind])
+                for passenger in passengers[:POD_SIZE]) / len(batch)
             loads.append(Load(edge, len(passengers), priorities[edge], batch,
-                tuple(sorted((depth, path_edge) for path_edge, depth in delivery_edges.items()))))
+                tuple(sorted((depth, path_edge) for path_edge, depth in delivery_edges.items())), batch_inbound))
         return loads
-    def balanced_priorities(self, generating: dict, queues: dict, reserved: set, destinations: dict, arrivals: Counter) -> dict:
-        """Ranks generating loads after reserved exclusions using queues, arrivals and tied destinations; returns edge priorities."""
-        inbound = arrivals.copy()
-        for node, passengers in queues.items():
-            for kind, count in Counter(passenger.kind for passenger in passengers).items():
-                choices = destinations[node, kind]
-                if len(choices) == 1:
-                    inbound[choices[0]] += count
+    def balanced_priorities(self, generating: dict, reserved: set, destinations: dict, inbound: Counter) -> dict:
+        """Ranks generating loads after reserved exclusions using tied destinations and inbound counts; returns edge priorities."""
         priorities = {}
         for edge, passengers in generating.items():
             remaining = [passenger for passenger in passengers if passenger.id not in reserved]
@@ -1115,7 +1118,7 @@ class Planner:
                         for length in load.batch if reach + length <= DAYS - day)
                 if scores[key] > 0:
                     evaluated.append((load, scores[key]))
-            evaluated.sort(key=lambda item: (-item[0].priority, -item[1], -item[0].cap, item[0].nodes))
+            evaluated.sort(key=lambda item: (-item[0].priority, -item[1], item[0].inbound, -item[0].cap, item[0].nodes))
             prefs[pod_id] = [*evaluated, (None, 0)]
             if evaluated:
                 assignments[pod_id] = evaluated[0][0]

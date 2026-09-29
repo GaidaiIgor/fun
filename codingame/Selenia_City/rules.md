@@ -75,9 +75,11 @@ Inbound passenger count is defined as the total number of decided passengers goi
          1. Loads with higher priority.
          2. Loads with higher efficiency, defined as number of speed points awarded upon batch delivery divided by number of days required for it.
             1. In case of mixed loads, consider average efficiency, weighted by batch composition. Empty seats contribute zero.
-         3. Loads with larger number of generating passengers.
-         4. Loads with smaller id.
-         5. The last item on the list is no assignment with 0 efficiency.
+         3. Loads to modules with lower inbound count.
+            1. Use the next batch's passenger-weighted average, taking the lowest inbound count among each passenger's destinations reachable through that edge.
+         4. Loads with larger number of generating passengers.
+         5. Loads with smaller id.
+         6. The last item on the list is no assignment with 0 efficiency.
       2. Undeliverable loads, considering path length and remaining days, are not included on the list.
    2. Each pod is assigned to the first load on its list.
 5. Stage 2. Infinite edge capacity approximation.

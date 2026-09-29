@@ -1213,11 +1213,13 @@ class Planner:
             routes[pod_id] = move
             requested.setdefault(route_key(*move), set()).add(pod_id)
     def swap_opposed_routes(self, routes: dict, assignments: dict, pending: dict, graph: dict, state: State):
-        """Swaps assignments for opposed routes exceeding state capacity; pending locks exclude pods and graph rebuilds movement."""
+        """Swaps same-priority assignments for opposed routes exceeding state capacity; pending locks exclude pods and graph rebuilds movement."""
         pods = sorted(pod_id for pod_id in assignments if state.pods[pod_id].dynamic and pending[pod_id] == (-1, -1))
         usage = Counter(route_key(*route[:2]) for route in routes.values() if len(route) > 1)
         for index, first in enumerate(pods):
             for second in pods[index + 1:]:
+                if assignments[first].priority != assignments[second].priority:
+                    continue
                 edge = routes[first][:2]
                 if edge != routes[second][:2][::-1] or usage[route_key(*edge)] <= state.tubes[route_key(*edge)]:
                     continue

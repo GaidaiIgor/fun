@@ -7,8 +7,8 @@ import sys
 DAYS, MAX_DEGREE, MAX_PODS, POD_SIZE = 20, 5, 500, 10
 POD_COST, POD_REFUND, REROUTE_COST, TELEPORT_COST = 1000, 750, 250, 5000
 INF = 10 ** 9
-OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3;POD 4;POD 5"
+OVERRIDE_MONTH = 1
+OVERRIDE_COMMAND = "TUBE 0 2;TUBE 2 3;TUBE 3 4;TUBE 1 4;TUBE 2 5;TUBE 4 6;POD 1;POD 2"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -826,10 +826,16 @@ class Planner:
     def simulate(self, state, keep_dynamic_paths = False):
         network_key = tuple(sorted(state.tubes)), tuple(sorted(state.teleports.items()))
         if network_key not in self.fs_cache:
-            distances, _ = self.distances_to_targets(state)
+            distances, module_distances = self.distances_to_targets(state)
             graph = tube_graph(state.tubes)
-            self.fs_cache[network_key] = distances, graph, self.wanted_edges(distances, graph), self.initial_queues(distances), {}
-        distances, graph, wanted_edges, initial, route_cache = self.fs_cache[network_key]
+            destinations = {}
+            for kind, values in distances.items():
+                modules = [module for module in module_distances if self.buildings[module].kind == kind]
+                for node, distance in values.items():
+                    if distance < INF:
+                        destinations[node, kind] = tuple(module for module in modules if module_distances[module][node] == distance)
+            self.fs_cache[network_key] = distances, graph, self.wanted_edges(distances, graph), self.initial_queues(distances), {}, destinations
+        distances, graph, wanted_edges, initial, route_cache, destinations = self.fs_cache[network_key]
         queues = {building_id: passengers[:] for building_id, passengers in initial.items()}
         result = Result()
         f_pods = [(pod_id, pod) for pod_id, pod in sorted(state.pods.items()) if not pod.dynamic]
@@ -856,7 +862,7 @@ class Planner:
             for passengers in queues.values():
                 passengers.sort(key=BY_ID)
             reserved_passengers = fixed_reservations[day] if d_pods else set()
-            active = self.daily_loads(state, queues, distances, wanted_edges, reserved_passengers, route_cache)
+            active = self.daily_loads(state, queues, distances, wanted_edges, reserved_passengers, route_cache, destinations, arrivals)
             if not active:
                 break
             by_edge = {load.nodes: load for load in active}
@@ -980,13 +986,15 @@ class Planner:
             filtered[day] = set(future)
             summary.update(edge for passenger_id, edge in schedule[day].items() if passenger_id in delivered)
         return filtered, summary
-    def daily_loads(self, state: State, queues: dict, distances: dict, wanted_edges: dict, reserved: set, route_cache: dict) -> list[Load]:
-        """Groups queues by wanted_edges using state and distances, marks reserved loads and caches delivery edges in route_cache."""
+    def daily_loads(self, state: State, queues: dict, distances: dict, wanted_edges: dict, reserved: set, route_cache: dict,
+            destinations: dict, arrivals: Counter) -> list[Load]:
+        """Groups queues by wanted_edges using state/distances and route_cache; reserved passengers, destinations and arrivals determine priorities."""
         generating = {}
         for node, passengers in queues.items():
             for passenger in passengers:
                 for edge in wanted_edges[node, passenger.kind]:
                     generating.setdefault(edge, []).append(passenger)
+        priorities = self.balanced_priorities(generating, queues, reserved, destinations, arrivals)
         loads = []
         for edge, passengers in sorted(generating.items()):
             delivery_edges = {}
@@ -1012,9 +1020,36 @@ class Planner:
                 for depth, path_edge in route_cache[key]:
                     delivery_edges[path_edge] = min(depth, delivery_edges.get(path_edge, INF))
             batch = tuple(distances[passenger.kind][edge[0]] for passenger in passengers[:POD_SIZE])
-            loads.append(Load(edge, len(passengers), -int(all(passenger.id in reserved for passenger in passengers)), batch,
+            loads.append(Load(edge, len(passengers), priorities[edge], batch,
                 tuple(sorted((depth, path_edge) for path_edge, depth in delivery_edges.items()))))
         return loads
+    def balanced_priorities(self, generating: dict, queues: dict, reserved: set, destinations: dict, arrivals: Counter) -> dict:
+        """Ranks generating loads after reserved exclusions using queues, arrivals and tied destinations; returns edge priorities."""
+        inbound = arrivals.copy()
+        for node, passengers in queues.items():
+            for kind, count in Counter(passenger.kind for passenger in passengers).items():
+                choices = destinations[node, kind]
+                if len(choices) == 1:
+                    inbound[choices[0]] += count
+        priorities = {}
+        for edge, passengers in generating.items():
+            remaining = [passenger for passenger in passengers if passenger.id not in reserved]
+            priority = 0 if remaining else -1
+            votes = {}
+            for kind in {passenger.kind for passenger in remaining}:
+                choices = destinations[edge[0], kind]
+                if len(choices) > 1:
+                    minimum = min(inbound[module] for module in choices)
+                    preferred = any(inbound[module] == minimum for module in destinations[edge[1], kind] if module in choices)
+                    votes[kind] = 1 if preferred else -1
+            for offset in range(0, len(remaining), POD_SIZE):
+                batch_votes = [votes[passenger.kind] for passenger in remaining[offset:offset + POD_SIZE] if passenger.kind in votes]
+                if batch_votes:
+                    balance = sum(batch_votes)
+                    priority = 1 if balance > 0 else -1 if offset == 0 and balance < 0 else 0
+                    break
+            priorities[edge] = priority
+        return priorities
     def path_demands(self, state, distances,
             module_distances):
         demands = []
@@ -1221,7 +1256,7 @@ class Planner:
                 edge = routes[first][:2]
                 if edge != routes[second][:2][::-1] or usage[route_key(*edge)] <= state.tubes[route_key(*edge)]:
                     continue
-                if assignments[first].priority != assignments[second].priority:
+                if {assignments[first].priority, assignments[second].priority} == {-1, 0}:
                     low = first if assignments[first].priority < assignments[second].priority else second
                     avoidance = routes.copy()
                     others = {pod_id: load for pod_id, load in assignments.items() if pod_id != low}

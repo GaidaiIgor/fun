@@ -92,7 +92,8 @@ Load is defined as a directed edge such that >0 passengers want to take that edg
    3. Remaining edge conflicts.
       1. If a pair of pods is scheduled to move through the same edge in opposite directions in excess of edge capacity, swap their destinations.
          1. Fixed pods and pods with locked next moves cannot participate in swaps.
-         2. Normal and low-priority assignments cannot swap.
+         2. Normal and low-priority assignments cannot swap, except for the cases when the low-priority pod cannot avoid normal-priority and is scheduled to
+         take the conflicted edge anyway.
 6. Alternative paths.
    1. If the first edge in the initially chosen pod's path of length L is scheduled to be blocked by lower id pods in the next X days, the congestion-corrected
    travel time is defined as L + X. If an alternative path with lower congestion-corrected travel time exists, take that path.

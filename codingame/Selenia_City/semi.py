@@ -8,7 +8,7 @@ DAYS, MAX_DEGREE, MAX_PODS, POD_SIZE = 20, 5, 500, 10
 POD_COST, POD_REFUND, REROUTE_COST, TELEPORT_COST = 1000, 750, 250, 5000
 INF = 10 ** 9
 OVERRIDE_MONTH = 10
-OVERRIDE_COMMAND = "TUBE 4 8;TUBE 2 7;TUBE 1 2;TUBE 1 8;POD 1;POD 2;POD 3;POD 4"
+OVERRIDE_COMMAND = "TUBE 2 7;TUBE 4 8;POD 3;POD 4;POD 5"
 FULL_DEBUG = False
 _G = {}
 BY_ID = attrgetter("id")
@@ -1137,15 +1137,16 @@ class Planner:
                 self.advance_assignment(pod_id, assignments, prefs)
     def fix_finite_capacity(self, assignments: dict, prefs: dict, state: State, occupied: Counter, current: dict, pending: dict, graph: dict) -> tuple:
         """Resolves assignments using prefs and state slots minus occupied; returns bookings and capped pods using current/pending graph distances."""
-        def choices(pod_id: int, load: Load) -> list:
-            """Returns reachable-edge choices for pod_id and load in distance/depth order."""
-            key = pod_id, load
+        def choices(pod_id: int, load: Load, adjacent: bool = False) -> list:
+            """Returns pod_id's load edges in distance/depth order, restricted to its required direction when adjacent."""
+            key = pod_id, load, adjacent
             if key not in options:
+                location = load.nodes[0] if current[pod_id] == -1 else current[pod_id]
                 options[key] = sorted((min(self.pod_distance(pod_id, node, current, pending, graph) for node in edge), depth, edge)
-                    for depth, edge in load.edges)
+                    for depth, edge in load.edges if not adjacent or edge[0 if location == load.nodes[0] else 1] == location)
             return options[key]
         def reserve() -> tuple:
-            """Books current assignments upstream first; returns bookings, usage and the next conflict group."""
+            """Books current assignments upstream first; returns bookings, usage, conflict group and whether its pods are on-path."""
             bookings, owners = {}, {}
             usage = occupied.copy()
             on_path = []
@@ -1156,19 +1157,19 @@ class Planner:
                     on_path.append((min(depths, default=0), pod_id))
             for _, pod_id in sorted(on_path):
                 load = assignments[pod_id]
-                eligible = [(reach, depth, edge) for reach, depth, edge in choices(pod_id, load)
+                eligible = [(reach, depth, edge) for reach, depth, edge in choices(pod_id, load, True)
                     if reach < INF and usage[route_key(*edge)] < state.tubes[route_key(*edge)]]
                 if not eligible:
                     group = {pod_id}
                     todo = [pod_id]
                     while todo:
                         member = todo.pop()
-                        for _, _, edge in choices(member, assignments[member]):
+                        for _, _, edge in choices(member, assignments[member], True):
                             for other in owners.get(route_key(*edge), ()):
                                 if other not in group:
                                     group.add(other)
                                     todo.append(other)
-                    return bookings, usage, group
+                    return bookings, usage, group, True
                 edge = min(eligible)[2]
                 bookings[pod_id] = edge
                 usage[route_key(*edge)] += 1
@@ -1180,25 +1181,25 @@ class Planner:
                     eligible = [(reach, depth, edge) for reach, depth, edge in choices(pod_id, assignments[pod_id])
                         if reach < INF and usage[route_key(*edge)] < state.tubes[route_key(*edge)]]
                     if not eligible:
-                        return bookings, usage, {pod_id}
+                        return bookings, usage, {pod_id}, False
                     bids[pod_id] = eligible
                 reach, _, edge, pod_id = min((*bid, pod_id) for pod_id, candidates in bids.items() for bid in candidates)
                 tied = {other for other, candidates in bids.items() if any(item[0] == reach and route_key(*item[2]) == route_key(*edge)
                     for item in candidates)}
                 if len(tied) > state.tubes[route_key(*edge)] - usage[route_key(*edge)]:
-                    return bookings, usage, tied
+                    return bookings, usage, tied, False
                 bookings[pod_id] = edge
                 usage[route_key(*edge)] += 1
                 outside.remove(pod_id)
-            return bookings, usage, set()
+            return bookings, usage, set(), False
         options = {}
         loads = sorted({load for values in prefs.values() for load, _ in values if load}, key=load_id)
         capped = set()
         while True:
             self.fix_passenger_capacity(assignments, prefs, current, pending, graph)
-            bookings, usage, group = reserve()
+            bookings, usage, group, on_path = reserve()
             if group:
-                pod_id = min(group, key=lambda pod_id: self.reassignment_key(pod_id, assignments[pod_id], prefs, current, pending, graph))
+                pod_id = min(group, key=lambda pod_id: self.reassignment_key(pod_id, assignments[pod_id], prefs, current, pending, graph, not on_path))
                 capped.add(pod_id)
                 self.advance_assignment(pod_id, assignments, prefs)
                 continue
@@ -1212,10 +1213,10 @@ class Planner:
             pods = [pod_id for pod_id, assigned in assignments.items() if assigned == uneven]
             pods.sort(key=lambda pod_id: self.reassignment_key(pod_id, uneven, prefs, current, pending, graph))
             self.advance_assignment(pods[0], assignments, prefs)
-    def reassignment_key(self, pod_id: int, load: Load, prefs: dict, current: dict, pending: dict, graph: dict) -> tuple:
-        """Ranks pod_id for leaving load by current/pending distance on graph, next efficiency in prefs, then id."""
+    def reassignment_key(self, pod_id: int, load: Load, prefs: dict, current: dict, pending: dict, graph: dict, use_distance: bool = True) -> tuple:
+        """Ranks pod_id leaving load by current/pending distance on graph if use_distance, next efficiency in prefs, then id."""
         index = next(index for index, item in enumerate(prefs[pod_id]) if item[0] == load)
-        distance = 0 if current[pod_id] == load.nodes[0] and pending[pod_id] == load.nodes else \
+        distance = 0 if not use_distance or current[pod_id] == load.nodes[0] and pending[pod_id] == load.nodes else \
             self.pod_distance(pod_id, load.nodes[0], current, pending, graph)
         return -distance, -prefs[pod_id][index + 1][1], pod_id
     def advance_assignment(self, pod_id: int, assignments: dict, prefs: dict):

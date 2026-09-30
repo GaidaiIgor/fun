@@ -29,8 +29,8 @@ TOPO_ACTS = {"do_tube", "do_teleport"}
 SLOW = int(ENV.get("SLOW", "1"))
 SLOW_DAY = float(ENV.get("SLOW_DAY", "1"))
 TIME_MARGIN = float(ENV.get("TIME_MARGIN", "0.05"))
-BUDGET0 = float(ENV.get("BUDGET0", "0.65"))  # planning time of the first turn (s, before TIME_MARGIN)
-BUDGET1 = float(ENV.get("BUDGET1", "0.35"))  # planning time of later turns (s, before TIME_MARGIN)
+BUDGET0 = float(ENV.get("BUDGET0", "0.80"))  # planning time of the first turn (s, before TIME_MARGIN)
+BUDGET1 = float(ENV.get("BUDGET1", "0.40"))  # planning time of later turns (s, before TIME_MARGIN)
 STEP_FRAC = float(ENV.get("STEP_FRAC", "0.3"))
 THRESH = float(ENV.get("THRESH", "0.5"))
 DROP = int(ENV.get("DROP", "1"))
@@ -56,8 +56,18 @@ TH_MAX = float(ENV.get("TH_MAX", "1.5"))
 TH_M = float(ENV.get("TH_M", "14"))  # the threshold decreases linearly to 0 (last month) over the last TH_M + 1 months
 TH_HI = float(ENV.get("TH_HI", "4"))  # marginal value of money inside the reserve for future buildings
 CB = float(ENV.get("CB", "1500"))  # expected cost of serving one new building
-HOLD = int(ENV.get("HOLD", "1"))  # without observed income, keep all resources when a HOLD_K months later build would pay more
-HOLD_K = int(ENV.get("HOLD_K", "2"))
+RSV = int(ENV.get("RSV", "1"))  # reserve model: 0 CB per building net of mean income; 1 mean positive monthly deficit CA per new-pad astronaut - income
+CA = float(ENV.get("CA", "60"))  # expected cost of serving one astronaut of a new pad
+RK = float(ENV.get("RK", "1"))  # scale of the RSV=1 reserve
+RSV_G = float(ENV.get("RSV_G", "1"))  # RSV=1: weight factor per month of age of the observed deficits (1 = plain mean)
+RSV_S = float(ENV.get("RSV_S", "0.7"))  # RSV=1: reserve factor per month without new pads beyond the first
+HI_M = float(ENV.get("HI_M", "0"))  # TH_HI decreases linearly to 0 (last month) over the last HI_M + 1 months (0 = constant)
+FILL_Q = float(ENV.get("FILL_Q", "0"))  # FILL only evaluates fresh candidates whose calibrated estimate times FILL_Q reaches the threshold (0 = all)
+FAST_FILL = int(ENV.get("FAST_FILL", "0"))  # a main greedy that runs out of time while only FILL evaluates does not enable the fast path
+HOLD = int(ENV.get("HOLD", "1"))  # without observed income, keep all resources when a later build (see HOLD_KS) would pay more
+HOLD_KS = [int(k) for k in ENV.get("HOLD_KS", "2").split(",")]  # hold lengths (months) compared with building now
+HOLD_MARGIN = float(ENV.get("HOLD_MARGIN", "0"))  # relative margin a hold must win by
+HOLD_COMMIT = int(ENV.get("HOLD_COMMIT", "0"))  # a hold in progress is compared over its remaining months only
 HOLD_ML = int(ENV.get("HOLD_ML", "11"))  # only while more than HOLD_ML months are left
 HOLD_FRAC = float(ENV.get("HOLD_FRAC", "0.6"))  # share of the turn budget for the regular plan when a hold is possible
 HOLD_INC = int(ENV.get("HOLD_INC", "1"))  # also consider holds with observed income (both paths receive the forecast income)
@@ -106,6 +116,24 @@ TELE = int(ENV.get("TELE", "1"))  # teleporter candidates from buildings astrona
 TELE_PER_GROUP = int(ENV.get("TELE_PER_GROUP", "2"))  # exits per (building, type)
 HUB_PODS = int(ENV.get("HUB_PODS", "2"))  # maximum shuttle pods feeding a hub entrance
 TELE_K = float(ENV.get("TELE_K", "0.5"))  # multiplier of teleporter candidate estimates
+BATCH_N = int(ENV.get("BATCH_N", "20"))  # fast path: max. independent bundles accepted together (verified by one simulation)
+SKIP_K = int(ENV.get("SKIP_K", "10"))  # fast path: acceptances between candidate regenerations
+BATCH_TOL = float(ENV.get("BATCH_TOL", "0.9"))  # fast path: share of the bundles' individual gains a batch must keep
+GATE_RES = float(ENV.get("GATE_RES", "20000"))  # fast path in the first month when resources are at least this
+FAST_RES = float(ENV.get("FAST_RES", "0"))  # fast path in later months only with at least these resources
+DELTA = int(ENV.get("DELTA", "0" if DET else "1"))  # evaluate bundles by incremental simulation against a trace of the base month
+F_CAP = int(ENV.get("F_CAP", "0"))  # fast path: max. fresh evaluations per round made only because estimate x alpha beats the best (0 = no cap)
+TYPE = int(ENV.get("TYPE", "1"))  # type-level connection candidates for stuck astronauts whose type no module is reachable from
+TYPE_MIN = int(ENV.get("TYPE_MIN", "3"))  # minimum summed stuck astronauts of a (type, tube component) job
+TYPE_JOBS = int(ENV.get("TYPE_JOBS", "8"))  # largest (type, component) jobs per generation
+TYPE_K = int(ENV.get("TYPE_K", "3"))  # direct new tubes from a module to the cheapest pod-served buildings of the component
+TYPE_MODS = int(ENV.get("TYPE_MODS", "3"))  # modules of the type with the cheapest direct connection considered
+TYPE_RES = float(ENV.get("TYPE_RES", "20000"))  # type-level candidates only while resources are below this (money-bound regime)
+TYPE_EST = float(ENV.get("TYPE_EST", "1"))  # multiplier of type-level candidate estimates
+TYPE_LOW = int(ENV.get("TYPE_LOW", "1"))  # also routes with the low (network-reusing) hop penalty
+TYPE_MAXE = int(ENV.get("TYPE_MAXE", "99"))  # maximum tube hops of a type-level route
+TYPE_DET = int(ENV.get("TYPE_DET", "1"))  # type-level routes also as detours of looping pods
+TYPE_TB = int(ENV.get("TYPE_TB", "1"))  # no type-level candidates on turns after a time-bound one
 
 
 def orient(ax, ay, bx, by, cx, cy):
@@ -308,12 +336,13 @@ class State:
         return dist
 
 
-def extend_distances(st: State, dist: dict, acts: tuple) -> dict:
+def extend_distances(st: State, dist: dict, acts: tuple, changed: dict | None = None) -> dict:
     """Updates per-type distance maps after tubes and teleporters of an action bundle were added (distances can only decrease, so a
     label-correcting relaxation from the new links suffices); unchanged maps are shared.
     :param st: state after the bundle was applied
     :param dist: per-type distance maps of the state before the bundle
     :param acts: applied action bundle
+    :param changed: if given, filled with type -> buildings whose distance decreased (for the types whose map changed)
     :return: per-type distance maps of st"""
     links = [(a[1], a[2], 1) for a in acts if a[0] == "do_tube"] + [(a[1], a[2], 0) for a in acts if a[0] == "do_teleport"]
     rev = None
@@ -351,6 +380,8 @@ def extend_distances(st: State, dist: dict, acts: tuple) -> dict:
             if e is not None and d[e] > du:
                 d[e] = du
                 front.append((e, 0))
+        if changed is not None:
+            changed[t] = {u for u, _ in front}
     return new
 
 
@@ -688,6 +719,340 @@ def presences(st: State, arr_log: list, hop_log: list) -> dict:
     return pres
 
 
+class Trace:
+    """Day-by-day record of a month simulation of a base state, which simulate_delta reuses for states differing by a bundle.
+    Per-day lists (index = day - 1) of dicts; astronaut groups are dicts type -> sorted astronaut ids, never modified once recorded.
+    :var pre: building -> astronauts at the start of the day (non-empty groups only)
+    :var post: teleporter end -> astronauts after the teleporter step
+    :var tarr: teleporter entrance -> astronauts arriving at their module through it
+    :var deps: building -> departing pods [(pod id, next stop)] in pod id order
+    :var rem: building -> astronauts left after the pods departed (every building with astronauts after the teleporter step)
+    :var board: building -> boardings [(pod id, next stop, ((type, ids), ...))] (buildings with astronauts and departures)
+    :var land: building -> landings of astronauts at a non-target building [(departure building, type, ids)]
+    :var podpos: pod id -> per day (building, next stop) of its departure or None
+    :var pods: pod id -> path
+    :var pkeys: pod id -> tubes of its path
+    :var tubes: tube -> capacity
+    :var users: tube -> pods whose path uses it
+    :var over: tubes used by more pods than their capacity (the only ones where pods can be delayed)
+    :var tele: teleporter entrance -> exit
+    :var dist: per-type distance maps
+    :var score: month score
+    :var arrived: arrived astronauts
+    :var total: astronauts
+    :var cnt: module -> arrivals"""
+    __slots__ = ("pre", "post", "tarr", "deps", "rem", "board", "land", "podpos", "pods", "pkeys", "tubes", "users", "over", "tele", "dist", "score",
+                 "arrived", "total", "cnt")
+
+
+EMPTY = {}  # shared empty astronaut group (never modified)
+
+
+def path_keys(path: list) -> set:
+    """Returns the tubes (a, b), a < b, of a pod path."""
+    return {(u, v) if u < v else (v, u) for u, v in zip(path, path[1:])}
+
+
+def board_pods(b: int, g: dict, deps, dist: dict) -> tuple:
+    """Boards the astronauts standing at building b onto the departing pods exactly as the referee does (pod j takes the 10 smallest
+    ids among the remaining astronauts it brings closer to their targets).
+    :param b: building
+    :param g: type -> sorted astronaut ids at b (not modified)
+    :param deps: departing pods (pod id, next stop) in pod id order
+    :param dist: per-type distance maps
+    :return: (boardings [(pod id, next stop, ((type, ids), ...) sorted by type)] of the pods taking anyone, remaining type -> ids)"""
+    taken, res = {}, []
+    items = [(t, lst, d, d[b]) for t, lst in g.items() if (d := dist[t])[b] < INF]
+    for pid, v in deps:
+        cands = [(t, lst, p) for t, lst, d, db in items if d[v] < db and (p := taken.get(t, 0)) < len(lst)]
+        if not cands:
+            continue
+        if len(cands) == 1:
+            t, lst, p = cands[0]
+            taken[t] = q = min(p + POD_CAPACITY, len(lst))
+            res.append((pid, v, ((t, lst[p:q]),)))
+            continue
+        pool = []
+        for t, lst, p in cands:
+            pool += lst[p:p + POD_CAPACITY]
+        grp = []
+        if len(pool) > POD_CAPACITY:
+            pool.sort()
+            theta = pool[POD_CAPACITY - 1]
+            for t, lst, p in cands:
+                if (q := bisect_right(lst, theta, p, min(p + POD_CAPACITY, len(lst)))) > p:
+                    grp.append((t, lst[p:q]))
+                    taken[t] = q
+        else:
+            for t, lst, p in cands:
+                grp.append((t, lst[p:]))
+                taken[t] = len(lst)
+        grp.sort()
+        res.append((pid, v, tuple(grp)))
+    if not taken:
+        return res, g
+    r = dict(g)
+    for t, q in taken.items():
+        if q >= len(r[t]):
+            del r[t]
+        else:
+            r[t] = r[t][q:]
+    return res, r
+
+
+def merge_groups(g: dict, parts: list) -> dict:
+    """Returns astronaut group g plus the landed (type, ids) parts, each type's ids sorted."""
+    out, multi = dict(g), set()
+    for t, lst in parts:
+        if t in out:
+            out[t] = out[t] + lst
+            multi.add(t)
+        else:
+            out[t] = lst
+    for t in multi:
+        out[t] = sorted(out[t])
+    return out
+
+
+def pod_schedule(pods: dict, tubes: dict, pids, deps: list | None = None) -> dict:
+    """Simulates the movement of the given pods through the month (tube capacity shared among them only).
+    :param pods: pod id -> path
+    :param tubes: tube -> capacity
+    :param pids: pods to move
+    :param deps: if given, per day building -> departing pods [(pod id, next stop)] in pod id order, filled in place
+    :return: pod id -> per day (building, next stop) of its departure or None"""
+    order = sorted(pids)
+    pos, idx = {p: [None] * DAYS for p in order}, dict.fromkeys(order, 0)
+    for day in range(DAYS):
+        used, moved = {}, []
+        for p in order:
+            path, i = pods[p], idx[p]
+            if i >= len(path) - 1:
+                continue
+            u, v = path[i], path[i + 1]
+            key = (u, v) if u < v else (v, u)
+            if (c := used.get(key, 0)) < tubes[key]:
+                used[key] = c + 1
+                pos[p][day] = (u, v)
+                moved.append(p)
+                if deps is not None:
+                    deps[day][u].append((p, v))
+        for p in moved:
+            path = pods[p]
+            idx[p] += 1
+            if path[0] == path[-1] and idx[p] == len(path) - 1:
+                idx[p] = 0
+    return pos
+
+
+def trace_month(st: State, dist: dict) -> Trace:
+    """Simulates one month of state st exactly (like simulate) and records the details simulate_delta reuses.
+    :param st: network state (st.groups filled)
+    :param dist: per-type distance maps of st
+    :return: trace"""
+    btype, tr = st.btype, Trace()
+    tr.dist, tr.pods, tr.tubes, tr.tele = dist, {p: list(path) for p, path in st.pods.items()}, dict(st.tubes), dict(st.teleports)
+    tr.pkeys, tr.users = {p: path_keys(path) for p, path in st.pods.items()}, defaultdict(list)
+    for p, keys in tr.pkeys.items():
+        for key in keys:
+            tr.users[key].append(p)
+    tr.deps = [defaultdict(list) for _ in range(DAYS)]
+    tr.over, tr.podpos = {k for k, ps in tr.users.items() if len(ps) > st.tubes[k]}, pod_schedule(st.pods, st.tubes, st.pods, tr.deps)
+    at, cnt = {p: dict(g) for p, g in st.groups.items()}, defaultdict(int)
+    speed = arrived = 0
+    tr.pre, tr.post, tr.tarr, tr.rem, tr.board, tr.land = ([] for _ in range(6))
+    for day in range(1, DAYS + 1):
+        spd = 50 - day
+        at = {b: g for b, g in at.items() if g}
+        tr.pre.append(at)
+        at, post, tarr = dict(at), {}, {}
+        for e, x in st.teleports.items():
+            g, gx = at.get(e) or EMPTY, at.get(x) or EMPTY
+            if moved := [t for t in g if dist[t][e] < INF and dist[t][x] <= dist[t][e]]:
+                n, parts = 0, []
+                for t in moved:
+                    if btype[x] == t:
+                        n += len(g[t])
+                    else:
+                        parts.append((t, g[t]))
+                if n:
+                    speed += n * (spd + 1)
+                    cnt[x] += n
+                    arrived += n
+                    tarr[e] = n
+                g, gx = {t: lst for t, lst in g.items() if t not in moved}, merge_groups(gx, parts)
+                at[e], at[x] = g, gx
+            post[e], post[x] = g, gx
+        deps, rem, brd, land = tr.deps[day - 1], {}, {}, defaultdict(list)
+        for b, g in at.items():
+            if not g:
+                continue
+            if not (dl := deps.get(b)):
+                rem[b] = g
+                continue
+            res, r = board_pods(b, g, dl, dist)
+            brd[b], rem[b] = res, r
+            for _, v, grp in res:
+                bt = btype[v]
+                for t, lst in grp:
+                    if bt == t:
+                        speed += len(lst) * spd
+                        cnt[v] += len(lst)
+                        arrived += len(lst)
+                    else:
+                        land[v].append((b, t, lst))
+        for lst, x in zip((tr.post, tr.tarr, tr.rem, tr.board, tr.land), (post, tarr, rem, brd, land)):
+            lst.append(x)
+        at = dict(rem)
+        for v, parts in land.items():
+            at[v] = merge_groups(rem.get(v) or EMPTY, [(t, lst) for _, t, lst in parts])
+    tr.cnt, tr.arrived, tr.total = cnt, arrived, sum(map(len, st.pad_astronauts.values()))
+    tr.score = speed + sum(balance_pts(0, n) for n in cnt.values())
+    return tr
+
+
+def simulate_delta(tr: Trace, st: State, dist: dict, changed: dict) -> SimResult:
+    """Simulates one month of state st, which differs from the traced base state by an action bundle (new tubes, upgrades,
+    teleporters, new, re-routed or destroyed pods), exactly like simulate: only the buildings whose astronauts, departing pods or
+    relevant distance comparisons differ from the base are re-simulated each day, the base's results are reused elsewhere, and the
+    score follows from the speed points and the per-module arrival counts (balancing points do not depend on the arrival order).
+    :param tr: trace of the base state
+    :param st: modified state
+    :param dist: per-type distance maps of st
+    :param changed: type -> buildings whose distance differs from the base (for the types whose map differs)
+    :return: plain simulation result (score, arrived, total, dist)"""
+    SIM_COUNT[0] += 1
+    btype, bp, cp, tubes = st.btype, tr.pods, st.pods, st.tubes
+    # pods whose schedule may differ: new, removed or re-routed pods, closed over sharing tubes that are congested in either state
+    s0 = {p for p, path in cp.items() if bp.get(p) != path} | (bp.keys() - cp.keys())
+    ckeys = {p: path_keys(cp[p]) for p in s0 if p in cp}
+    duse = defaultdict(int)
+    for p in s0:
+        for k in tr.pkeys.get(p, ()):
+            duse[k] -= 1
+        for k in ckeys.get(p, ()):
+            duse[k] += 1
+    sched = set(s0)
+    work = list(s0)
+    for k, c in tubes.items():
+        if c != tr.tubes.get(k, c) and (k in tr.over or len(tr.users.get(k, ())) + duse[k] > c):
+            work += tr.users.get(k, ())
+    while work:
+        p = work.pop()
+        sched.add(p)
+        for k in (ckeys[p] | tr.pkeys.get(p, set())) if p in ckeys else tr.pkeys[p]:
+            if k in tr.over or len(tr.users.get(k, ())) + duse[k] > tubes[k]:
+                for q in tr.users.get(k, ()):
+                    if q not in sched:
+                        sched.add(q)
+                        work.append(q)
+    depdirty, cdep = [frozenset()] * DAYS, [EMPTY] * DAYS  # per day: buildings whose departures differ, departures of the re-scheduled pods
+    if sched:
+        cpos = pod_schedule(cp, tubes, [p for p in sched if p in cp])
+        for d in range(DAYS):
+            dd, cd = set(), defaultdict(list)
+            for p in sched:
+                a, c = tr.podpos[p][d] if p in tr.podpos else None, cpos[p][d] if p in cpos else None
+                if a != c:
+                    if a is not None:
+                        dd.add(a[0])
+                    if c is not None:
+                        dd.add(c[0])
+                if c is not None:
+                    cd[c[0]].append((p, c[1]))
+            depdirty[d], cdep[d] = dd, cd
+    flips = {}  # type -> building -> next stops for which the 'closer to the target' test differs from the base
+    for t, ct in changed.items():
+        dc, db, fl = dist[t], tr.dist[t], {}
+        for u in ct:
+            du, bu = dc[u], db[u]
+            for v in st.adj[u]:
+                if (dc[v] < du) != (db[v] < bu):
+                    fl.setdefault(u, set()).add(v)
+                if (du < dc[v]) != (bu < db[v]):
+                    fl.setdefault(v, set()).add(u)
+        if fl:
+            flips[t] = fl
+    dirty, dcnt = {}, defaultdict(int)  # building -> astronauts at the start of the day where they differ from the base; module -> arrivals
+    dspeed = darr = 0
+    for d in range(DAYS):
+        spd, pre, bpost = 49 - d, tr.pre[d], tr.post[d]
+        cur = dict(dirty)  # astronauts after the teleporter step where they (may) differ from the base
+        for e, x in st.teleports.items():
+            if e not in dirty and x not in dirty and (not (g := pre.get(e)) or e in tr.tele and not any(t in changed for t in g)):
+                continue
+            g, gx, n = dirty[e] if e in dirty else pre.get(e) or EMPTY, dirty[x] if x in dirty else pre.get(x) or EMPTY, 0
+            if moved := [t for t in g if dist[t][e] < INF and dist[t][x] <= dist[t][e]]:
+                parts = []
+                for t in moved:
+                    if btype[x] == t:
+                        n += len(g[t])
+                    else:
+                        parts.append((t, g[t]))
+                g, gx = {t: lst for t, lst in g.items() if t not in moved}, merge_groups(gx, parts)
+            if (n0 := tr.tarr[d].get(e, 0)) != n:
+                dspeed += (n - n0) * (spd + 1)
+                dcnt[x] += n - n0
+                darr += n - n0
+            for b, gb in ((e, g), (x, gx)):
+                if gb == (bpost[b] if b in bpost else pre.get(b) or EMPTY):
+                    cur.pop(b, None)
+                else:
+                    cur[b] = gb
+        todo = set(cur) | depdirty[d]
+        deps = tr.deps[d]
+        for t, fl in flips.items():
+            for b, vs in fl.items():
+                if b not in todo and (dl := deps.get(b)) and t in (bpost[b] if b in bpost else pre.get(b) or EMPTY) and any(v in vs for _, v in dl):
+                    todo.add(b)
+        dirty = {}
+        if not todo:
+            continue
+        brd, brem, cd = tr.board[d], tr.rem[d], cdep[d]
+        chg, remc, newland, recv = set(), {}, defaultdict(list), set()
+        for b in todo:
+            g = cur[b] if b in cur else bpost[b] if b in bpost else pre.get(b) or EMPTY
+            dl = sorted([e for e in deps.get(b, ()) if e[0] not in sched] + cd.get(b, [])) if b in depdirty[d] else deps.get(b, ())
+            res, r = board_pods(b, g, dl, dist) if g and dl else ([], g)
+            if res == brd.get(b, []) and r == (brem.get(b) or EMPTY):
+                continue
+            chg.add(b)
+            remc[b] = r
+            for _, v, grp in brd.get(b, ()):
+                bt = btype[v]
+                for t, lst in grp:
+                    if bt == t:
+                        dspeed -= len(lst) * spd
+                        dcnt[v] -= len(lst)
+                        darr -= len(lst)
+                    else:
+                        recv.add(v)
+            for _, v, grp in res:
+                for t, lst in grp:
+                    if btype[v] == t:
+                        dspeed += len(lst) * spd
+                        dcnt[v] += len(lst)
+                        darr += len(lst)
+                    else:
+                        newland[v].append((t, lst))
+                        recv.add(v)
+        if not chg or d == DAYS - 1:
+            continue
+        npre, bland = tr.pre[d + 1], tr.land[d]
+        for v in recv | chg:
+            parts = [(t, lst) for s, t, lst in bland.get(v, ()) if s not in chg] + newland.get(v, [])
+            r = remc[v] if v in chg else brem.get(v) or EMPTY
+            ns = merge_groups(r, parts) if parts else r
+            if ns != (npre.get(v) or EMPTY):
+                dirty[v] = ns
+    r = SimResult()
+    r.score, r.arrived, r.total, r.dist = tr.score + dspeed, tr.arrived + darr, tr.total, dist
+    for m, dn in dcnt.items():
+        if dn:
+            r.score += balance_pts(0, tr.cnt.get(m, 0) + dn) - balance_pts(0, tr.cnt.get(m, 0))
+    return r
+
+
 CLOCK = time.process_time if os.environ.get("SELENIA_CPU_CLOCK") else time.perf_counter
 if DET:
     CLOCK = lambda: VCLOCK[0]
@@ -702,13 +1067,16 @@ class Bot:
         self.issued_tubes = []  # tubes requested last turn
         self.blacklist = set()  # tubes rejected by the referee (e.g. passing through a future building)
         self.order_cache, self.mid_cache, self.tgt_cache, self.geo = {}, {}, {}, None  # position-only geometry caches, reset when buildings appear
-        self.pairset = None  # candidate new tubes of route searches, rebuilt every turn
+        self.pairset = None  # candidate new tubes of route searches, rebuilt when buildings appear (tubes added since are masked by legal())
         self.tord_cache = {}  # (building, type) -> all modules of the type by distance, reset when buildings appear
         self.bal_bad = set()  # tubes found illegal in the current greedy run by the balancing candidates
         self.gen0 = 0.  # recent duration of a full candidate generation
         self.t0 = None  # start of the time limit of the first turn when it precedes play_turn (set by main)
+        self.tb_prev = self.tb_next = False  # whether the previous / current turn's main greedy run ended by time (fast path gate)
         self.tele_geo = None  # (building count, module -> distance to the nearest pad, type -> module ids)
         self.hist_new, self.hist_inc, self.prev_after, self.res = [], [], 0, 0  # new buildings, inferred income per month, last leftover, reserve
+        self.hist_ast = []  # astronauts of the new pads per month
+        self.hold_left = 0  # remaining months of the hold decided last turn (HOLD_COMMIT)
         self.new_rows = []  # raw input lines of the buildings that appeared this turn (for the log)
         self.expect = None  # (tubes, pods, teleporters) expected in the next input, to detect rejected actions
         self.cum = 0  # predicted score of all months so far
@@ -747,6 +1115,7 @@ class Bot:
 
     def play_turn(self, lines: list[str]) -> str:
         self.start = CLOCK() if self.month or self.t0 is None else self.t0
+        self.tb_prev, self.tb_next = self.tb_next, False
         boot = time.perf_counter() - T_START if not self.month else 0
         n_old = len(self.st.pos)
         self.parse(lines)
@@ -756,6 +1125,7 @@ class Bot:
             except Exception:  # diagnostics must never cost the game
                 traceback.print_exc()
         self.hist_new.append(len(self.st.pos) - n_old)
+        self.hist_ast.append(sum(int(row.split()[4]) for row in self.new_rows if row.split()[0] == "0"))
         self.hist_inc.append(self.st.resources - self.prev_after - self.prev_after // 10)
         self.res = self.reserve()
         for key in self.issued_tubes:
@@ -764,7 +1134,8 @@ class Bot:
         self.st.blacklist = self.blacklist
         start = self.st
         try:
-            self.pairset = PairSet(self.st, KNN) if len(self.st.pos) > 1 else None
+            if self.pairset is None or len(self.st.pos) != n_old:
+                self.pairset = PairSet(self.st, KNN) if len(self.st.pos) > 1 else None
             self.plan()
         except Exception:  # a bug in a rare planning path must not forfeit the game: play WAIT this month (plan never mutates start)
             traceback.print_exc()
@@ -858,18 +1229,25 @@ class Bot:
             if best is None:
                 break
             st, chosen, _ = self.greedy(best[1], best[2], budget)
+        ks, self.hold_left = [self.hold_left] if HOLD_COMMIT and self.hold_left else HOLD_KS, 0
         if hold and chosen and st.resources < POD_COST:
-            # compare with keeping all resources for HOLD_K months (interest) and building a larger network at once
-            # (with income, the build-now path also spends the forecast income of the next HOLD_K months on top of its network)
-            g, v, sa = 1.1 ** HOLD_K, start.copy(), simulate(st).score
-            v.resources, fut = int(start.resources * g + inc * (g - 1) * 10), int(inc * (g - 1) * 10)
-            sb, sa2 = simulate(self.greedy(v, [], (budget + full) / 2 if fut > 0 else full)[0]).score, sa
-            if fut > 0:
-                a2 = st.copy()
-                a2.resources = int(st.resources * g) + fut
-                sa2 = simulate(self.greedy(a2, [], full)[0]).score
-            if sb * (months_left - HOLD_K) + simulate(start).score * HOLD_K > sa2 * (months_left - HOLD_K) + sa * HOLD_K:
-                st = start
+            # compare with keeping all resources for k months (interest) and building a larger network at once, for each k of ks
+            # (with income, the build-now path also spends the forecast income of the next k months on top of its network);
+            # with HOLD_COMMIT, a hold in progress compares building now with building at the end of the planned hold
+            sa, s0, runs, i = simulate(st).score, simulate(start).score, len(ks) * (2 if inc > 0 else 1), 0
+            for k in ks:
+                g, v = 1.1 ** k, start.copy()
+                v.resources, fut = int(start.resources * g + inc * (g - 1) * 10), int(inc * (g - 1) * 10)
+                i += 1
+                sb, sa2 = simulate(self.greedy(v, [], budget + (full - budget) * i / runs)[0]).score, sa
+                if fut > 0:
+                    a2 = st.copy()
+                    a2.resources = int(st.resources * g) + fut
+                    i += 1
+                    sa2 = simulate(self.greedy(a2, [], budget + (full - budget) * i / runs)[0]).score
+                if sb * (months_left - k) + s0 * k > (sa2 * (months_left - k) + sa * k) * (1 + HOLD_MARGIN):
+                    st, self.hold_left = start, k - 1
+                    break
         self.st = st
 
     def greedy(self, st: State, chosen: list, budget: float) -> tuple:
@@ -896,7 +1274,7 @@ class Bot:
                 del pool[acts]
                 dead.add(acts)
                 return
-            r = simulate(s2, False, extend_distances(s2, base.dist, acts) if any(a[0] in TOPO_ACTS for a in acts) else base.dist)
+            r = quick(s2, acts)
             vc = DETOUR_VCOST * sum(a[0] == "do_reroute" and len(a[3]) > len(a[2]) for a in acts)  # longer loops: virtual cost
             cost = st.resources - s2.resources + vc
             value = INF if cost < 0 and r.score >= base.score else (r.score - base.score) * months_left / max(cost, 1)
@@ -905,28 +1283,50 @@ class Bot:
             c[:4], c[5] = (value, ver, s2, r), vc
             heappush(evald, (-value, acts))
 
+        def quick(s2: State, acts: tuple) -> SimResult:
+            """Simulates state s2 = st plus bundle acts (plain result), incrementally against a trace of st when DELTA is on.
+            :param s2: state after the bundle
+            :param acts: applied bundle
+            :return: simulation result"""
+            topo = any(a[0] in TOPO_ACTS for a in acts)
+            if not DELTA:
+                return simulate(s2, False, extend_distances(s2, base.dist, acts) if topo else base.dist)
+            if trace[0] is None:
+                trace[0] = trace_month(st, base.dist)
+            ch = {}
+            return simulate_delta(trace[0], s2, extend_distances(s2, base.dist, acts, ch) if topo else base.dist, ch)
+
         months_left = MONTHS - self.month
-        base = simulate(st, True)
+        base, trace = simulate(st, True), [None]  # trace of st (reset when st changes)
         # pool: actions -> [value, version, state, result, estimate, virtual cost]
         # the turn's main run always generates (it starts early and re-measures gen0 every turn); secondary runs start only if a full
         # candidate generation still fits
         pool, dead, ver, ratios, alpha, fresh, evald, sig, bad, tops = {}, set(), 0, [], 2., [], [], {}, set(), []
-        gen_time = 0. if st is self.st else self.gen0
+        main_run = st is self.st
+        gen_time = 0. if main_run else self.gen0
         st.legal_ok = set()
         self.bal_bad = set()  # tubes only get added within one greedy run, so its illegal tubes stay illegal
-        while self.elapsed() + gen_time < budget:
-            t0 = self.elapsed()
-            for acts, est in self.candidates(st, base, sig).items():
-                if (c := pool.get(acts)) is not None:
-                    if REFRESH and 0 <= c[1] < ver:
-                        c[4] = est * months_left
-                        heappush(fresh, (-c[4], acts))
-                elif acts not in dead and not any(a[0] == "do_tube" and (min(a[1], a[2]), max(a[1], a[2])) in bad for a in acts):
-                    pool[acts] = [0, -1, None, None, est * months_left, 0]
-                    heappush(fresh, (-est * months_left, acts))
-            gen_time = self.elapsed() - t0
-            if not ver:
-                self.gen0 = max(self.gen0 * 0.8, gen_time)  # cost of a full (unsigned) candidate generation, to avoid overshooting
+        # fast path on time-bound turns (the previous turn ran out of time, or a rich first month): accept batches of independent bundles
+        # and regenerate candidates (with a detailed base simulation) only every SKIP_K acceptances
+        fast = BATCH_N > 1 and (self.tb_prev and st.resources >= FAST_RES if self.month else st.resources >= GATE_RES)
+        regen, since, detailed, by_time = True, 0, True, True
+        while self.elapsed() + (gen_time if regen else 0) < budget:
+            if regen:
+                if not detailed:
+                    base, detailed = simulate(st, True, base.dist), True
+                since = 0
+                t0 = self.elapsed()
+                for acts, est in self.candidates(st, base, sig).items():
+                    if (c := pool.get(acts)) is not None:
+                        if REFRESH and 0 <= c[1] < ver:
+                            c[4] = est * months_left
+                            heappush(fresh, (-c[4], acts))
+                    elif acts not in dead and not any(a[0] == "do_tube" and (min(a[1], a[2]), max(a[1], a[2])) in bad for a in acts):
+                        pool[acts] = [0, -1, None, None, est * months_left, 0]
+                        heappush(fresh, (-est * months_left, acts))
+                gen_time = self.elapsed() - t0
+                if not ver:
+                    self.gen0 = max(self.gen0 * 0.8, gen_time)  # cost of a full (unsigned) candidate generation, to avoid overshooting
             if len(ratios) >= 20:
                 ratios.sort()
                 alpha = max(ratios[min(int(len(ratios) * QUANTILE), len(ratios) - 1)], 0.05)
@@ -935,7 +1335,9 @@ class Bot:
             step_end = self.elapsed() + max(STEP_FRAC * (budget - self.elapsed()) / steps, STEP_MIN)
             u0 = self.util(st.resources)
             thr = (u0 - self.util(st.resources - POD_COST)) / POD_COST  # value needed by a pod-sized bundle to be accepted
-            n_fresh = 0
+            n_fresh = n_alpha = 0
+            filling = False
+            cap = F_CAP if fast and F_CAP else INF
             while self.elapsed() < budget:
                 if evald:
                     c = pool.get(acts := evald[0][1])
@@ -951,8 +1353,10 @@ class Bot:
                     if c is None or c[1] == ver:
                         heappop(fresh)
                         continue
-                    if n_fresh < FRESH_MIN or self.elapsed() < step_end or -fresh[0][0] * alpha > (top := -evald[0][0] if evald else 0) \
-                            or FILL and top < thr:
+                    top = -evald[0][0] if evald else 0
+                    lazy = n_fresh < FRESH_MIN or self.elapsed() < step_end or -fresh[0][0] * alpha > top and (n_alpha := n_alpha + 1) <= cap
+                    if lazy or FILL and top < thr and (not FILL_Q or -fresh[0][0] * alpha * FILL_Q >= thr):
+                        filling = not lazy
                         heappop(fresh)
                         evaluate(acts)
                         n_fresh += 1
@@ -963,17 +1367,80 @@ class Bot:
             best = max(ok, key=lambda a: pool[a][0], default=None)
             if ver == 0:
                 tops = sorted(ok, key=lambda a: -pool[a][0])
+            if best is None and not regen:
+                regen = True
+                continue
             if best is None:
+                by_time = False
                 break
             c = pool.pop(best)
-            st = c[2]
+            st_new, r_new, batch = c[2], c[3], [best]
+            if fast and len(ok) > 1:
+                st_new, r_new, batch = self.batch(st, base, pool, ok, best, c, u0, months_left, quick)
+            st, trace[0] = st_new, None
             st.legal_ok = set()
-            chosen.append(best)
-            evald = [e for e in evald if e[1] != best]
+            chosen.extend(batch)
+            evald = [e for e in evald if e[1] not in batch]
             heapify(evald)
-            base = simulate(st, True, c[3].dist)
+            base, detailed = r_new, False
             ver += 1
+            since += 1
+            regen = since >= (SKIP_K if fast else 1)
+        if main_run:
+            self.tb_next = by_time and not (FAST_FILL and filling)  # a turn spent searching for any acceptable bundle is not time-bound
         return st, chosen, tops
+
+    def batch(self, st: State, base: SimResult, pool: dict, ok: list, best: tuple, c: list, u0: float, months_left: int, quick) -> tuple:
+        """Extends the accepted bundle with other acceptable bundles that touch none of its buildings and add no crossing tubes, and keeps
+        the extension if one simulation confirms most of their individual gains.
+        :param st: state before the acceptance
+        :param base: simulation result of st
+        :param pool: candidate pool (entries of the bundles accepted together are removed)
+        :param ok: acceptable bundles of the current version
+        :param best: the accepted bundle (already removed from the pool)
+        :param c: pool entry of best
+        :param u0: utility of st's resources
+        :param months_left: months left including this one
+        :param quick: simulates a state = st plus a bundle (arguments state, bundle)
+        :return: (new state, its simulation result, accepted bundles)"""
+        def footprint(acts: tuple) -> set:
+            f = set()
+            for a in acts:
+                if a[0] in ("do_tube", "do_upgrade", "do_teleport"):
+                    f |= {a[1], a[2]}
+                elif a[0] == "do_pod":
+                    f |= set(a[1])
+                elif a[0] == "do_reroute":
+                    f |= set(a[2]) | set(a[3])
+                else:
+                    f |= set(st.pods[a[1]])
+            return f
+
+        fp, newt, group = footprint(best), [(a[1], a[2]) for a in best if a[0] == "do_tube"], [best]
+        for acts in sorted((a for a in ok if a != best), key=lambda a: -pool[a][0]):
+            if len(group) >= BATCH_N:
+                break
+            if pool[acts][0] == INF or (f2 := footprint(acts)) & fp:
+                continue
+            t2 = [(a[1], a[2]) for a in acts if a[0] == "do_tube"]
+            if any(segments_intersect(st.pos[x], st.pos[y], st.pos[u], st.pos[w]) for x, y in t2 for u, w in newt):
+                continue
+            group.append(acts)
+            fp |= f2
+            newt += t2
+        if len(group) > 1:
+            s2 = st.copy()
+            allacts = tuple(a for acts in group for a in acts)
+            if all(getattr(s2, a[0])(*a[1:]) for a in allacts):
+                r2 = quick(s2, allacts)
+                gain = r2.score - base.score
+                gsum = c[3].score - base.score + sum(pool[a][3].score - base.score for a in group[1:])
+                vc = c[5] + sum(pool[a][5] for a in group[1:])
+                if gain >= BATCH_TOL * gsum and gain * months_left >= u0 - self.util(s2.resources - vc):
+                    for a in group[1:]:
+                        pool.pop(a)
+                    return s2, r2, group
+        return c[2], c[3], [best]
 
     def candidates(self, st: State, base: SimResult, sig: dict) -> dict:
         """Generates candidate action bundles with analytic estimates of their monthly gain per cost: pods, tubes, chains and teleporters
@@ -1077,6 +1544,8 @@ class Bot:
                             cands.setdefault((("do_teleport", p, m),), c * (sd / c - 0.5) / TELEPORT_COST)
         if self.pairset is not None:
             self.route_candidates(st, base, sig, edge_pods, cands)
+            if TYPE and st.resources < TYPE_RES and not (TYPE_TB and self.tb_prev):
+                self.type_candidates(st, base, sig, edge_pods, pod_at if detours else None, cands)
         if SERVED:
             self.served_candidates(st, base, edge_pods, cands)
         if BAL:
@@ -1311,6 +1780,96 @@ class Bot:
             VCLOCK[0] += 4e-6 + 1.5e-6 * pops
         return None
 
+    def type_candidates(self, st: State, base: SimResult, sig: dict, edge_pods: dict, pod_at: dict | None, cands: dict):
+        """Adds type-level connection candidates: for each (type, tube component) whose stuck astronauts can reach no module of the type
+        (many small groups at different pads, none of which pays for a connection alone), routes from the modules of the type to a
+        pod-served building x of the component (the cheapest route over existing and legal new tubes, and direct new tubes to the
+        TYPE_K cheapest pod-served buildings), each served by shuttles, by one back-and-forth pod, or by a detour of a looping pod
+        visiting x. The estimate sums over the stuck groups of the type whose descent towards x (hop distances over the existing tubes)
+        can use pods at every step. Unchanged jobs are skipped.
+        :param st: current state
+        :param base: detailed simulation result of st
+        :param sig: situation of each job at its last generation, updated in place
+        :param edge_pods: tube -> number of pods using it
+        :param pod_at: building -> [(looping pod id, index of its first visit, its tubes)], least loaded first (None: no detours)
+        :param cands: candidates (actions -> estimated monthly gain per resource), extended in place"""
+        comp = {}
+        for s0, vs in st.adj.items():
+            if vs and s0 not in comp:
+                comp[s0], front = s0, [s0]
+                for u in front:
+                    for v in st.adj[u]:
+                        if v not in comp:
+                            comp[v] = s0
+                            front.append(v)
+        where = defaultdict(list)
+        for (b, t), n in base.stuck.items():
+            if b in comp and base.dist[t][b] >= INF:
+                where[(t, comp[b])].append((b, n))
+        jobs = sorted(((sum(n for _, n in g), t, c) for (t, c), g in where.items()), reverse=True)
+        jobs = [j for j in jobs[:TYPE_JOBS] if j[0] >= TYPE_MIN]
+        if not jobs:
+            return
+        served = {x for path in st.pods.values() for x in path}
+        pod_dir = {e for path in st.pods.values() for e in zip(path, path[1:])}
+        newadj, tele, cnt, adj = None, st.teleports, base.mod_cnt, st.adj
+        for n, t, c in jobs:
+            if (old := sig.get(("T", t, c))) is not None and old[0] == n and old[1] is base.dist[t]:
+                continue
+            sig[("T", t, c)] = (n, base.dist[t])
+            goal = {x for x in served if comp.get(x) == c}
+            if not goal:
+                continue
+            if newadj is None:
+                newadj = self.pairset.legal(st)
+            mods = sorted((min((tc for v, tc in newadj.get(m, ()) if v in goal), default=INF), m) for m, bt in st.btype.items() if bt == t)
+            routes = set()
+            for _, m in mods[:TYPE_MODS]:
+                for pen in (HOP_PENALTY, LOW_PENALTY)[:1 + TYPE_LOW]:
+                    if (path := self.route(st, m, goal, newadj, edge_pods, TYPE_MAXE, pen)) is not None:
+                        routes.add(tuple(path[::-1]))
+                routes.update((v, m) for _, v in sorted((tc, v) for v, tc in newadj.get(m, ()) if v in goal)[:TYPE_K])
+            dxs = {}
+            for r in routes:
+                edges = list(zip(r, r[1:]))
+                if any(tele.get(y) == x for x, y in edges):  # the route was searched from the module: its teleporter hops point backwards
+                    continue
+                new = [(x, y) for x, y in edges if (min(x, y), max(x, y)) not in st.tubes]
+                if any(len({x, y, u, w}) == 4 and segments_intersect(st.pos[x], st.pos[y], st.pos[u], st.pos[w]) for i, (x, y) in enumerate(new) for u, w in new[i + 1:]):
+                    continue
+                need = [i for i, (x, y) in enumerate(edges) if not edge_pods.get((min(x, y), max(x, y)))]
+                if not need:
+                    continue
+                if (dx := dxs.get(x := r[0])) is None:
+                    dx = dxs[x] = {x: 0}
+                    front = [x]
+                    for u in front:
+                        for v in adj[u]:
+                            if v not in dx:
+                                dx[v] = dx[u] + 1
+                                front.append(v)
+                k = g = 0
+                for b, nb in where[(t, c)]:
+                    u = b
+                    while u != x and (u := next((v for v in adj[u] if dx.get(v, INF) == dx[u] - 1 and (u, v) in pod_dir), None)) is not None:
+                        pass
+                    if u == x:
+                        k, g = k + nb, g + nb * (50 - 2 * (dx[b] + len(edges)))
+                if not k:
+                    continue
+                g = (g * min(k, 100) / k + balance_pts(cnt.get(r[-1], 0), min(k, 100))) * TYPE_EST
+                tubes, tc = tuple(("do_tube", x, y) for x, y in new), sum(st.tube_cost(x, y) for x, y in new)
+                cands.setdefault(tubes + tuple(("do_pod", (x, y, x) if i % 2 == 0 else (y, x, y)) for i in need for x, y in (edges[i],)),
+                                 g / (tc + POD_COST * len(need)))
+                if len(need) >= 2 and all(edges[i][1] == edges[i + 1][0] for i in range(need[0], need[-1])):
+                    sub = [edges[need[0]][0]] + [edges[i][1] for i in range(need[0], need[-1] + 1)]
+                    cands.setdefault(tubes + (("do_pod", tuple(sub + sub[-2::-1])),), g * min(1, 100 / (len(sub) - 1) / k) / (tc + POD_COST))
+                if TYPE_DET and pod_at is not None and len(need) == len(edges):
+                    for acts, est in self.detours(st, base, pod_at, r, g / 60, tubes, tc, False).items():
+                        cands.setdefault(acts, est)
+        if DET:
+            VCLOCK[0] += 1e-5 + 2e-6 * len(base.stuck) + 1e-5 * len(jobs)
+
     def served_candidates(self, st: State, base: SimResult, edge_pods: dict, cands: dict):
         """Adds candidates speeding up astronauts that arrive but wait at buildings on the way (queues for full pods) for the W_TOP
         (building, type) pairs with the most waiting astronaut-days: an extra shuttle in both phases on each shortest-path tube leaving
@@ -1503,8 +2062,9 @@ class Bot:
         A bundle is bought when its gain over the remaining months covers the utility of the resources it spends.
         :param r: resources
         :return: utility"""
-        r0, r1 = TH_K / TH_MAX, max(0, r - self.res)
-        return TH_HI * min(r, self.res) + min(1, (MONTHS - self.month - 1) / TH_M) * (TH_MAX * r1 if r1 <= r0 else TH_K * (1 + math.log(r1 / r0)))
+        r0, r1, f = TH_K / TH_MAX, max(0, r - self.res), min(1, (MONTHS - self.month - 1) / TH_M)
+        return TH_HI * (min(1, (MONTHS - self.month - 1) / HI_M) if HI_M else 1) * min(r, self.res) + \
+            f * (TH_MAX * r1 if r1 <= r0 else TH_K * (1 + math.log(r1 / r0)))
 
     def reserve(self) -> float:
         """Returns the resources to keep for buildings expected in future months: the present value of the mean monthly deficit
@@ -1512,6 +2072,12 @@ class Bot:
         :return: reserve"""
         if self.month == 0:
             return 0
+        if RSV:
+            w = [RSV_G ** (self.month - k) for k in range(1, self.month + 1)]
+            need = RK * sum(x * max(0, CA * a - i) for x, a, i in zip(w, self.hist_ast[1:], self.hist_inc[1:])) / sum(w)
+            gap = self.month - max((k for k, a in enumerate(self.hist_ast) if a), default=0)  # months since the last new pads
+            need *= RSV_S ** max(0, gap - 1)
+            return min(max(0, need) * (1 - 1.1 ** (self.month + 1 - MONTHS)) * 10, CA * max(0, 1000 - sum(map(len, self.st.pad_astronauts.values()))))
         need = CB * sum(self.hist_new[1:]) / self.month - sum(self.hist_inc[1:]) / self.month
         return max(0, need) * (1 - 1.1 ** (self.month + 1 - MONTHS)) * 10
 

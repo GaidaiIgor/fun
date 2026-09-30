@@ -1,9 +1,11 @@
 """Selenia City bot: greedy network construction guided by an exact month simulator."""
+import base64
 import math
 import os
 import sys
 import time
 import traceback
+import zlib
 from bisect import bisect_right
 from collections import defaultdict
 from heapq import heapify, heappop, heappush
@@ -13,6 +15,9 @@ T_START = time.perf_counter()  # before the numpy import: the time limit of the 
 import numpy as np
 
 ENV = os.environ if os.environ.get("SELENIA_TUNE") else {}  # tuning overrides (development only)
+LOG = not os.environ.get("SELENIA_NOLOG")  # per-month diagnostics on stderr, decoded by logtool.py
+LOG_CHUNK = 1000  # maximal payload characters per encoded log line
+SIM_COUNT = [0]  # simulate() calls, for the log
 INF = 10 ** 9
 DAYS = 20
 MONTHS = 20
@@ -471,6 +476,7 @@ def simulate(st: State, want_detail: bool = False, dist: dict | None = None) -> 
     :return: simulation result"""
     if DET:
         VCLOCK[0] += VSCALE * 7e-5 + VSCALE * 1e-5 * sum(map(len, st.pods.values())) + (4e-8 * len(st.pos) * len(st.groups or ()) * 5 if dist is None else 0)
+    SIM_COUNT[0] += 1
     if st.groups is None:
         st.groups = {p: {t: [p * 1000 + i for i, x in enumerate(lst) if x == t] for t in set(lst)} for p, lst in st.pad_astronauts.items()}
     at = {p: dict(g) for p, g in st.groups.items()}
@@ -703,6 +709,9 @@ class Bot:
         self.t0 = None  # start of the time limit of the first turn when it precedes play_turn (set by main)
         self.tele_geo = None  # (building count, module -> distance to the nearest pad, type -> module ids)
         self.hist_new, self.hist_inc, self.prev_after, self.res = [], [], 0, 0  # new buildings, inferred income per month, last leftover, reserve
+        self.new_rows = []  # raw input lines of the buildings that appeared this turn (for the log)
+        self.expect = None  # (tubes, pods, teleporters) expected in the next input, to detect rejected actions
+        self.cum = 0  # predicted score of all months so far
 
     # ------------------------------------------------------------ parsing
     def parse(self, lines: list[str]):
@@ -722,8 +731,11 @@ class Bot:
         for _ in range(int(next(it))):
             v = list(map(int, next(it).split()))
             st.pods[v[0]] = v[2:2 + v[1]]
+        self.new_rows = []
         for _ in range(int(next(it))):
-            v = list(map(int, next(it).split()))
+            row = next(it).strip()
+            self.new_rows.append(row)
+            v = list(map(int, row.split()))
             st.pos[v[1]] = (v[2], v[3])
             self.order_cache, self.mid_cache, self.tgt_cache, self.geo, self.tord_cache = {}, {}, {}, None, {}
             st.btype[v[1]] = v[0]
@@ -735,8 +747,14 @@ class Bot:
 
     def play_turn(self, lines: list[str]) -> str:
         self.start = CLOCK() if self.month or self.t0 is None else self.t0
+        boot = time.perf_counter() - T_START if not self.month else 0
         n_old = len(self.st.pos)
         self.parse(lines)
+        if LOG and self.expect is not None:
+            try:
+                self.log_desync()
+            except Exception:  # diagnostics must never cost the game
+                traceback.print_exc()
         self.hist_new.append(len(self.st.pos) - n_old)
         self.hist_inc.append(self.st.resources - self.prev_after - self.prev_after // 10)
         self.res = self.reserve()
@@ -750,11 +768,53 @@ class Bot:
             self.plan()
         except Exception:  # a bug in a rare planning path must not forfeit the game: play WAIT this month (plan never mutates start)
             traceback.print_exc()
+            log(f"ERR{self.month + 1:02d} planning failed, playing WAIT")
             self.st = start
         self.prev_after = self.st.resources
         self.issued_tubes = [(min(a, b), max(a, b)) for a, b in (map(int, s.split()[1:]) for s in self.st.actions if s.startswith("TUBE"))]
+        out = ";".join(self.st.actions) or "WAIT"
+        if LOG:
+            try:
+                self.log_turn(start.resources, out, boot)
+            except Exception:  # diagnostics must never cost the game
+                traceback.print_exc()
         self.month += 1
-        return ";".join(self.st.actions) or "WAIT"
+        return out
+
+    def log_turn(self, res0: int, out: str, boot: float):
+        """Writes this turn's summary and the encoded new buildings and actions to stderr (decoded by logtool.py).
+        :param res0: resources at the start of the turn
+        :param out: action line sent to the referee
+        :param boot: seconds between the module import and the first turn (first turn only)"""
+        t_plan = self.elapsed()
+        st, m = self.st, self.month + 1
+        r = simulate(st)
+        self.cum += r.score
+        log(f"T{m:02d} t={self.elapsed() * 1000:.0f} plan={t_plan * 1000:.0f} boot={boot * 1000:.0f} res={res0} inc={self.hist_inc[-1]} left={st.resources} "
+            f"new={len(self.new_rows)} b={len(st.pos)} pred={r.score} arr={r.arrived}/{r.total} cum={self.cum} act={len(st.actions)} sims={SIM_COUNT[0]} "
+            f"tubes={len(st.tubes)} pods={len(st.pods)} tele={len(st.teleports)}")
+        SIM_COUNT[0] = 0
+        log_blob(f"M{m:02d}", "\n".join([str(res0)] + self.new_rows))
+        log_blob(f"A{m:02d}", out)
+        self.expect = (dict(st.tubes), {k: list(v) for k, v in st.pods.items()}, dict(st.teleports))
+        if m == MONTHS:
+            log(f"END cum={self.cum}")
+
+    def log_desync(self):
+        """Reports differences between the network the bot expected after its last actions and the one in this turn's input."""
+        tubes, pods, tele = self.expect
+        st, m, msgs = self.st, self.month + 1, []
+        if tubes != st.tubes:
+            msgs.append(f"tubes missing {sorted(set(tubes) - set(st.tubes))[:8]} extra {sorted(set(st.tubes) - set(tubes))[:8]} "
+                        f"cap {[(k, tubes[k], st.tubes[k]) for k in tubes if k in st.tubes and tubes[k] != st.tubes[k]][:8]}")
+        if pods != st.pods:
+            msgs.append(f"pods differ {[(k, pods.get(k), st.pods.get(k)) for k in sorted(set(pods) | set(st.pods)) if pods.get(k) != st.pods.get(k)][:5]}")
+        if tele != st.teleports:
+            msgs.append(f"teleporters expected {sorted(tele.items())[:8]} got {sorted(st.teleports.items())[:8]}")
+        if self.hist_inc and st.resources - self.prev_after - self.prev_after // 10 < 0:
+            msgs.append(f"resources {st.resources} below expected minimum {self.prev_after + self.prev_after // 10}")
+        for msg in msgs:
+            log(f"X{m:02d} {msg}")
 
     def elapsed(self) -> float:
         return CLOCK() - self.start
@@ -1454,6 +1514,21 @@ class Bot:
             return 0
         need = CB * sum(self.hist_new[1:]) / self.month - sum(self.hist_inc[1:]) / self.month
         return max(0, need) * (1 - 1.1 ** (self.month + 1 - MONTHS)) * 10
+
+
+def log(msg: str):
+    """Writes one diagnostic line to stderr."""
+    print(f"[S] {msg}", file=sys.stderr, flush=True)
+
+
+def log_blob(tag: str, text: str):
+    """Writes text zlib-compressed and base64-encoded to stderr, split into lines of at most LOG_CHUNK characters.
+    :param tag: line tag, e.g. M03 for the buildings of month 3
+    :param text: text to encode"""
+    b = base64.b64encode(zlib.compress(text.encode(), 9)).decode()
+    parts = [b[i:i + LOG_CHUNK] for i in range(0, len(b), LOG_CHUNK)] or [""]
+    for i, part in enumerate(parts):
+        log(f"{tag} {i + 1}/{len(parts)} {part}")
 
 
 def main():

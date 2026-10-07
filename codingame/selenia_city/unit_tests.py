@@ -8,8 +8,8 @@ from io import StringIO
 from time import perf_counter
 import unittest
 
-from Selenia_City.main import MAX_PODS, MAX_TUBES_PER_BUILDING, MONTH_DAYS, POD_COST, POD_REFUND, TELEPORT_COST
-from Selenia_City.main import Building, Planner, Pod, point_on_segment, route_key, segments_intersect, tube_cost
+from selenia_city.main import MAX_PODS, MAX_TUBES_PER_BUILDING, MONTH_DAYS, POD_COST, POD_REFUND, TELEPORT_COST
+from selenia_city.main import Building, Planner, Pod, point_on_segment, route_key, segments_intersect, tube_cost
 
 
 class PlannerRegressionTests(unittest.TestCase):

@@ -8,8 +8,8 @@ from pathlib import Path
 
 if not __package__:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
-from Selenia_City.main import Planner
-from Selenia_City.unit_tests import apply_actions, parse_turn_state
+from selenia_city.main import Planner
+from selenia_city.unit_tests import apply_actions, parse_turn_state
 
 TURN_STATE = \
 """

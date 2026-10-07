@@ -8,8 +8,8 @@ from pathlib import Path
 
 if not __package__:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
-import Selenia_City.semi as semi
-from Selenia_City.semi import Candidate, Node, Planner, PodPlan, Result, State, route_key
+import selenia_city.semi as semi
+from selenia_city.semi import Candidate, Node, Planner, PodPlan, Result, State, route_key
 
 TURN_STATE = """
 month 15

@@ -7,8 +7,8 @@ from pathlib import Path
 
 if not __package__:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
-import Selenia_City.semi as semi
-from Selenia_City.test_semi import parse_turn_state
+import selenia_city.semi as semi
+from selenia_city.test_semi import parse_turn_state
 
 semi.FULL_DEBUG = False
 semi.OVERRIDE_MONTH = -1

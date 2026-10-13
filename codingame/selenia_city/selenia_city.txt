@@ -1,0 +1,85 @@
+Your goal is to write python code (3.11-compatible) into main.py (currently does not exist), which solves the optimization problem stated below. You may also create any other files for internal use as you see fit. You do not have to follow any of the usual rules in *.md files. You can write the code any way you want.
+
+You are not allowed to use the Internet, other chats or memories for this task, but you can ask me questions about rules.
+
+==================================================
+Challenge Rules
+==================================================
+
+Objective:
+	Maximize your score.
+
+General Rules:
+	The game is played in 20 lunar months of 20 days each, on a rectangular map of 160 x 90 units.
+	
+	At the beginning of each month, new buildings may be constructed in the city (this is outside of your control). 
+	There are two types of buildings: landing pads (sources) and modules (destinations). Each module has a type. There may be multiple modules of the same type.
+	
+	At the beginning of each month, new astronauts appear at the landing pads.
+	Each astronaut also has a type and wants to go to a module with a matching type. Your goal is to build an efficient travel network that allows them to reach their targets. The network elements can be updated at the beginning of each month. During the month, the network is fixed, and the astronauts travel through it to their destinations, using their own rules, which you do not control. You get points for each astronaut that reaches their destination. Astronauts that did not reach their destination by the end of a month disappear. The number and composition of astronauts arriving to each landing pad at the beginning of each month is constant.
+	
+	At the beginning of each month you may or may not receive resources that you can spend on building the travel network. 
+	There are two transportation modes within the network: pods and teleporters.
+	Each pod can carry up to 10 astronauts between buildings connected by a tube. You can decide how exactly pods move between buildings. Tubes can only be built in a straight line between two buildings. Two tubes cannot cross each other, and each building can only be connected to at most 5 tubes. A tube cannot pass through a building without stopping there. Sending a pod through a tube takes 1 day regardless of tube length.
+	Tubes have finite capacity. Immediately after building, the capacity is equal to 1, meaning that only 1 pod can travel through it at a time (both ways). It is possible to upgrade tubes to increase their capacity.
+	
+	Teleporters allow astronauts to move instantly from one building to another, without limits on how many passengers can use it at once. Each building can only accommodate either one teleporter entrance or one exit.
+		
+Scoring details:
+	Each astronaut reaching its target before the end of the month will give you up to 100 points:
+	- For speed: 50 points minus the number of days needed by the astronaut to reach the destination.
+	- For balancing: 50 points minus the number of astronauts who have already reached the same module during the current month, lower bounded by 0.
+
+Details:
+	Each month happens in 4 stages:
+	1. City parsing.
+		At the beginning of each month, your code receives information about new buildings in Selenia City.
+		- On the first line, an integer resources representing the total amount of resources you currently have.
+		- On the next line, an integer numTravelRoutes, the number of routes (tubes or teleporters) currently present in the city.
+		- On the next numTravelRoutes lines, the description of a tube or teleporter as a list of three space-separated integers buildingId1, buildingId2 and capacity:
+			- buildingId1 and buildingId2 are the ends of the tube or teleporter.
+			- capacity equals 0 if the route is a teleporter, and represents the capacity of the tube otherwise.
+		- On the next line, an integer numPods, the number of transport pods currently present in the network of tubes.
+		- On the next numPods lines, the description of a pod as a list of space-separated integers:
+			- The first integer is the unique identifier of the pod.
+			- The second integer is the number numStops of stops in the pod's path.
+			- The next numStops integers represent the pod's path, i.e. the identifiers of each building on its itinerary.
+		- On the next line, an integer numNewBuildings, the number of buildings that have just been constructed.
+		- On the next numNewBuildings lines, the description of a new building, as a list of space-separated integers. The format of each line depends on the building type:
+			- If the building is a landing pad: 0 buildingId coordX coordY numAstronauts astronaut1type astronaut2type ...
+			- Otherwise, the first number is a positive integer and the building is a module with the following format: moduleType buildingId coordX coordY
+		  
+	2. Transport infrastructure improvements.
+		This is where you can update the travel network.
+		Allowed actions:
+		- TUBE buildingId1 buildingId2: create a tube between two buildings. The cost is 1 resource for each 0.1 unit of tube length, rounded down.
+		- UPGRADE buildingId1 buildingId2: increase the capacity of a tube by 1. You will need to spend the initial construction cost multiplied by the new capacity.
+		- TELEPORT buildingIdEntrance buildingIdExit: build a teleporter. This action costs 5000 resources.
+		- POD podId buildingId1 buildingId2 buildingId3 ...: create a transport pod and define its path. The pod identifier must be included between 1 and 500. If the last stop is the same as the first, the pod will loop around the path indefinitely, otherwise it will remain in place after reaching its last stop. This action costs 1000 resources.
+		- DESTROY podId: deconstruct a transport pod. This action gives you 750 resources back. Tubes and teleporters cannot be deconstructed.
+		- WAIT: don't perform any action this turn.
+		In order to execute several actions during the same game turn, you can separate them with a semicolon.
+		If an action is impossible, it will be ignored.
+	
+	3. Astronaut movement.
+		Once all modifications have been applied to the transport network, 20 days will happen during which astronauts move within the network autonomously towards their target modules.
+		Traversing a tube always takes 1 day, regardless of the distance.
+		Astronauts plan their route in a naive way, by trying to move towards their nearest target module (or any nearest module if several exist). They will take any tube or teleporter available that takes them closer to their destination, without actually considering the pods scheduled on the following days to determine whether their trajectory is optimal or even feasible.
+		The movement phase happens in 4 steps each day:
+		1. Teleporters. Each astronaut standing on a teleporter entrance will take it, if the exit building has a distance to the target less than or equal to the entrance building. Since teleportation is instantaneous, the astronaut can then take a tube in the same day.
+		2. Allocation of pods in tubes. It is possible that several pods are trying to move through a tube that has insufficient capacity to accommodate them all. In this case, pods with the smallest identifier are given priority, and the others remain in place until the next day, when they will try again to move to their next stop.
+		3. Allocation of astronauts in pods. Each astronaut tries to find a pod with a free seat that will move towards their destination (i.e. a strictly lower distance), and hops on board. Astronauts choose in order of astronaut id, calculated as (source landing pad id) * 1000 + (astronaut index in the source pad arrival list). If several options can bring an astronaut closer to one of their targets, the pod with the smallest identifier will be chosen.
+		4. Launch of all pods. Each pod moves towards its next step with its astronauts on board, then all passengers disembark.
+	
+	4. End of the month.
+	At the end of each month, all remaining astronauts disappear from the play area and all pods immediately return to their starting point. All unused resources yield a 10% interest (rounded down).
+	
+	Constraints:
+	- During the game, at most 150 buildings will be constructed.
+	- Each landing pad will welcome between 1 and 100 astronauts each month.
+	- At most 1000 astronauts will arrive each month from all landing pads.
+	- It is guaranteed that no buildings will be constructed on the path of an existing tube.
+	- Your program has to return its list of actions within 500 ms each turn (1000 ms for the first turn).
+	- It is guaranteed that each astronaut arriving on a landing pad will have at least 1 module of the same type already built.
+
+Now if something is not clear, you can ask questions before you begin. Otherwise, you can go ahead and prepare the code. You can also split the work into multiple prompts if you wish.

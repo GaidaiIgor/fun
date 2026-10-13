@@ -1,0 +1,95 @@
+==================================================
+General
+==================================================
+Your goal is to develop a bot (in python) that will play in a game against other bots. Once your bot is ready, I will send it to the arena, where it will play 220 games against other bots with similar score. Based on the results of these games, the server will evaluate your bot's score using the TrueSkill system. It's basically proportional to the overall winrate. The goal of the bot is to maximize this score.
+
+Each game prints a log as the game progresses. The general structure of the log is the following. First goes game summary (initialization) at the start of the game. Then each turn is printed with the following structure. First goes the output stream of player #1 (their commands). Then game information block summarizing the effect of their commands. Then current turn number. Then total number of turns in that game. Then output stream of player #2 (their commands). Then game information block summarizing the effect of their commands. Then game summary by the end of that turn. Your bot is randomly assigned to be either player #1 or #2. IGPro is your bot's name.
+
+Before the output stream corresponding to your bot the game also prints your error stream. Anything you print to sys.stderr will not be treated as a command, and will show up in the error stream. So this is a customizable part of the log, that you can use for debugging purposes, to help you track the internal state of your code at each turn.
+
+You are not allowed to use the Internet, other chats or memories for this task, but you can ask me any questions about problem statement, rules or anything else except for the questions related to strategy or its implementation. This is for you to decide.
+
+The code of the bot should be written in main.py file of the current working directory. This code will be submitted to the arena. You may also create any other files for internal testing as you see fit.
+
+==================================================
+Learning and Improving
+==================================================
+After each round of arena, I will tell you your new score and rank among other bots. I will also provide you with the logs from recent 10 games. You will need to tell me how you want to split them between won and lost games. Use these logs to learn how your bot performed during the matches and upgrade your bot as you see fit. After the upgrade, I will again send your bot back to the arena for the next round, etc. 
+
+The best score and rank that your bot achieved among all rounds is recorded. If you fail to improve that score 3 rounds in a row, this challenge is over and your best score is declared as your final score. If you improve your score, your strike count resets back to 3. When making edits, keep in mind that you own this code. You can make any changes at any point, including deleting everything and rewriting it from scratch if you wish so.
+
+==================================================
+Challenge Rules
+==================================================
+
+The Goal:
+	Win the race.
+
+Rules:
+	The players each control a team of two pods during a race. As soon as a pod completes the race, that pod's team is declared the winner.
+	The circuit of the race is made up of checkpoints. To complete one lap, your vehicle (pod) must pass through each one in order and back through the start. The first player to reach the start on the final lap wins.
+
+	The game is played on a map 16000 units wide and 9000 units high. The coordinate X=0, Y=0 is the top left pixel.
+
+	The checkpoints work as follows:
+	- The checkpoints are circular, with a radius of 600 units.
+	- Checkpoints are numbered from 0 to N where 0 is the start and N-1 is the last checkpoint.
+	- The disposition of the checkpoints is selected randomly for each race.
+	
+	The pods work as follows:
+	- To pass a checkpoint, the center of a pod must be inside the radius of the checkpoint.
+	- To move a pod, you must print a target destination point followed by a thrust value. Details of the protocol can be found further down.
+	- The thrust value of a pod is its acceleration and must be between 0 and 200.
+	- The pod will pivot to face the destination point by a maximum of 18 degrees per turn and will then accelerate in that direction.
+	- You can use 1 acceleration boost in the race, you only need to replace the thrust value by the BOOST keyword.
+	- You may activate a pod's shields with the SHIELD command instead of accelerating. This will give the pod much more weight if it collides with another. However, the pod will not be able to accelerate for the next 3 turns.
+	- The pods have a circular force-field around their center, with a radius of 400 units, which activates in case of collisions with other pods.
+	- The pods may move normally outside the game area.
+	- If none of your pods make it to their next checkpoint in under 100 turns, you are eliminated and lose the game. Only one pod need to complete the race.
+ 
+Victory Conditions:
+	Be the first to complete all the laps of the circuit with one pod.
+ 
+Lose Conditions:
+	- Your program provides incorrect output.
+	- Your program times out.
+	- None of your pods reach their next checkpoint in time.
+	- Somebody else wins.
+	
+Expert Rules:
+	On each turn the pods movements are computed this way:
+	1. Rotation: the pod rotates to face the target point, with a maximum of 18 degrees (except for the 1rst round).
+	2. Acceleration: the pod's facing vector is multiplied by the given thrust value. The result is added to the current speed vector.
+	3. Movement: The speed vector is added to the position of the pod. If a collision would occur at this point, the pods rebound off each other.
+	4. Friction: the current speed vector of each pod is multiplied by 0.85
+	5. The speed's values are truncated and the position's values are rounded to the nearest integer.
+	
+	Collisions are elastic. The minimum impulse of a collision is 120.
+	A boost is in fact an acceleration of 650. The number of boost available is common between pods. If no boost is available, the maximum thrust is used.
+	A shield multiplies the Pod mass by 10.
+	The provided angle is absolute. 0° means facing EAST while 90° means facing SOUTH.
+	
+Note:
+The program must first read the initialization data from standard input. Then, within an infinite loop, read the contextual data from the standard input and provide to the standard output the desired instructions.
+
+Game Input:
+	Initialization input:
+		Line 1: laps: the number of laps to complete the race.
+		Line 2: checkpointCount: the number of checkpoints in the circuit.
+		Next checkpointCount lines: 2 integers checkpointX, checkpointY for the coordinates of checkpoint.
+		
+	Input for one game turn:
+		First 2 lines: Your two pods.
+		Next 2 lines: The opponent's pods.
+		Each pod is represented by: 6 integers, x & y for the position. vx & vy for the speed vector. angle for the rotation angle in degrees. nextCheckPointId for the number of the next checkpoint the pod must go through.
+	
+	Output for one game turn:
+		Two lines: 2 integers for the target coordinates of your pod followed by thrust, the acceleration to give your pod, or by SHIELD to activate the shields, or by BOOST for an acceleration burst. One line per pod.
+		
+Constraints:
+	0 ≤ thrust ≤ 200
+	2 ≤ checkpointCount ≤ 8
+	Response time first turn ≤ 1000ms
+	Response time per turn ≤ 75ms
+
+Now go ahead and prepare the first version of your bot.

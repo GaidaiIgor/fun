@@ -1,0 +1,43 @@
+Goal:
+	Help Blub escape the forest by sending him sequence of instructions as short as possible that will make him spell out a given sentence using magic stones.
+	
+Rules:
+	Your program receives a string of uppercase characters – the magic phrase Blub needs to spell out – and must output a sequence of characters, each representing an action for Blub to perform, such that Blub spells the magic phrase.
+	These actions direct Blub to move around in the forest and to interact with the different stones.
+
+	The forest Blub is trapped works as follows:
+	- The forest contains 30 zones.
+	- Blub can move left and right through the zones which are all aligned. He does this when he receives a less-than `<` or greater-than `>` sign.
+	- The last zone is connected to the first zone, effectively creating a looping area.
+	- Each zone contains a magic stone upon which is inscribed a rune with which Blub can interact.
+
+	Runes work as follows:
+	- Every rune is represented by a letter of the alphabet (A-Z) or an empty space.
+	- All runes start out as a space.
+	- Blub can change the value of the letter on the rune by rolling back and forth through the possibilities. He does this when he receives a plus `+` or minus `-` character.
+	- The letter after Z is space. The letter after space is A.
+	- Blub can trigger a rune. This will add the displayed letter to the phrase he is spelling out. He does this when he receives a dot `.` character.
+	- One rune can be triggered multiple times.
+	
+	The following looping actions are also available:
+	- `[`: If the current rune contains a space, skip all instructions up to the matching closing bracket `]`, otherwise continue normally.
+	- `]`: If the current rune contains a space, continue normally, otherwise perform the instructions starting from the matching opening bracket `[`.
+	
+	You lose if:
+	- At the end of Blub's move sequence, the wrong message is displayed.
+	- Blub performs 4000 moves or more in the forest.
+	- You do not supply Blub with a valid sequence of actions.
+	
+Game Input/Output:
+	The program must first read the initialization data from standard input. Then, provide to the standard output one line with all of Blub's instructions.
+	
+	Input:
+	Line 1: one string magicPhrase, the message you must help Blub to spell out.
+
+	Output:
+	A single line containing a valid sequence of actions for Blub.
+	
+Constraints:
+	magicPhrase contains between 1 and 500 characters.
+	magicPhrase is composed of uppercase letters (A-Z) and spaces.
+	Allotted response time to output is ≤ 2 seconds.

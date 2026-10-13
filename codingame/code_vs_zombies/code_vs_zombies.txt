@@ -1,0 +1,48 @@
+Goal:
+	Maximize score.
+	
+Rules:
+	The game is played in a zone 16000 units wide by 9000 units high. You control a man named Ash.
+
+	Ash works as follows:
+	- Ash can be told to move to any point within the game zone by outputting a coordinate X Y. The top-left point is 0 0.
+	- Each turn, Ash will move exactly 1000 units towards the target coordinate, or onto the target coordinates if he is less than 1000 units away.
+	- If at the end of a turn, a zombie is within 2000 units of Ash, he will shoot that zombie and destroy it.
+
+	Other humans will be present in the game zone, but will not move.
+	Initial placement of humans and zombies is map-dependent.
+	Zombies work as follows:
+	- Each turn, every zombie will target the closest human, including Ash, and step 400 units towards them. If the zombie is less than 400 units away, the human is killed and the zombie moves onto their coordinate.
+	- Multiple zombies can occupy the same coordinate.
+
+	The order in which actions happens in between two rounds is:
+	- Zombies move towards their targets.
+	- Ash moves towards his target.
+	- Any zombie within a 2000 unit range around Ash is destroyed.
+	- Zombies eat any human they share coordinates with.
+
+	Killing zombies earns you points. The number of points you get per zombie is subject to a few factors.
+	Scoring works as follows:
+	- A zombie is worth the number of humans still alive squared x10, not including Ash.
+	- If several zombies are destroyed during the same round, the n-th zombie killed's worth is multiplied by the (n+2)-th number of the Fibonnacci sequence.
+	
+	The game ends if either all humans or all zombies are killed. If all humans are killed, your score is set to 0 points.
+	
+	The coordinate system of the game uses integers. If Ash or a zombie should land in a non-integer coordinate, that coordinate is rounded down.
+
+Game Input/Output:
+	The program must, within an infinite loop, read the contextual data from the standard input and provide to the standard output the desired instruction.
+	Input for one game turn:
+		Line 1: two space-separated integers x and y, the coordinate of Ash.
+		Line 2: one integer humanCount, the amount of other humans still alive.
+		Next humanCount lines: three space-separated integers humanId, humanX, humanY, the unique id and coordinates of a human.
+		Next line: one integer zombieCount, the amount of zombies left.
+		Next zombieCount lines: five space-separated integers zombieId, zombieX, zombieY, zombieXNext, zombieYNext, the unique id, current and next round's coordinates of a zombie.
+
+	Output for one game turn:
+		A single line: two integers targetX and targetY, the coordinate you want Ash to move towards.
+	
+Constraints:
+	1 ≤ humanCount < 100
+	1 ≤ zombieCount < 100
+	Response time per game turn ≤ 100ms

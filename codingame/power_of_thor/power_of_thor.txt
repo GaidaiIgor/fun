@@ -1,0 +1,20 @@
+OBJECTIVE
+Guide Thor to the light of power on a 40 x 18 grid.
+
+RULES
+Coordinates start at (0, 0) in the top-left; X increases rightward, Y downward.
+Thor loses if he moves outside the grid.
+
+INPUT
+Initialization (one line): four integers lightX lightY initialTX initialTY
+  lightX, lightY: light's coordinates; initialTX, initialTY: Thor's starting coordinates.
+Each turn (one line): integer remainingTurns, the number of moves left to reach the light.
+
+OUTPUT
+Each turn: one direction, moving Thor one cell by the corresponding (dX, dY):
+N (0,-1), NE (1,-1), E (1,0), SE (1,1), S (0,1), SW (-1,1), W (-1,0), NW (-1,-1).
+
+NUMERIC CONSTRAINTS
+0 <= lightX, initialTX < 40
+0 <= lightY, initialTY < 18
+Response time <= 100 ms per turn.

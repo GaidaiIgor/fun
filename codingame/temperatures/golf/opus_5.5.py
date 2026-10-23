@@ -1,0 +1,1 @@
+*_,t=open(0);print(max((-int(x)**2,x)for x in t.split()or"0")[1])

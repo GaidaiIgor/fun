@@ -1,0 +1,13 @@
+OBJECTIVE
+Output the temperature closest to zero. If two temperatures are equally close, choose the positive one.
+
+INPUT
+Line 1: N (integer), the number of temperatures.
+Line 2: N space-separated integers t, the temperatures.
+
+OUTPUT
+One integer: the temperature closest to zero, or 0 if N = 0.
+
+NUMERIC CONSTRAINTS
+0 <= N < 10000
+-273 <= t <= 5526

@@ -45,7 +45,7 @@ Game Input/Output:
 		5 ≤ width ≤ 100
 		10 ≤ nbRounds ≤ 200
 		0 ≤ exitFloor, elevatorFloor < nbFloors
-		0 ≤ exitPos , elevatorPos < width
+		0 ≤ exitPos, elevatorPos < width
 		-1 ≤ cloneFloor < nbFloors
 		-1 ≤ clonePos < width
 		2 ≤ nbTotalClones ≤ 50

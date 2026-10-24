@@ -1,0 +1,19 @@
+OBJECTIVE
+Encode the input message using unary encoding.
+
+RULES
+- Convert each character to its 7-bit ASCII binary representation, including leading zeros, and concatenate the bits in character order.
+- Split the resulting bit string into maximal consecutive runs of identical bits.
+- Encode each run as two blocks separated by a space:
+  - First block: 0 for a run of 1 bits; 00 for a run of 0 bits.
+  - Second block: one 0 for each bit in the run.
+- Separate successive encoded runs with a single space.
+
+INPUT
+Line 1: MESSAGE, a string of N ASCII characters (without carriage return).
+
+OUTPUT
+Line 1: The unary-encoded message as a string.
+
+NUMERIC CONSTRAINTS
+0 < N < 100

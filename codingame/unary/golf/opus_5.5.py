@@ -1,0 +1,1 @@
+print("".join((id!=(id:=" 0"+"0 "[c>"0":]))*id+"0"for x in input()for c in f"{ord(x):7b}")[1:])

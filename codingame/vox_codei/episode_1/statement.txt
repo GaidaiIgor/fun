@@ -1,0 +1,32 @@
+OBJECTIVE
+Destroy every surveillance node within the available rounds and bombs.
+
+RULES
+The firewall is a fixed rectangular grid made up of the following characters:
+  .  empty cell (bomb placement allowed)
+  @  stationary surveillance node (destroyed by explosions)
+  #  indestructible wall (blocks explosions)
+Each round, place a bomb on an empty cell or choose WAIT.
+A bomb detonates at round k + 2, if it was placed at round k.
+Its blast extends up to 3 cells horizontally and vertically from its position, stopping at walls or grid edges.
+Surveillance nodes do not block the blast.
+Explosions also trigger other bombs within their blast area ahead of their time, causing chain reactions.
+Surveillance nodes hit by a blast are removed in the following round.
+
+INITIAL INPUT
+Line 1: width height, two integers specifying the grid dimensions.
+Next height lines: strings of length width describing the initial grid, top row first.
+Coordinates: (0, 0) is the top-left cell; x increases rightward and y downward.
+
+INPUT EACH ROUND
+rounds bombs, two integers giving remaining rounds and available bombs.
+
+OUTPUT EACH ROUND
+x y (two integer coordinates for bomb placement) or WAIT to do nothing.
+
+NUMERIC CONSTRAINTS
+2 < width, height < 20
+3 < rounds < 20
+0 < bombs < 10
+0 <= x < width; 0 <= y < height.
+Time limit: 1000 ms for the first turn; 100 ms for each subsequent turn.

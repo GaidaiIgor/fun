@@ -1,0 +1,30 @@
+OBJECTIVE:
+Count the distinct messages formed by sequences of dictionary words whose concatenated Morse encodings equal the given Morse sequence.
+
+MORSE CODE:
+A .-     B -...   C -.-.   D -..
+E .      F ..-.   G --.    H ....
+I ..     J .---   K -.-    L .-..
+M --     N -.     O ---    P .--.
+Q --.-   R .-.    S ...    T -
+U ..-    V ...-   W .--    X -..-
+Y -.--   Z --..
+
+RULES:
+Each letter is encoded using the table above. Word encodings concatenate their letter encodings.
+A valid message is an ordered sequence of dictionary words whose encodings concatenate to exactly the input sequence.
+Different word sequences count as different messages.
+
+INPUT:
+Line 1: Morse sequence (string of '.' and '-', length L).
+Line 2: N (integer): number of dictionary words.
+Next N lines: one distinct uppercase word per line, each of length at most M.
+
+OUTPUT:
+One integer R: number of valid messages.
+
+NUMERIC CONSTRAINTS:
+0 < L < 100000
+0 < N < 100000
+0 < M < 20
+0 <= R < 2^63

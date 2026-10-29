@@ -1,0 +1,28 @@
+OBJECTIVE:
+Read a black-and-white musical score and output its notes from left to right.
+
+SCORE:
+The score has a staff of 5 horizontal lines. Noteheads lie on a line or between lines.
+The 12 allowed positions, from bottom to top, are C D E F G A B C D E F G.
+The lower C sits on a ledger line below the staff; E is on the bottom staff line, B on the middle line, and F on the top line.
+Each note has a stem and is either a half note (hollow notehead) or a quarter note (filled notehead).
+Stems point upward through the lower A, downward from the upper C onward; B may point either way.
+
+IMAGE ENCODING:
+The W-by-H image is encoded in row-major order, starting at its top-left pixel.
+DWE (run-length encoding) stores each consecutive run as C L: color C ('B' black, 'W' white), then its length L (integer). Runs may cross row boundaries.
+
+INPUT:
+Line 1: W H (2 integers): image width and height in pixels.
+Line 2: Space-separated DWE color/length pairs representing the entire image.
+
+OUTPUT:
+One line: notes from left to right, separated by spaces. Each note has two characters: pitch A-G followed by H (half) or Q (quarter).
+Repeated pitch letters in different positions use the same letter.
+
+NUMERIC CONSTRAINTS:
+100 < W < 5000
+70 < H < 300
+Staff lines and stems are at least 1 pixel thick.
+Adjacent notes are separated by at least 1 pixel.
+The gap between staff lines is at least 8 pixels and at least 4 times the line thickness.
